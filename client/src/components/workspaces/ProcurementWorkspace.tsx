@@ -321,7 +321,9 @@ export function ProcurementWorkspace() {
                     >
                       <option value="DRAFT">Draft</option>
                       <option value="SENT">Sent</option>
-                      <option value="APPROVED">Approved</option>
+                      <option value="APPROVED" disabled>
+                        Approved · Super Admin / Owner
+                      </option>
                       <option value="ORDERED">Ordered</option>
                       <option value="PARTIALLY_RECEIVED">
                         Partially received

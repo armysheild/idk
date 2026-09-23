@@ -4070,12 +4070,16 @@ def update_purchase_order_status(
     purchase_order_id: int,
     payload: PurchaseOrderStatusUpdate,
     request: Request,
-    user: User = Depends(require_permission("procurement")),
+    user: User = Depends(require_roles("owner", "inventory_manager")),
     database: Session = Depends(get_db),
 ) -> PurchaseOrder:
     order = database.scalar(select(PurchaseOrder).where(PurchaseOrder.id == purchase_order_id, PurchaseOrder.organization_id == user.organization_id))
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
+    if user.role == "inventory_manager" and payload.status == "Approved":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Purchase-order approval belongs to Super Admin / Owner")
+    if user.role == "owner" and payload.status != "Approved":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super Admin / Owner can only approve purchase orders")
     order.status = payload.status
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -4185,7 +4189,7 @@ def receive_purchase_order(
 @router.get("/purchase-orders/{purchase_order_id}/download")
 def download_purchase_order(
     purchase_order_id: int,
-    user: User = Depends(require_permission("procurement")),
+    user: User = Depends(require_permission("procurement_read")),
     database: Session = Depends(get_db),
 ) -> Response:
     order = database.scalar(select(PurchaseOrder).options(selectinload(PurchaseOrder.lines)).where(
