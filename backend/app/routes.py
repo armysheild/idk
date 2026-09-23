@@ -8246,8 +8246,46 @@ def get_financial_reconciliation(
         TollTransaction.organization_id == user.organization_id,
         TollTransaction.status.in_(["Pending", "Disputed"]),
     ).all()
-    
+    vehicles = database.query(Vehicle).filter(
+        Vehicle.organization_id == user.organization_id,
+    ).all()
+    fuel_by_vehicle = {
+        vehicle_id: total
+        for vehicle_id, total in database.query(
+            FuelTransaction.vehicle_id,
+            func.sum(FuelTransaction.total_amount_paise),
+        ).filter(
+            FuelTransaction.organization_id == user.organization_id,
+        ).group_by(FuelTransaction.vehicle_id).all()
+    }
+    ledger_fuel_by_vehicle = {
+        vehicle_id: total
+        for vehicle_id, total in database.query(
+            Expense.vehicle_id,
+            func.sum(Expense.amount_paise),
+        ).filter(
+            Expense.organization_id == user.organization_id,
+            func.upper(Expense.category) == "FUEL",
+            Expense.vehicle_id.is_not(None),
+        ).group_by(Expense.vehicle_id).all()
+    }
+    reconciliation_rows = []
+    for vehicle in vehicles:
+        fuel_logged = fuel_by_vehicle.get(vehicle.id, 0) / 100.0
+        ledger_fuel = ledger_fuel_by_vehicle.get(vehicle.id, 0) / 100.0
+        difference = ledger_fuel - fuel_logged
+        reconciliation_rows.append({
+            "vehicle_id": vehicle.id,
+            "vehicle": vehicle.registration_number,
+            "fuel_logged": fuel_logged,
+            "ledger_fuel": ledger_fuel,
+            "difference": difference,
+            "status": "MATCHED" if difference == 0 else "MISMATCH",
+        })
+
     return {
+        "rows": reconciliation_rows,
+        "mismatches": [row for row in reconciliation_rows if row["status"] != "MATCHED"],
         "expenses": {
             "pending": {
                 "count": len(pending_expenses),
