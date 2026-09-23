@@ -6280,6 +6280,14 @@ def get_inventory_summary(
 # DRIVER ADVANCED FEATURES
 # ============================================================================
 
+@router.get("/drivers/me/daily-home", response_model=dict)
+def get_current_driver_daily_home(
+    user: User = Depends(get_current_user),
+    database: Session = Depends(get_db),
+) -> dict:
+    return get_driver_daily_home(user.id, user, database)
+
+
 @router.get("/drivers/{driver_id}/daily-home", response_model=dict)
 def get_driver_daily_home(
     driver_id: int,
@@ -6349,11 +6357,15 @@ def get_driver_daily_home(
         OdometerLog.created_at < today_end,
     ).all()
     
+    readiness = "READY" if vehicle_data and vehicle_data["status"] not in {"Out of service", "In workshop"} else "UNSAFE" if vehicle_data else "CHECKING"
     return {
         "driver_id": driver_id,
         "driver_name": driver.full_name,
         "role": driver.role,
         "assigned_vehicle": vehicle_data,
+        "vehicle": vehicle_data,
+        "readiness": readiness,
+        "next_action": "Complete the pre-trip inspection before departure." if vehicle_data else "Wait for a Fleet Manager to assign a vehicle.",
         "today": {
             "work_orders": len(work_orders),
             "work_orders_data": [
@@ -6384,15 +6396,26 @@ def get_driver_daily_home(
     }
 
 
+@router.post("/drivers/me/unsafe-disposition", response_model=dict)
+def report_current_driver_unsafe_disposition(
+    payload: dict,
+    request: Request,
+    user: User = Depends(get_current_user),
+    database: Session = Depends(get_db),
+) -> dict:
+    return report_unsafe_disposition(user.id, payload, request, user, database)
+
+
 @router.post("/drivers/{driver_id}/unsafe-disposition", response_model=dict)
 def report_unsafe_disposition(
     driver_id: int,
     payload: dict,
+    request: Request,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Report unsafe driver disposition/behavior"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     driver = database.get(User, driver_id)
     if not driver or driver.organization_id != user.organization_id:

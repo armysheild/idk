@@ -193,6 +193,12 @@ function serializeInput(path: string, input: unknown): unknown {
     mobile_phone: value.mobilePhone ?? value.mobileNumber,
   };
   if (path === "notifications.markRead") return { status: "read" };
+  if (path === "driver.unsafeDisposition") return {
+    vehicle_id: value.vehicleId,
+    description: value.notes,
+    severity: value.disposition === "UNSAFE_TO_DRIVE" ? "high" : "medium",
+    location: value.location,
+  };
   if (path === "workOrders.reservePart" || path === "workOrders.returnReservedPart") return {
     part_id: value.partId,
     quantity: value.quantity,
@@ -315,7 +321,7 @@ function queryPath(path: string, input: unknown) {
   if (path === "vehicleIssues.list") return "/api/v1/driver/issues";
   if (path === "driver.inspections") return "/api/v1/driver/inspections";
   if (path === "driver.fuelLogs") return "/api/v1/fuel-transactions";
-  if (path === "driver.dailyHome") return "/api/v1/drivers/summary";
+  if (path === "driver.dailyHome") return "/api/v1/drivers/me/daily-home";
   if (path === "team.driverHandoffs") return "/api/v1/team/roster";
   if (path === "audit.list") return "/api/v1/audit-log";
   if (path === "organizationSettings.get") return "/api/v1/organization/settings";
@@ -383,6 +389,7 @@ function mutationPath(path: string, input: unknown) {
   if (path === "maintenanceTemplates.applyTemplate" && value?.id) return `/api/v1/maintenance/templates/${value.id}/apply`;
   if (path === "driver.createInspection") return "/api/v1/driver/inspections";
   if (path === "driver.createFuelLog") return "/api/v1/fuel-transactions";
+  if (path === "driver.unsafeDisposition") return "/api/v1/drivers/me/unsafe-disposition";
   if (path === "vehicleIssues.create") return "/api/v1/driver/issues";
   if (path === "vehicles.updateOdometer" && value?.vehicleId) return `/api/v1/vehicles/${value.vehicleId}`;
   if (path === "vehicles.create") return "/api/v1/vehicles";
