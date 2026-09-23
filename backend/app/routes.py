@@ -1193,7 +1193,7 @@ def update_vehicle(
     vehicle_id: int,
     payload: VehicleUpdate,
     request: Request,
-    user: User = Depends(require_permission("fleet")),
+    user: User = Depends(require_roles("fleet_manager", "driver")),
     database: Session = Depends(get_db),
 ) -> Vehicle:
     # Fixed Bug 15: Add row-level locking for atomic status transitions
@@ -1204,6 +1204,11 @@ def update_vehicle(
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
     changes = payload.model_dump(exclude_unset=True)
+    if user.role == "driver":
+        if vehicle.assigned_driver_id != user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+        if set(changes) != {"odometer_km"}:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Drivers can only submit odometer readings")
     if "odometer_km" in changes and changes["odometer_km"] < vehicle.odometer_km:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -6772,7 +6777,7 @@ def get_inventory_summary(
 
 @router.get("/drivers/me/daily-home", response_model=dict)
 def get_current_driver_daily_home(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles("driver")),
     database: Session = Depends(get_db),
 ) -> dict:
     return get_driver_daily_home(user.id, user, database)
@@ -6890,7 +6895,7 @@ def get_driver_daily_home(
 def report_current_driver_unsafe_disposition(
     payload: dict,
     request: Request,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles("driver")),
     database: Session = Depends(get_db),
 ) -> dict:
     return report_unsafe_disposition(user.id, payload, request, user, database)
