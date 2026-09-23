@@ -6,6 +6,133 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD 
 type QueryOptions = { enabled?: boolean; retry?: boolean };
 type MutationOptions = { onSuccess?: (value: unknown) => void; onError?: (error: Error) => void };
 
+function camelize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(camelize);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, nested]) => [
+    key.replace(/_([a-z])/g, (_, character: string) => character.toUpperCase()),
+    camelize(nested),
+  ]));
+}
+
+function serializeInput(path: string, input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const value = input as Record<string, unknown>;
+  const priority = typeof value.priority === "string"
+    ? value.priority.charAt(0) + value.priority.slice(1).toLowerCase()
+    : value.priority;
+  if (path === "vehicles.create") return {
+    registration_number: value.licensePlate,
+    model: [value.make, value.model].filter(Boolean).join(" "),
+    vehicle_type: value.vehicleType ?? "Vehicle",
+    depot: value.depotLocation ?? "Main depot",
+    status: value.status === "OUT_OF_SERVICE" ? "Out of service" : value.status === "MAINTENANCE" ? "In workshop" : "Idle / parked",
+    odometer_km: value.currentOdometer ?? 0,
+    assigned_driver_id: value.driverId,
+  };
+  if (path === "vehicles.update") return {
+    model: [value.make, value.model].filter(Boolean).join(" ") || value.model,
+    vehicle_type: value.vehicleType,
+    depot: value.depotLocation,
+    status: value.status === "OUT_OF_SERVICE" ? "Out of service" : value.status === "MAINTENANCE" ? "In workshop" : value.status ? "Idle / parked" : undefined,
+    odometer_km: value.currentOdometer,
+  };
+  if (path.startsWith("workOrders.")) return {
+    vehicle_id: value.vehicleId,
+    title: value.title,
+    description: value.description,
+    priority,
+    status: value.status ? String(value.status).replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase()) : undefined,
+    assigned_user_id: value.assignedMechanicId ?? value.assignedUserId,
+    due_date: value.dueDate,
+    labor_hours: value.laborHours,
+    repair_notes: value.repairNotes,
+    items: value.items,
+  };
+  if (path === "driver.createInspection") return {
+    vehicle_id: value.vehicleId,
+    inspection_type: String(value.inspectionType ?? "PRE_TRIP").toLowerCase(),
+    status: value.status === "PASS" ? "SAFE" : value.status === "FAIL" ? "UNSAFE" : value.status,
+    odometer_km: value.odometerKm ?? value.odometer ?? 0,
+    notes: value.notes,
+  };
+  if (path === "driver.createFuelLog") return {
+    vehicle_id: value.vehicleId,
+    station: value.station,
+    fuel_type: value.fuelType ?? "Diesel",
+    litres_milli: Math.round(Number(value.liters ?? 0) * 1000),
+    price_per_litre_paise: Number(value.liters) > 0 ? Math.round((Number(value.amount ?? 0) / Number(value.liters)) * 100) : 0,
+    odometer_km: value.odometer ?? 0,
+    incurred_on: new Date().toISOString().slice(0, 10),
+  };
+  if (path === "vehicleIssues.create") return {
+    vehicle_id: value.vehicleId,
+    title: value.title,
+    detail: value.description ?? value.detail,
+    priority,
+  };
+  if (path === "documents.create" || path === "documents.update") return {
+    vehicle_id: value.vehicleId,
+    name: value.title ?? value.name,
+    document_type: value.docType ?? value.documentType,
+    issued_by: value.issuedBy,
+    expires_on: value.expiryDate ? new Date(String(value.expiryDate)).toISOString().slice(0, 10) : value.expiresOn,
+    file_key: value.fileUrl ?? value.fileKey,
+  };
+  if (path === "components.create" || path === "components.update") return {
+    vehicle_id: value.vehicleId,
+    name: value.name,
+    component_type: value.componentType ?? "General",
+    serial_number: value.serialNumber,
+    installed_at_km: value.installedAtKm ?? 0,
+    service_interval_km: value.serviceIntervalKm,
+    alert_threshold_km: value.alertThresholdKm,
+    status: value.status ?? "Healthy",
+  };
+  if (path === "inventory.create") return {
+    sku: value.sku,
+    name: value.name,
+    category: value.category ?? "General",
+    quantity_on_hand: value.quantityOnHand ?? 0,
+    reorder_level: value.minReorderLevel ?? value.reorderLevel ?? 0,
+    unit_cost_paise: Math.round(Number(value.unitCost ?? value.unitCostPaise ?? 0) * (value.unitCostPaise ? 1 : 100)),
+    supplier: value.supplier,
+  };
+  if (path === "financials.create") return {
+    vehicle_id: value.vehicleId,
+    category: value.category ?? "Other",
+    description: value.description ?? `${value.type ?? "Expense"} · ${value.category ?? "Other"}`,
+    amount_paise: Math.round(Number(value.amount ?? 0) * 100),
+    gst_amount_paise: Math.round(Number(value.taxAmount ?? 0) * 100),
+    incurred_on: value.transactionDate ?? new Date().toISOString().slice(0, 10),
+    vendor: value.vendor,
+    gstin: value.gstin,
+    tax_category: value.taxCategory,
+    invoice_number: value.invoiceNumber,
+    tds_amount_paise: Math.round(Number(value.tdsAmount ?? 0) * 100),
+    payment_mode: value.paymentMethod,
+    status: "Pending",
+  };
+  if (path === "team.assignVehicle") return { vehicle_id: value.vehicleId, driver_id: value.driverId };
+  if (path === "purchaseOrders.create") return {
+    vendor_id: value.vendorId,
+    lines: value.lines ?? [{ part_id: value.partId ?? 0, quantity: 1, unit_cost_paise: Math.round(Number(value.totalCost ?? 0) * 100) }],
+    notes: value.notes,
+  };
+  if (path === "purchaseOrders.updateStatus") return { status: String(value.status ?? "").replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase()) };
+  if (path === "purchaseOrders.receivePartial") return {
+    part_id: value.partId,
+    quantity: value.quantity,
+    damaged_quantity: value.damagedQuantity ?? 0,
+    backordered_quantity: value.backorderedQuantity ?? 0,
+    variance_reason: value.varianceReason,
+    unit_cost_paise: Math.round(Number(value.unitCost ?? 0) * 100),
+    invoice_number: value.invoiceNumber,
+    location_id: value.locationId,
+  };
+  return input;
+}
+
 function tokenFromStorage() {
   return sessionStorage.getItem("vahana:access-token");
 }
@@ -18,14 +145,15 @@ async function accessToken() {
   return tokenFromStorage() ?? undefined;
 }
 
-async function request(path: string, input?: unknown, method = "GET") {
+async function request(path: string, input?: unknown, method = "GET", inputPath = path) {
+  const body = serializeInput(inputPath, input);
   const send = async (token?: string) => fetch(`${API_BASE_URL}${path}`, {
     method,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    ...(method === "GET" ? {} : { body: JSON.stringify(input ?? {}) }),
+    ...(method === "GET" ? {} : { body: JSON.stringify(body ?? {}) }),
   });
   let token = await accessToken();
   let response = await send(token);
@@ -48,7 +176,7 @@ async function request(path: string, input?: unknown, method = "GET") {
     Object.assign(error, { status: response.status, data: { code: response.status === 401 ? "UNAUTHORIZED" : "BAD_REQUEST" } });
     throw error;
   }
-  return response.status === 204 ? null : response.json();
+  return response.status === 204 ? null : response.json().then(camelize);
 }
 
 function collectionPath(path: string) {
@@ -247,7 +375,7 @@ function useApiMutation(path: string, options?: MutationOptions) {
   const mutateAsync = useCallback(async (input?: unknown) => {
     setState({ error: null, isPending: true });
     try {
-      const data = await request(mutationPath(path, input), input, mutationMethod(path));
+      const data = await request(mutationPath(path, input), input, mutationMethod(path), path);
       setState({ error: null, isPending: false });
       options?.onSuccess?.(data);
       return data;
