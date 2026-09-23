@@ -11,11 +11,11 @@ function tokenFromStorage() {
 }
 
 async function accessToken() {
-  const localToken = tokenFromStorage();
-  if (localToken) return localToken;
-  if (!supabase) return undefined;
-  const { data } = await supabase.auth.getSession();
-  return data.session?.access_token;
+  if (supabase) {
+    const { data } = await supabase.auth.getSession();
+    if (data.session?.access_token) return data.session.access_token;
+  }
+  return tokenFromStorage() ?? undefined;
 }
 
 async function request(path: string, input?: unknown, method = "GET") {
@@ -266,6 +266,13 @@ function createUtilsProxy(path = ""): any {
   return new Proxy({}, {
     get(_target, property: string) {
       if (property === "invalidate") return async () => {
+        await Promise.all(
+          Array.from(queryRegistry.entries())
+            .filter(([key]) => key.startsWith(`${path}:`))
+            .flatMap(([, callbacks]) => Array.from(callbacks).map((callback) => callback())),
+        );
+      };
+      if (property === "reset") return async () => {
         await Promise.all(
           Array.from(queryRegistry.entries())
             .filter(([key]) => key.startsWith(`${path}:`))
