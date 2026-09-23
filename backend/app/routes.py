@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session, selectinload
 from .config import get_settings
 from .database import get_db
 from .dependencies import get_current_user, require_permission, require_roles
-from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComplianceDocument, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
+from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComplianceDocument, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
 from .security import create_access_token, hash_password, provision_supabase_user, verify_password
 from .schemas import (
     ComponentCreate,
@@ -102,6 +102,9 @@ from .schemas import (
     VehicleCreate,
     VehicleAssignmentCreate,
     VehicleAssignmentRead,
+    VehiclePartInstallationCreate,
+    VehiclePartInstallationRead,
+    VehiclePartInstallationRemoval,
     VehicleRead,
     VehicleUpdate,
     VendorCreate,
@@ -112,6 +115,7 @@ from .schemas import (
     WorkOrderChecklistUpdate,
     WorkOrderEvidenceRead,
     WorkOrderPartUsageCreate,
+    WorkOrderPartIssueCreate,
     WorkOrderPartUsageRead,
     WorkOrderRead,
     WorkOrderUpdate,
@@ -1985,18 +1989,30 @@ def complete_work_order(
             Part.organization_id == user.organization_id
         ))
         if part and part_usage.quantity > 0:
+            if part_usage.inventory_transaction_id is not None:
+                continue
             delta = -part_usage.quantity
             if part.quantity_on_hand + delta < 0:
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Insufficient inventory for part {part.name}")
             part.quantity_on_hand += delta
-            database.add(InventoryTransaction(
+            transaction = InventoryTransaction(
                 organization_id=user.organization_id,
                 part_id=part.id,
                 transaction_type="issue",
                 quantity=part_usage.quantity,
                 created_by=user.id,
                 reference=f"Work order #{work_order.id}",
-            ))
+            )
+            database.add(transaction)
+            database.flush()
+            installations = database.scalars(select(VehiclePartInstallation).where(
+                VehiclePartInstallation.organization_id == user.organization_id,
+                VehiclePartInstallation.work_order_part_usage_id == part_usage.id,
+                VehiclePartInstallation.status == "active",
+                VehiclePartInstallation.inventory_transaction_id.is_(None),
+            )).all()
+            for installation in installations:
+                installation.inventory_transaction_id = transaction.id
     
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -2090,6 +2106,179 @@ def list_work_order_parts(
         WorkOrderPartUsage.organization_id == user.organization_id,
         WorkOrderPartUsage.work_order_id == work_order_id,
     ).order_by(WorkOrderPartUsage.id)).all())
+
+
+@router.get("/work-orders/{work_order_id}/part-installations", response_model=list[VehiclePartInstallationRead])
+def list_work_order_part_installations(
+    work_order_id: int,
+    user: User = Depends(require_permission("maintenance_read")),
+    database: Session = Depends(get_db),
+) -> list[VehiclePartInstallation]:
+    work_order = database.scalar(select(WorkOrder).where(
+        WorkOrder.id == work_order_id,
+        WorkOrder.organization_id == user.organization_id,
+    ))
+    if work_order is None or (user.role in ("technician", "mechanic") and work_order.assigned_user_id != user.id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
+    return list(database.scalars(select(VehiclePartInstallation).where(
+        VehiclePartInstallation.organization_id == user.organization_id,
+        VehiclePartInstallation.work_order_id == work_order_id,
+    ).order_by(VehiclePartInstallation.id)).all())
+
+
+@router.post(
+    "/work-orders/{work_order_id}/part-installations",
+    response_model=VehiclePartInstallationRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def install_work_order_part(
+    work_order_id: int,
+    payload: VehiclePartInstallationCreate,
+    request: Request,
+    user: User = Depends(require_roles("mechanic", "technician")),
+    database: Session = Depends(get_db),
+) -> VehiclePartInstallation:
+    reserve_idempotency_key(request, user, database)
+    work_order = database.scalar(select(WorkOrder).where(
+        WorkOrder.id == work_order_id,
+        WorkOrder.organization_id == user.organization_id,
+        WorkOrder.assigned_user_id == user.id,
+    ))
+    if work_order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assigned work order not found")
+    if work_order.status != "In progress":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Parts can only be installed on an in-progress work order")
+
+    usage = database.scalar(select(WorkOrderPartUsage).where(
+        WorkOrderPartUsage.id == payload.work_order_part_usage_id,
+        WorkOrderPartUsage.organization_id == user.organization_id,
+        WorkOrderPartUsage.work_order_id == work_order_id,
+    ))
+    if usage is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part usage reservation not found")
+    part = database.scalar(select(Part).where(
+        Part.id == usage.part_id,
+        Part.organization_id == user.organization_id,
+    ))
+    if part is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part not found")
+    if usage.inventory_transaction_id is None or usage.issued_quantity < payload.quantity:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Part must be issued to the assigned workshop user before installation")
+    installed_quantity = database.scalar(select(func.coalesce(func.sum(VehiclePartInstallation.quantity), 0)).where(
+        VehiclePartInstallation.organization_id == user.organization_id,
+        VehiclePartInstallation.work_order_part_usage_id == usage.id,
+        VehiclePartInstallation.status == "active",
+    )) or 0
+    if installed_quantity + payload.quantity > usage.quantity:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Installed quantity exceeds the reserved quantity")
+    if payload.serial_number:
+        existing_serial = database.scalar(select(VehiclePartInstallation).where(
+            VehiclePartInstallation.organization_id == user.organization_id,
+            VehiclePartInstallation.serial_number == payload.serial_number,
+            VehiclePartInstallation.status == "active",
+        ))
+        if existing_serial is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This serial-numbered part is already installed")
+
+    installation = VehiclePartInstallation(
+        organization_id=user.organization_id,
+        part_id=part.id,
+        vehicle_id=work_order.vehicle_id,
+        work_order_id=work_order.id,
+        work_order_part_usage_id=usage.id,
+        serial_number=payload.serial_number,
+        lot_number=payload.lot_number,
+        quantity=payload.quantity,
+        installed_by=user.id,
+        installed_odometer_km=payload.installed_odometer_km,
+    )
+    database.add(installation)
+    database.flush()
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="vehicle_part.installed",
+        entity_type="vehicle_part_installation",
+        entity_id=str(installation.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps({
+            "part_id": part.id,
+            "vehicle_id": work_order.vehicle_id,
+            "work_order_id": work_order.id,
+            "quantity": payload.quantity,
+            "serial_number": payload.serial_number,
+            "lot_number": payload.lot_number,
+        }),
+    ))
+    database.commit()
+    database.refresh(installation)
+    return installation
+
+
+@router.get("/vehicles/{vehicle_id}/part-installations", response_model=list[VehiclePartInstallationRead])
+def list_vehicle_part_installations(
+    vehicle_id: int,
+    user: User = Depends(require_permission("maintenance_read")),
+    database: Session = Depends(get_db),
+) -> list[VehiclePartInstallation]:
+    vehicle = database.scalar(select(Vehicle).where(
+        Vehicle.id == vehicle_id,
+        Vehicle.organization_id == user.organization_id,
+    ))
+    if vehicle is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+    return list(database.scalars(select(VehiclePartInstallation).where(
+        VehiclePartInstallation.organization_id == user.organization_id,
+        VehiclePartInstallation.vehicle_id == vehicle_id,
+    ).order_by(VehiclePartInstallation.installed_at.desc(), VehiclePartInstallation.id.desc())).all())
+
+
+@router.post("/vehicle-part-installations/{installation_id}/remove", response_model=VehiclePartInstallationRead)
+def remove_vehicle_part_installation(
+    installation_id: int,
+    payload: VehiclePartInstallationRemoval,
+    request: Request,
+    user: User = Depends(require_roles("owner", "fleet_manager", "mechanic", "technician")),
+    database: Session = Depends(get_db),
+) -> VehiclePartInstallation:
+    reserve_idempotency_key(request, user, database)
+    installation = database.scalar(select(VehiclePartInstallation).where(
+        VehiclePartInstallation.id == installation_id,
+        VehiclePartInstallation.organization_id == user.organization_id,
+    ))
+    if installation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Installed part not found")
+    if installation.status != "active":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Part installation is already removed")
+    if user.role in ("mechanic", "technician"):
+        work_order = database.scalar(select(WorkOrder).where(
+            WorkOrder.id == installation.work_order_id,
+            WorkOrder.organization_id == user.organization_id,
+            WorkOrder.assigned_user_id == user.id,
+        ))
+        if work_order is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Installed part is not assigned to you")
+    installation.status = "removed"
+    installation.removed_by = user.id
+    installation.removed_at = utc_now()
+    installation.removed_odometer_km = payload.removed_odometer_km
+    installation.removal_reason = payload.removal_reason
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="vehicle_part.removed",
+        entity_type="vehicle_part_installation",
+        entity_id=str(installation.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps({
+            "vehicle_id": installation.vehicle_id,
+            "part_id": installation.part_id,
+            "reason": payload.removal_reason,
+        }),
+    ))
+    database.commit()
+    database.refresh(installation)
+    return installation
 
 
 @router.get("/work-orders/{work_order_id}/timeline", response_model=list[AuditLogRead])
@@ -6134,11 +6323,91 @@ def reserve_part_for_work_order(
     return {
         "work_order_id": work_order_id,
         "part_id": payload.part_id,
+        "usage_id": part_usage.id,
         "quantity": payload.quantity,
         "unit_cost_paise": part.unit_cost_paise,
         "total_cost_paise": part.unit_cost_paise * payload.quantity,
         "reason": payload.reason,
         "reserved": True,
+    }
+
+
+@router.post("/work-orders/{work_order_id}/issue-part", response_model=dict)
+def issue_work_order_part(
+    work_order_id: int,
+    payload: WorkOrderPartIssueCreate,
+    request: Request,
+    user: User = Depends(require_permission("inventory")),
+    database: Session = Depends(get_db),
+) -> dict:
+    reserve_idempotency_key(request, user, database)
+    usage = database.scalar(select(WorkOrderPartUsage).where(
+        WorkOrderPartUsage.id == payload.work_order_part_usage_id,
+        WorkOrderPartUsage.organization_id == user.organization_id,
+        WorkOrderPartUsage.work_order_id == work_order_id,
+    ))
+    work_order = database.scalar(select(WorkOrder).where(
+        WorkOrder.id == work_order_id,
+        WorkOrder.organization_id == user.organization_id,
+    ))
+    if usage is None or work_order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order part reservation not found")
+    if usage.inventory_transaction_id is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This reservation has already been issued")
+    if payload.quantity != usage.quantity:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Issue the complete reserved quantity in one custody transfer")
+    assignee = database.scalar(select(User).where(
+        User.id == work_order.assigned_user_id,
+        User.organization_id == user.organization_id,
+        User.role.in_(("mechanic", "technician")),
+    ))
+    if assignee is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Work order must be assigned before parts are issued")
+    part = database.scalar(select(Part).where(
+        Part.id == usage.part_id,
+        Part.organization_id == user.organization_id,
+    ).with_for_update())
+    if part is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part not found")
+    if part.quantity_on_hand < payload.quantity:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Insufficient inventory")
+    part.quantity_on_hand -= payload.quantity
+    transaction = InventoryTransaction(
+        organization_id=user.organization_id,
+        part_id=part.id,
+        transaction_type="issue",
+        quantity=payload.quantity,
+        created_by=user.id,
+        reference=f"Work order #{work_order.id} issued to user #{assignee.id}",
+    )
+    database.add(transaction)
+    database.flush()
+    usage.issued_quantity = payload.quantity
+    usage.issued_to_user_id = assignee.id
+    usage.issued_at = utc_now()
+    usage.inventory_transaction_id = transaction.id
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="work_order_part.issued",
+        entity_type="work_order_part_usage",
+        entity_id=str(usage.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps({
+            "part_id": part.id,
+            "quantity": payload.quantity,
+            "issued_to_user_id": assignee.id,
+            "inventory_transaction_id": transaction.id,
+        }),
+    ))
+    database.commit()
+    return {
+        "work_order_id": work_order.id,
+        "usage_id": usage.id,
+        "inventory_transaction_id": transaction.id,
+        "issued_to_user_id": assignee.id,
+        "quantity": payload.quantity,
+        "issued": True,
     }
 
 

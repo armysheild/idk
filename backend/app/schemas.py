@@ -457,6 +457,42 @@ class WorkOrderPartUsageRead(WorkOrderPartUsageCreate):
     created_at: datetime
 
 
+class WorkOrderPartIssueCreate(BaseModel):
+    work_order_part_usage_id: int
+    quantity: int = Field(gt=0)
+
+
+class VehiclePartInstallationCreate(BaseModel):
+    work_order_part_usage_id: int
+    serial_number: str | None = Field(default=None, max_length=120)
+    lot_number: str | None = Field(default=None, max_length=120)
+    quantity: int = Field(default=1, gt=0)
+    installed_odometer_km: int | None = Field(default=None, ge=0)
+
+
+class VehiclePartInstallationRead(VehiclePartInstallationCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    organization_id: int
+    part_id: int
+    vehicle_id: int
+    work_order_id: int
+    status: str
+    installed_by: int
+    installed_at: datetime
+    removed_by: int | None
+    removed_at: datetime | None
+    removed_odometer_km: int | None
+    removal_reason: str | None
+    inventory_transaction_id: int | None
+
+
+class VehiclePartInstallationRemoval(BaseModel):
+    removal_reason: str = Field(min_length=2, max_length=500)
+    removed_odometer_km: int | None = Field(default=None, ge=0)
+
+
 class WorkOrderEvidenceRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

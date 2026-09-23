@@ -126,6 +126,13 @@ function serializeInput(path: string, input: unknown): unknown {
     status: vehicleStatus(value.status),
     odometer_km: value.currentOdometer,
   };
+  if (path === "workOrders.installPart") return {
+    work_order_part_usage_id: value.workOrderPartUsageId,
+    serial_number: value.serialNumber,
+    lot_number: value.lotNumber,
+    quantity: value.quantity,
+    installed_odometer_km: value.installedOdometerKm,
+  };
   if (path.startsWith("workOrders.")) return {
     vehicle_id: value.vehicleId,
     title: value.title,
@@ -290,6 +297,10 @@ function serializeInput(path: string, input: unknown): unknown {
     part_id: value.partId,
     quantity: value.quantity,
     reason: value.reason,
+  };
+  if (path === "workOrders.issuePart") return {
+    work_order_part_usage_id: value.workOrderPartUsageId,
+    quantity: value.quantity,
   };
   if (path === "purchaseOrders.create") return {
     vendor_id: value.vendorId,
@@ -480,6 +491,8 @@ function queryPath(path: string, input: unknown) {
   if (path === "team.assignableMembers") return "/api/v1/team/assignable-members";
   if (path === "inventory.movements") return "/api/v1/inventory/movements";
   if (path === "inventory.references" && (input as { partId?: string | number } | undefined)?.partId) return `/api/v1/inventory/parts/${(input as { partId: string | number }).partId}/references`;
+  if (path === "workOrders.partInstallations" && (input as { workOrderId?: string | number } | undefined)?.workOrderId) return `/api/v1/work-orders/${(input as { workOrderId: string | number }).workOrderId}/part-installations`;
+  if (path === "vehicles.partInstallations" && (input as { vehicleId?: string | number } | undefined)?.vehicleId) return `/api/v1/vehicles/${(input as { vehicleId: string | number }).vehicleId}/part-installations`;
   if (path === "inventory.get" && (input as { partId?: string | number } | undefined)?.partId) return `/api/v1/inventory/parts/${(input as { partId: string | number }).partId}/detail`;
   if (path === "financials.approvalQueue") return "/api/v1/financials/approval-queue";
   if (path === "financials.reconcile") return "/api/v1/financials/reconciliation";
@@ -500,7 +513,7 @@ function queryPath(path: string, input: unknown) {
 }
 
 function mutationPath(path: string, input: unknown) {
-  const value = input as { id?: string | number; vehicleId?: string | number; workOrderId?: string | number; notificationId?: string | number; issueId?: string | number; partId?: string | number; poId?: string | number; vendorId?: string | number; componentId?: string | number; documentId?: string | number; userId?: string | number } | undefined;
+  const value = input as { id?: string | number; vehicleId?: string | number; workOrderId?: string | number; notificationId?: string | number; issueId?: string | number; partId?: string | number; poId?: string | number; vendorId?: string | number; componentId?: string | number; documentId?: string | number; userId?: string | number; installationId?: string | number } | undefined;
   const base = collectionPath(path);
   if (path === "auth.logout") return "/api/v1/auth/logout";
   if (path === "profile.update") return "/api/v1/users/me";
@@ -557,7 +570,10 @@ function mutationPath(path: string, input: unknown) {
   if (path.includes("resolve") && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}/resolve`;
   if (path.includes("createWorkOrderFromIssue") && value?.issueId) return `/api/v1/triage/issues/${value.issueId}/create-work-order`;
   if (path.includes("reservePart") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/reserve-part`;
+  if (path.includes("issuePart") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/issue-part`;
   if (path.includes("returnReservedPart") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/return-reserved-part`;
+  if (path.includes("installPart") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/part-installations`;
+  if (path.includes("removePartInstallation") && value?.installationId) return `/api/v1/vehicle-part-installations/${value.installationId}/remove`;
   if (path.includes("receivePartial") && (value?.poId ?? (input as { purchaseOrderId?: string | number } | undefined)?.purchaseOrderId)) {
     const purchaseOrderId = value?.poId ?? (input as { purchaseOrderId: string | number }).purchaseOrderId;
     return `/api/v1/purchase-orders/${purchaseOrderId}/receive-partial`;

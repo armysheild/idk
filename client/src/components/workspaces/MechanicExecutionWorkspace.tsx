@@ -60,6 +60,10 @@ export function MechanicExecutionWorkspace({
   const [reservationPartId, setReservationPartId] = useState("");
   const [reservationQuantity, setReservationQuantity] = useState("1");
   const [reservationId, setReservationId] = useState<string | null>(null);
+  const [reservationUsageId, setReservationUsageId] = useState<number | null>(null);
+  const [installationSerial, setInstallationSerial] = useState("");
+  const [installationLot, setInstallationLot] = useState("");
+  const [installationOdometer, setInstallationOdometer] = useState("");
   const [checklist, setChecklist] = useState(createChecklist);
   useEffect(() => {
     try {
@@ -142,8 +146,9 @@ export function MechanicExecutionWorkspace({
       toast.error("State update failed", { description: error.message }),
   });
   const reservePart = trpc.workOrders.reservePart.useMutation({
-    onSuccess: () => {
+    onSuccess: (data: { usageId?: number }) => {
       setReservationId(`${reservationPartId}:${reservationQuantity}`);
+      setReservationUsageId(data.usageId ?? null);
       toast.success("Part reserved for this work order");
     },
     onError: (error) =>
@@ -152,10 +157,22 @@ export function MechanicExecutionWorkspace({
   const returnPart = trpc.workOrders.returnReservedPart.useMutation({
     onSuccess: () => {
       setReservationId(null);
+      setReservationUsageId(null);
       toast.success("Reserved part returned");
     },
     onError: (error) =>
       toast.error("Part return failed", { description: error.message }),
+  });
+  const installPart = trpc.workOrders.installPart.useMutation({
+    onSuccess: () => {
+      toast.success("Part installation recorded");
+      setInstallationSerial("");
+      setInstallationLot("");
+      setInstallationOdometer("");
+      void utils.workOrders.partInstallations.invalidate();
+    },
+    onError: (error) =>
+      toast.error("Installation failed", { description: error.message }),
   });
   const saveChecklist = trpc.workOrders.updateChecklist.useMutation({
     onSuccess: () => toast.success("Execution checklist saved"),
@@ -576,6 +593,55 @@ export function MechanicExecutionWorkspace({
                       Return reserved
                     </button>
                   )}
+                </div>
+                <div className="replacement-mechanic-installation">
+                  <label>
+                    Serial number (serialized parts)
+                    <input
+                      value={installationSerial}
+                      onChange={(event) => setInstallationSerial(event.target.value)}
+                      placeholder="Optional for consumables"
+                    />
+                  </label>
+                  <label>
+                    Lot / batch
+                    <input
+                      value={installationLot}
+                      onChange={(event) => setInstallationLot(event.target.value)}
+                      placeholder="Optional"
+                    />
+                  </label>
+                  <label>
+                    Installation odometer (km)
+                    <input
+                      type="number"
+                      min="0"
+                      value={installationOdometer}
+                      onChange={(event) => setInstallationOdometer(event.target.value)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="replacement-mechanic-secondary"
+                    disabled={!reservationUsageId || installPart.isPending}
+                    onClick={() =>
+                      installPart.mutate({
+                        workOrderId: selected.id,
+                        workOrderPartUsageId: reservationUsageId,
+                        serialNumber: installationSerial || undefined,
+                        lotNumber: installationLot || undefined,
+                        quantity: Number(reservationQuantity),
+                        installedOdometerKm: installationOdometer
+                          ? Number(installationOdometer)
+                          : undefined,
+                      })
+                    }
+                  >
+                    Record installed on vehicle
+                  </button>
+                  <small>
+                    Issued or reserved parts are not treated as installed until this action is recorded.
+                  </small>
                 </div>
               </fieldset>
               <label>

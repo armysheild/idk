@@ -204,8 +204,36 @@ class WorkOrderPartUsage(Base):
     work_order_id: Mapped[int] = mapped_column(ForeignKey("work_orders.id"), nullable=False, index=True)
     part_id: Mapped[int] = mapped_column(ForeignKey("parts.id"), nullable=False, index=True)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    issued_quantity: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     unit_cost_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    issued_to_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    issued_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    inventory_transaction_id: Mapped[Optional[int]] = mapped_column(ForeignKey("inventory_transactions.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class VehiclePartInstallation(Base):
+    __tablename__ = "vehicle_part_installations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
+    part_id: Mapped[int] = mapped_column(ForeignKey("parts.id"), nullable=False, index=True)
+    vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id"), nullable=False, index=True)
+    work_order_id: Mapped[int] = mapped_column(ForeignKey("work_orders.id"), nullable=False, index=True)
+    work_order_part_usage_id: Mapped[int] = mapped_column(ForeignKey("work_order_part_usage.id"), nullable=False, index=True)
+    serial_number: Mapped[Optional[str]] = mapped_column(String(120), index=True)
+    lot_number: Mapped[Optional[str]] = mapped_column(String(120), index=True)
+    quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+    installed_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    installed_odometer_km: Mapped[Optional[int]] = mapped_column(Integer)
+    removed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    removed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    removed_odometer_km: Mapped[Optional[int]] = mapped_column(Integer)
+    removal_reason: Mapped[Optional[str]] = mapped_column(Text)
+    inventory_transaction_id: Mapped[Optional[int]] = mapped_column(ForeignKey("inventory_transactions.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
