@@ -4487,6 +4487,53 @@ def get_team_roster(
     }
 
 
+@router.get("/team/driver-handoffs", response_model=list[dict])
+def get_driver_handoffs(
+    user: User = Depends(require_roles("owner", "fleet_manager")),
+    database: Session = Depends(get_db),
+) -> list[dict]:
+    assignments = list(database.scalars(
+        select(VehicleAssignment)
+        .where(
+            VehicleAssignment.organization_id == user.organization_id,
+            VehicleAssignment.active == True,
+        )
+        .order_by(VehicleAssignment.created_at.desc())
+    ).all())
+    rows = []
+    for assignment in assignments:
+        driver = database.get(User, assignment.driver_id)
+        vehicle = database.scalar(select(Vehicle).where(
+            Vehicle.id == assignment.vehicle_id,
+            Vehicle.organization_id == user.organization_id,
+        ))
+        latest_issue = database.scalar(select(VehicleIssue).where(
+            VehicleIssue.organization_id == user.organization_id,
+            VehicleIssue.vehicle_id == assignment.vehicle_id,
+        ).order_by(VehicleIssue.created_at.desc()).limit(1))
+        unsafe = latest_issue is not None and latest_issue.status.upper() in {"OPEN", "UNSAFE"}
+        rows.append({
+            "assignment_id": assignment.id,
+            "driver_id": assignment.driver_id,
+            "driver_name": driver.full_name if driver else "Unknown driver",
+            "driver_email": driver.email if driver else "",
+            "vehicle_id": assignment.vehicle_id,
+            "vehicle_label": vehicle.registration_number if vehicle else "Unknown vehicle",
+            "vehicle_status": vehicle.status if vehicle else "Unknown",
+            "safety": "UNSAFE" if unsafe else "ACTIVE",
+            "latest_issue": {
+                "id": latest_issue.id,
+                "title": latest_issue.title,
+                "priority": latest_issue.priority,
+                "status": latest_issue.status,
+                "created_at": latest_issue.created_at.isoformat(),
+            } if latest_issue else None,
+            "latest_disposition": None,
+            "acknowledged_at": None,
+        })
+    return rows
+
+
 @router.post("/vehicles/{vehicle_id}/assign-driver", response_model=VehicleDriverAssignmentRead)
 def assign_vehicle_driver(
     vehicle_id: int,

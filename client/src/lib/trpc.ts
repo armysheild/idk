@@ -420,7 +420,7 @@ function queryPath(path: string, input: unknown) {
   if (path === "driver.inspections") return "/api/v1/driver/inspections";
   if (path === "driver.fuelLogs") return "/api/v1/fuel-transactions";
   if (path === "driver.dailyHome") return "/api/v1/drivers/me/daily-home";
-  if (path === "team.driverHandoffs") return "/api/v1/team/roster";
+  if (path === "team.driverHandoffs") return "/api/v1/team/driver-handoffs";
   if (path === "audit.list") return "/api/v1/audit-log";
   if (path === "organizationSettings.get") return "/api/v1/organization/settings";
   if (path === "profile.get") return "/api/v1/auth/me";
