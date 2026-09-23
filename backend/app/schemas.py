@@ -563,6 +563,19 @@ class InventoryTransactionRead(InventoryTransactionCreate):
     created_at: datetime
 
 
+class InventoryAdjustmentCreate(BaseModel):
+    part_id: int
+    expected_quantity_on_hand: int = Field(ge=0)
+    delta: int
+    reference: str | None = None
+
+
+class InventoryTransferCreate(BaseModel):
+    part_id: int
+    to_bin_location: str = Field(min_length=2, max_length=160)
+    reason: str = Field(min_length=3, max_length=300)
+
+
 class StockLocationCreate(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     code: str = Field(min_length=2, max_length=40)

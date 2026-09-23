@@ -53,6 +53,8 @@ from .schemas import (
     InvitationRead,
     InventoryTransactionCreate,
     InventoryTransactionRead,
+    InventoryAdjustmentCreate,
+    InventoryTransferCreate,
     InventoryMovementCreate,
     InventoryMovementRead,
     LoginRequest,
@@ -2307,6 +2309,99 @@ def create_inventory_transaction(
     database.commit()
     database.refresh(part)
     return part
+
+
+@router.post("/inventory/transactions/adjust", response_model=PartRead)
+def adjust_inventory_transaction(
+    payload: InventoryAdjustmentCreate,
+    request: Request,
+    user: User = Depends(require_permission("inventory")),
+    database: Session = Depends(get_db),
+) -> Part:
+    part = database.scalar(
+        select(Part).where(
+            Part.id == payload.part_id,
+            Part.organization_id == user.organization_id,
+        ).with_for_update()
+    )
+    if part is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part not found in this organization")
+    if part.quantity_on_hand != payload.expected_quantity_on_hand:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Part quantity changed; refresh before adjusting")
+    if part.quantity_on_hand + payload.delta < 0:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Adjustment would create negative stock")
+    part.quantity_on_hand += payload.delta
+    database.add(InventoryTransaction(
+        organization_id=user.organization_id,
+        created_by=user.id,
+        part_id=part.id,
+        transaction_type="adjustment",
+        quantity=payload.delta,
+        reference=payload.reference,
+    ))
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="inventory.adjustment",
+        entity_type="part",
+        entity_id=str(part.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps({"delta": payload.delta, "quantity_on_hand": part.quantity_on_hand}),
+    ))
+    database.commit()
+    database.refresh(part)
+    return part
+
+
+@router.post("/inventory/movements/transfer", response_model=InventoryMovementRead, status_code=status.HTTP_201_CREATED)
+def transfer_inventory(
+    payload: InventoryTransferCreate,
+    request: Request,
+    user: User = Depends(require_permission("inventory")),
+    database: Session = Depends(get_db),
+) -> InventoryMovement:
+    part = database.scalar(select(Part).where(
+        Part.id == payload.part_id,
+        Part.organization_id == user.organization_id,
+    ))
+    if part is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part not found in this organization")
+    code = re.sub(r"[^A-Z0-9_-]+", "-", payload.to_bin_location.strip().upper()).strip("-")[:40] or "BIN"
+    location = database.scalar(select(StockLocation).where(
+        StockLocation.organization_id == user.organization_id,
+        StockLocation.code == code,
+    ))
+    if location is None:
+        location = StockLocation(
+            organization_id=user.organization_id,
+            name=payload.to_bin_location.strip(),
+            code=code,
+        )
+        database.add(location)
+        database.flush()
+    movement = InventoryMovement(
+        organization_id=user.organization_id,
+        created_by=user.id,
+        part_id=part.id,
+        location_id=location.id,
+        transaction_type="transfer",
+        quantity=0,
+        reference=payload.reason,
+    )
+    database.add(movement)
+    database.flush()
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="inventory_movement.transfer",
+        entity_type="inventory_movement",
+        entity_id=str(movement.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps({"part_id": part.id, "location_id": location.id, "reason": payload.reason}),
+    ))
+    database.commit()
+    database.refresh(movement)
+    return movement
 
 
 @router.get("/inventory/transactions", response_model=list[InventoryTransactionRead])

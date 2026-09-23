@@ -22,6 +22,16 @@ function camelize(value: unknown): unknown {
   }
   if (result.expiresOn && !result.expiryDate) result.expiryDate = result.expiresOn;
   if (result.fileKey && !result.fileUrl) result.fileUrl = result.fileKey;
+  if (result.reorderLevel !== undefined && result.minReorderLevel === undefined) result.minReorderLevel = result.reorderLevel;
+  if (result.unitCostPaise !== undefined && result.unitCost === undefined) result.unitCost = Number(result.unitCostPaise) / 100;
+  if (Array.isArray(result.movementHistory) && result.movements === undefined) {
+    result.movements = result.movementHistory.map((movement: Record<string, unknown>) => ({
+      ...movement,
+      movementType: movement.type,
+      reason: movement.reference,
+      createdAt: movement.createdAt,
+    }));
+  }
   if (result.inviteToken && !result.tokenHash) result.tokenHash = result.inviteToken;
   if (result.invitePath && !result.joinUrl) result.joinUrl = result.invitePath;
   if (result.totalPaise !== undefined && result.totalCost === undefined) result.totalCost = Number(result.totalPaise) / 100;
@@ -136,6 +146,23 @@ function serializeInput(path: string, input: unknown): unknown {
     file_key: value.fileUrl ?? value.fileKey,
   };
   if (path === "documents.archive") return { status: "Archived" };
+  if (path === "inventory.receive" || path === "inventory.issue") return {
+    part_id: value.partId,
+    transaction_type: path.endsWith("receive") ? "receipt" : "issue",
+    quantity: value.quantity,
+    reference: value.reason,
+  };
+  if (path === "inventory.adjust") return {
+    part_id: value.partId,
+    expected_quantity_on_hand: value.expectedQuantityOnHand,
+    delta: value.delta,
+    reference: value.reason,
+  };
+  if (path === "inventory.transfer") return {
+    part_id: value.partId,
+    to_bin_location: value.toBinLocation,
+    reason: value.reason,
+  };
   if (path === "components.create" || path === "components.update") return {
     vehicle_id: value.vehicleId,
     name: value.name,
@@ -433,7 +460,9 @@ function mutationPath(path: string, input: unknown) {
   if (path === "documents.create") return "/api/v1/documents";
   if (path === "documents.importCsv") return "/api/v1/documents/import-csv";
   if (path === "inventory.importCsv") return "/api/v1/inventory/movements/import-text";
-  if (path === "inventory.adjust" || path === "inventory.issue" || path === "inventory.receive" || path === "inventory.transfer") return "/api/v1/inventory/movements";
+  if (path === "inventory.adjust") return "/api/v1/inventory/transactions/adjust";
+  if (path === "inventory.issue" || path === "inventory.receive") return "/api/v1/inventory/transactions";
+  if (path === "inventory.transfer") return "/api/v1/inventory/movements/transfer";
   if (path === "team.removeMember" && value?.userId) return `/api/v1/users/${value.userId}`;
   if (path === "team.updateRole" && value?.userId) return `/api/v1/users/${value.userId}`;
   if (path === "team.revokeInvitation" && value?.id) return `/api/v1/invitations/${value.id}/revoke`;
