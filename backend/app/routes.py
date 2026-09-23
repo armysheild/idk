@@ -12,7 +12,7 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, func
@@ -565,6 +565,26 @@ def create_invitation(
     }
 
 
+@router.get("/onboarding/invite-details", response_model=dict)
+def get_invite_details(
+    token: str = Query(min_length=32),
+    database: Session = Depends(get_db),
+) -> dict:
+    invitation = database.scalar(select(OrganizationInvitation).where(
+        OrganizationInvitation.token_hash == invitation_token_hash(token),
+    ))
+    if invitation is None or not invitation_is_active(invitation):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invitation is invalid or expired")
+    organization = database.get(Organization, invitation.organization_id)
+    if organization is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
+    return {
+        "email": invitation.email,
+        "role": invitation.role,
+        "organization": {"id": organization.id, "name": organization.name},
+    }
+
+
 @router.post("/invitations/{invitation_id}/revoke", response_model=InvitationRead)
 def revoke_invitation(
     invitation_id: int,
@@ -592,6 +612,45 @@ def revoke_invitation(
     database.commit()
     database.refresh(invitation)
     return invitation
+
+
+@router.post("/invitations/{invitation_id}/resend", response_model=dict)
+def resend_invitation(
+    invitation_id: int,
+    request: Request,
+    user: User = Depends(require_roles("owner")),
+    database: Session = Depends(get_db),
+) -> dict:
+    invitation = database.scalar(select(OrganizationInvitation).where(
+        OrganizationInvitation.id == invitation_id,
+        OrganizationInvitation.organization_id == user.organization_id,
+    ))
+    if invitation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invitation not found")
+    if invitation.accepted_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Accepted invitations cannot be resent")
+    raw_token = secrets.token_urlsafe(32)
+    invitation.token_hash = invitation_token_hash(raw_token)
+    invitation.expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    invitation.revoked_at = None
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="organization.invitation_resent",
+        entity_type="organization_invitation",
+        entity_id=str(invitation.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+    ))
+    database.commit()
+    database.refresh(invitation)
+    return {
+        "id": invitation.id,
+        "email": invitation.email,
+        "role": invitation.role,
+        "expires_at": invitation.expires_at,
+        "invite_token": raw_token,
+        "invite_path": f"/invite/{raw_token}",
+    }
 
 
 @router.post("/auth/invitations/accept", response_model=InvitationAcceptRead)

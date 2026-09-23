@@ -9,10 +9,66 @@ type MutationOptions = { onSuccess?: (value: unknown) => void; onError?: (error:
 function camelize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(camelize);
   if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).map(([key, nested]) => [
+  const result = Object.fromEntries(Object.entries(value).map(([key, nested]) => [
     key.replace(/_([a-z])/g, (_, character: string) => character.toUpperCase()),
     camelize(nested),
   ]));
+  if (result.registrationNumber && !result.licensePlate) result.licensePlate = result.registrationNumber;
+  if (result.registrationNumber && !result.vin) result.vin = result.registrationNumber;
+  if (result.assignedUserId && !result.assignedMechanicId) result.assignedMechanicId = result.assignedUserId;
+  if (result.name && result.documentType) {
+    result.title ??= result.name;
+    result.docType ??= result.documentType;
+  }
+  if (result.expiresOn && !result.expiryDate) result.expiryDate = result.expiresOn;
+  if (result.fileKey && !result.fileUrl) result.fileUrl = result.fileKey;
+  if (result.inviteToken && !result.tokenHash) result.tokenHash = result.inviteToken;
+  if (result.invitePath && !result.joinUrl) result.joinUrl = result.invitePath;
+  if (result.totalPaise !== undefined && result.totalCost === undefined) result.totalCost = Number(result.totalPaise) / 100;
+  return result;
+}
+
+function vehicleStatus(value: unknown): string | undefined {
+  const statuses: Record<string, string> = {
+    ACTIVE: "Idle / parked",
+    IDLE: "Idle / parked",
+    ON_ROUTE: "On route",
+    IN_WORKSHOP: "In workshop",
+    MAINTENANCE: "In workshop",
+    OUT_OF_SERVICE: "Out of service",
+    RETIRED: "Retired",
+  };
+  return typeof value === "string" ? statuses[value] ?? value : undefined;
+}
+
+function workOrderStatus(value: unknown): string | undefined {
+  const statuses: Record<string, string> = {
+    DRAFT: "Draft",
+    OPEN: "Open",
+    ASSIGNED: "Assigned",
+    SCHEDULED: "Scheduled",
+    IN_PROGRESS: "In progress",
+    WAITING_FOR_PARTS: "In progress",
+    READY_FOR_REVIEW: "Ready for review",
+    REWORK: "In progress",
+    COMPLETED: "Completed",
+    CLOSED: "Closed",
+    ARCHIVED: "Archived",
+  };
+  return typeof value === "string" ? statuses[value] ?? value : undefined;
+}
+
+function purchaseOrderStatus(value: unknown): string {
+  const statuses: Record<string, string> = {
+    DRAFT: "Draft",
+    SENT: "Submitted",
+    APPROVED: "Approved",
+    ORDERED: "Approved",
+    PARTIALLY_RECEIVED: "Partially received",
+    RECEIVED: "Received",
+    CANCELLED: "Cancelled",
+  };
+  return typeof value === "string" ? statuses[value] ?? value : "Draft";
 }
 
 function serializeInput(path: string, input: unknown): unknown {
@@ -26,7 +82,7 @@ function serializeInput(path: string, input: unknown): unknown {
     model: [value.make, value.model].filter(Boolean).join(" "),
     vehicle_type: value.vehicleType ?? "Vehicle",
     depot: value.depotLocation ?? "Main depot",
-    status: value.status === "OUT_OF_SERVICE" ? "Out of service" : value.status === "MAINTENANCE" ? "In workshop" : "Idle / parked",
+    status: vehicleStatus(value.status) ?? "Idle / parked",
     odometer_km: value.currentOdometer ?? 0,
     assigned_driver_id: value.driverId,
   };
@@ -34,7 +90,7 @@ function serializeInput(path: string, input: unknown): unknown {
     model: [value.make, value.model].filter(Boolean).join(" ") || value.model,
     vehicle_type: value.vehicleType,
     depot: value.depotLocation,
-    status: value.status === "OUT_OF_SERVICE" ? "Out of service" : value.status === "MAINTENANCE" ? "In workshop" : value.status ? "Idle / parked" : undefined,
+    status: vehicleStatus(value.status),
     odometer_km: value.currentOdometer,
   };
   if (path.startsWith("workOrders.")) return {
@@ -42,7 +98,7 @@ function serializeInput(path: string, input: unknown): unknown {
     title: value.title,
     description: value.description,
     priority,
-    status: value.status ? String(value.status).replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase()) : undefined,
+    status: workOrderStatus(value.status),
     assigned_user_id: value.assignedMechanicId ?? value.assignedUserId,
     due_date: value.dueDate,
     labor_hours: value.laborHours,
@@ -79,6 +135,7 @@ function serializeInput(path: string, input: unknown): unknown {
     expires_on: value.expiryDate ? new Date(String(value.expiryDate)).toISOString().slice(0, 10) : value.expiresOn,
     file_key: value.fileUrl ?? value.fileKey,
   };
+  if (path === "documents.archive") return { status: "Archived" };
   if (path === "components.create" || path === "components.update") return {
     vehicle_id: value.vehicleId,
     name: value.name,
@@ -114,21 +171,50 @@ function serializeInput(path: string, input: unknown): unknown {
     status: "Pending",
   };
   if (path === "team.assignVehicle") return { vehicle_id: value.vehicleId, driver_id: value.driverId };
+  if (path === "team.invite") return {
+    email: value.email,
+    full_name: value.fullName ?? String(value.email ?? "").split("@")[0],
+    mobile_phone: value.mobileNumber ?? value.mobilePhone,
+    role: String(value.role ?? "driver").toLowerCase(),
+    expires_in_days: value.expiresInDays ?? 7,
+  };
+  if (path === "vendors.create") return {
+    name: value.name,
+    vendor_type: value.vendorType ?? "Parts supplier",
+    gstin: value.gstin,
+    contact_name: value.contactPerson ?? value.contactName,
+    phone: value.phone,
+    email: value.email,
+    address: value.address,
+    active: value.active ?? true,
+  };
+  if (path === "profile.update") return {
+    full_name: value.fullName,
+    mobile_phone: value.mobilePhone ?? value.mobileNumber,
+  };
+  if (path === "notifications.markRead") return { status: "read" };
+  if (path === "workOrders.reservePart" || path === "workOrders.returnReservedPart") return {
+    part_id: value.partId,
+    quantity: value.quantity,
+    reason: value.reason,
+  };
   if (path === "purchaseOrders.create") return {
     vendor_id: value.vendorId,
     lines: value.lines ?? [{ part_id: value.partId ?? 0, quantity: 1, unit_cost_paise: Math.round(Number(value.totalCost ?? 0) * 100) }],
     notes: value.notes,
   };
-  if (path === "purchaseOrders.updateStatus") return { status: String(value.status ?? "").replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase()) };
+  if (path === "purchaseOrders.updateStatus") return { status: purchaseOrderStatus(value.status) };
   if (path === "purchaseOrders.receivePartial") return {
-    part_id: value.partId,
-    quantity: value.quantity,
-    damaged_quantity: value.damagedQuantity ?? 0,
-    backordered_quantity: value.backorderedQuantity ?? 0,
-    variance_reason: value.varianceReason,
-    unit_cost_paise: Math.round(Number(value.unitCost ?? 0) * 100),
-    invoice_number: value.invoiceNumber,
-    location_id: value.locationId,
+    items: [{
+      part_id: value.partId,
+      quantity: value.quantity,
+      damaged_quantity: value.damagedQuantity ?? 0,
+      backordered_quantity: value.backorderedQuantity ?? 0,
+      variance_reason: value.varianceReason,
+      unit_cost_paise: Math.round(Number(value.unitCost ?? 0) * 100),
+      invoice_number: value.invoiceNumber,
+      location_id: value.locationId,
+    }],
   };
   return input;
 }
@@ -234,6 +320,9 @@ function queryPath(path: string, input: unknown) {
   if (path === "audit.list") return "/api/v1/audit-log";
   if (path === "organizationSettings.get") return "/api/v1/organization/settings";
   if (path === "profile.get") return "/api/v1/auth/me";
+  if (path === "onboarding.inviteDetails" && (input as { token?: string } | undefined)?.token) {
+    return `/api/v1/onboarding/invite-details?token=${encodeURIComponent((input as { token: string }).token)}`;
+  }
   if (path === "documents.versions" && (input as { documentId?: string | number } | undefined)?.documentId) return `/api/v1/compliance/documents/${(input as { documentId: string | number }).documentId}/versions`;
   if (path === "documents.list") return "/api/v1/documents";
   if (path === "notifications.list") return "/api/v1/notifications";
@@ -248,6 +337,7 @@ function queryPath(path: string, input: unknown) {
   if (path === "inventory.previewImport") return "/api/v1/inventory/movements/preview";
   if (path === "documents.previewImport") return "/api/v1/export/documents";
   if (path === "team.members") return "/api/v1/users";
+  if (path === "team.invitations") return "/api/v1/invitations";
   if (path === "team.operationalRoster") return "/api/v1/team/roster";
   if (path === "team.assignableMembers") return "/api/v1/team/assignable-members";
   if (path === "inventory.movements") return "/api/v1/inventory/movements";
@@ -255,7 +345,11 @@ function queryPath(path: string, input: unknown) {
   if (path === "inventory.get" && (input as { partId?: string | number } | undefined)?.partId) return `/api/v1/inventory/parts/${(input as { partId: string | number }).partId}/detail`;
   if (path === "financials.approvalQueue") return "/api/v1/financials/approval-queue";
   if (path === "financials.reconcile") return "/api/v1/financials/reconciliation";
-  if (path === "notifications.sourceDetail" && (input as { notificationId?: string | number } | undefined)?.notificationId) return `/api/v1/notifications/${(input as { notificationId: string | number }).notificationId}/source-detail`;
+  if (path === "notifications.sourceDetail") {
+    const notificationId = (input as { notificationId?: string | number; id?: string | number } | undefined)?.notificationId
+      ?? (input as { id?: string | number } | undefined)?.id;
+    if (notificationId) return `/api/v1/notifications/${notificationId}/source-detail`;
+  }
   if (path === "vendors.pricingHistory" && (input as { vendorId?: string | number } | undefined)?.vendorId) return `/api/v1/vendors/${(input as { vendorId: string | number }).vendorId}/pricing-history`;
   if (path === "purchaseOrders.list") return "/api/v1/purchase-orders";
   if (path === "compliance.summary") return "/api/v1/compliance/summary";
@@ -274,7 +368,7 @@ function mutationPath(path: string, input: unknown) {
   if (path === "profile.update") return "/api/v1/users/me";
   if (path === "team.invite") return "/api/v1/invitations";
   if (path === "organizationSettings.update") return "/api/v1/organization/settings";
-  if (path === "documents.access" && value?.documentId) return `/api/v1/documents/${value.documentId}/file`;
+  if (path === "documents.access" && (value?.documentId ?? value?.id)) return `/api/v1/documents/${value.documentId ?? value.id}/file`;
   if (path === "documents.create") return "/api/v1/documents";
   if (path === "documents.importCsv") return "/api/v1/audit/import";
   if (path === "inventory.importCsv") return "/api/v1/inventory/movements/import";
@@ -282,6 +376,7 @@ function mutationPath(path: string, input: unknown) {
   if (path === "team.removeMember" && value?.userId) return `/api/v1/users/${value.userId}`;
   if (path === "team.updateRole" && value?.userId) return `/api/v1/users/${value.userId}`;
   if (path === "team.revokeInvitation" && value?.id) return `/api/v1/invitations/${value.id}/revoke`;
+  if (path === "team.resendInvitation" && value?.id) return `/api/v1/invitations/${value.id}/resend`;
   if (path === "workOrders.assign" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/assign`;
   if (path === "workOrders.bulkUpdate") return "/api/v1/work-orders/bulk-update";
   if (path === "workOrders.updateChecklist" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/checklist`;
@@ -302,8 +397,8 @@ function mutationPath(path: string, input: unknown) {
   if (path === "financials.approve" && value?.id) return `/api/v1/financials/expenses/${value.id}/approve`;
   if (path === "financials.reverse" && value?.id) return `/api/v1/expenses/${value.id}/reverse`;
   if (path === "financials.reconcileRecord" && value?.id) return `/api/v1/expenses/${value.id}/reconcile`;
-  if (path === "notifications.escalate" && value?.notificationId) return `/api/v1/notifications/${value.notificationId}/escalate`;
-  if (path === "notifications.resolve" && value?.notificationId) return `/api/v1/notifications/${value.notificationId}/resolve`;
+  if (path === "notifications.escalate" && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}/escalate`;
+  if (path === "notifications.resolve" && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}/resolve`;
   if (path === "billingTest.activateStarter") return "/api/v1/billing/test/activate-starter";
   if (path === "onboarding.complete") return "/api/v1/onboarding/bootstrap";
   if (path === "onboarding.completeInviteWithPassword") return "/api/v1/auth/invitations/accept";
@@ -316,12 +411,15 @@ function mutationPath(path: string, input: unknown) {
   if (path.includes("complete") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/complete`;
   if (path.includes("approve") && value?.id) return `/api/v1/work-orders/${value.id}/approve`;
   if (path.includes("assignVehicle") && value?.vehicleId) return `/api/v1/vehicles/${value.vehicleId}/assign-driver`;
-  if (path.includes("markRead") && value?.notificationId) return `/api/v1/notifications/${value.notificationId}`;
-  if (path.includes("resolve") && value?.notificationId) return `/api/v1/notifications/${value.notificationId}/resolve`;
+  if (path.includes("markRead") && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}`;
+  if (path.includes("resolve") && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}/resolve`;
   if (path.includes("createWorkOrderFromIssue") && value?.issueId) return `/api/v1/triage/issues/${value.issueId}/create-work-order`;
   if (path.includes("reservePart") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/reserve-part`;
   if (path.includes("returnReservedPart") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/return-reserved-part`;
-  if (path.includes("receivePartial") && value?.poId) return `/api/v1/purchase-orders/${value.poId}/receive-partial`;
+  if (path.includes("receivePartial") && (value?.poId ?? (input as { purchaseOrderId?: string | number } | undefined)?.purchaseOrderId)) {
+    const purchaseOrderId = value?.poId ?? (input as { purchaseOrderId: string | number }).purchaseOrderId;
+    return `/api/v1/purchase-orders/${purchaseOrderId}/receive-partial`;
+  }
   if (path.includes("pricingHistory") && value?.vendorId) return `/api/v1/vendors/${value.vendorId}/pricing-history`;
   if (path.includes("applyTemplate") && value?.id) return `/api/v1/maintenance/templates/${value.id}/apply`;
   if (path.includes("update") && value?.issueId) return `/api/v1/triage/issues/${value.issueId}`;
@@ -334,6 +432,7 @@ function mutationMethod(path: string) {
   if (path === "vehicleIssues.updateStatus") return "PUT";
   if (path.endsWith("update") || path.endsWith("updateStatus") || path === "profile.update" || path.includes("markRead")) return "PATCH";
   if (path === "organizationSettings.update") return "PUT";
+  if (path === "documents.archive") return "PATCH";
   if (path.includes("updateChecklist") || path.includes("reconcile")) return "PUT";
   if (path.endsWith("remove")) return "DELETE";
   return "POST";
