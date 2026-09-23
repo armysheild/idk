@@ -3221,21 +3221,51 @@ def sync_notifications(user: User, database: Session) -> None:
 
 
 @router.get("/notifications", response_model=list[NotificationRead])
-def list_notifications(user: User = Depends(get_current_user), database: Session = Depends(get_db)) -> list[OperationalNotification]:
+def list_notifications(
+    severity: str | None = None,
+    source_type: str | None = None,
+    status_filter: str | None = Query(default=None, alias="status"),
+    vehicle_id: int | None = None,
+    user: User = Depends(get_current_user),
+    database: Session = Depends(get_db),
+) -> list[OperationalNotification]:
     sync_notifications(user, database)
+    statement = select(OperationalNotification).join(
+        NotificationDelivery,
+        NotificationDelivery.notification_id == OperationalNotification.id,
+    ).where(
+        OperationalNotification.organization_id == user.organization_id,
+        NotificationDelivery.organization_id == user.organization_id,
+        NotificationDelivery.user_id == user.id,
+        NotificationDelivery.channel == "in_app",
+    )
+    if severity and severity.upper() != "ALL":
+        statement = statement.where(OperationalNotification.severity == severity.upper())
+    if status_filter and status_filter.upper() != "ALL":
+        requested_status = status_filter.upper()
+        statement = statement.where(
+            OperationalNotification.status.in_(
+                {"OPEN": ["unread", "read"], "UNREAD": ["unread"], "READ": ["read"], "RESOLVED": ["resolved"]}.get(
+                    requested_status,
+                    [status_filter.lower()],
+                )
+            )
+        )
+    if source_type and source_type.upper() != "ALL":
+        source_entities = {
+            "WORK_ORDER": ["work_order"],
+            "VEHICLE": ["vehicle"],
+            "VEHICLE_ISSUE": ["triage_issue"],
+            "DOCUMENT_EXPIRY": ["compliance_document"],
+        }.get(source_type.upper(), [source_type.lower()])
+        statement = statement.where(OperationalNotification.entity_type.in_(source_entities))
+    if vehicle_id is not None:
+        statement = statement.where(
+            OperationalNotification.entity_type == "vehicle",
+            OperationalNotification.entity_id == str(vehicle_id),
+        )
     return list(database.scalars(
-        select(OperationalNotification).join(
-            NotificationDelivery,
-            NotificationDelivery.notification_id == OperationalNotification.id,
-        )
-        .where(
-            OperationalNotification.organization_id == user.organization_id,
-            NotificationDelivery.organization_id == user.organization_id,
-            NotificationDelivery.user_id == user.id,
-            NotificationDelivery.channel == "in_app",
-        )
-        .distinct()
-        .order_by(OperationalNotification.id.desc())
+        statement.distinct().order_by(OperationalNotification.id.desc())
     ).all())
 
 
@@ -9046,6 +9076,12 @@ def get_notification_source_detail(
         "severity": notification.severity,
         "status": notification.status,
         "created_at": notification.created_at.isoformat(),
+        "source_type": {
+            "work_order": "WORK_ORDER",
+            "vehicle": "VEHICLE",
+            "compliance_document": "DOCUMENT_EXPIRY",
+            "triage_issue": "VEHICLE_ISSUE",
+        }.get(notification.entity_type, notification.entity_type.upper()),
         "source": entity_data,
     }
 

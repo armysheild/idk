@@ -429,7 +429,16 @@ function queryPath(path: string, input: unknown) {
   }
   if (path === "documents.versions" && (input as { documentId?: string | number } | undefined)?.documentId) return `/api/v1/compliance/documents/${(input as { documentId: string | number }).documentId}/versions`;
   if (path === "documents.list") return "/api/v1/documents";
-  if (path === "notifications.list") return "/api/v1/notifications";
+  if (path === "notifications.list") {
+    const filters = input as { severity?: string; sourceType?: string; status?: string; vehicleId?: string } | undefined;
+    const params = new URLSearchParams();
+    if (filters?.severity) params.set("severity", filters.severity);
+    if (filters?.sourceType) params.set("source_type", filters.sourceType);
+    if (filters?.status) params.set("status", filters.status);
+    if (filters?.vehicleId) params.set("vehicle_id", filters.vehicleId);
+    const query = params.toString();
+    return `/api/v1/notifications${query ? `?${query}` : ""}`;
+  }
   if (path === "financials.list") return "/api/v1/expenses";
   if (path === "financials.vehicles") return "/api/v1/vehicles";
   if (path === "inventory.list") return "/api/v1/parts";
