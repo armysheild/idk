@@ -1,6 +1,8 @@
 # VahanSync Enterprise
 
-This repository is the integrated VahanSync application: FleetOps-inspired role workspaces and operational UI on top of the VahanSync FastAPI, SQLAlchemy, Alembic, and Supabase-ready backend. The API remains the system of record for tenant isolation, authorization, audit history, storage, and production integrations.
+This repository is the integrated VahanSync application: the complete FleetOps React frontend is served from `client/` and connected through a REST adapter to the VahanSync FastAPI, SQLAlchemy, Alembic, and Supabase-ready backend in `backend/`. The API remains the system of record for tenant isolation, authorization, audit history, storage, and production integrations.
+
+The browser uses Supabase Auth when `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are configured. The local fallback uses VahanSync's development JWT endpoints; service-role credentials remain backend-only.
 
 VahanSync is an India-focused, multi-tenant fleet operations ERP for operators who need one system of record for vehicles, components, workshop inventory, maintenance, costs, and regulatory compliance.
 

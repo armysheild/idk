@@ -1,0 +1,52 @@
+{
+  "name": "VahanSync — Fleet Intelligence",
+  "short_name": "VahanSync",
+  "description": "Fleet intelligence for India's operators. Manage vehicles, mechanics, and operations on the go.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#111827",
+  "background_color": "#ffffff",
+  "categories": ["productivity", "business"],
+  "screenshots": [
+    {
+      "src": "https://yieicrulmncikbjxjupv.supabase.co/storage/v1/object/public/vahansync-brand/v2/vahansync-v-check-road-mark.png",
+      "sizes": "540x720",
+      "type": "image/png",
+      "form_factor": "narrow"
+    },
+    {
+      "src": "https://yieicrulmncikbjxjupv.supabase.co/storage/v1/object/public/vahansync-brand/v2/vahansync-v-check-road-mark.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide"
+    }
+  ],
+  "icons": [
+    {
+      "src": "https://yieicrulmncikbjxjupv.supabase.co/storage/v1/object/public/vahansync-brand/v2/vahansync-v-check-road-mark.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "https://yieicrulmncikbjxjupv.supabase.co/storage/v1/object/public/vahansync-brand/v2/vahansync-v-check-road-mark.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "https://yieicrulmncikbjxjupv.supabase.co/storage/v1/object/public/vahansync-brand/v2/vahansync-v-check-road-mark.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "https://yieicrulmncikbjxjupv.supabase.co/storage/v1/object/public/vahansync-brand/v2/vahansync-v-check-road-mark.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
