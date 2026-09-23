@@ -19,8 +19,7 @@ async function accessToken() {
 }
 
 async function request(path: string, input?: unknown, method = "GET") {
-  const token = await accessToken();
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const send = async (token?: string) => fetch(`${API_BASE_URL}${path}`, {
     method,
     headers: {
       "Content-Type": "application/json",
@@ -28,6 +27,18 @@ async function request(path: string, input?: unknown, method = "GET") {
     },
     ...(method === "GET" ? {} : { body: JSON.stringify(input ?? {}) }),
   });
+  let token = await accessToken();
+  let response = await send(token);
+  if (response.status === 401 && supabase) {
+    const refreshed = await supabase.auth.refreshSession();
+    if (refreshed.data.session?.access_token) {
+      token = refreshed.data.session.access_token;
+      response = await send(token);
+    } else {
+      await supabase.auth.signOut({ scope: "local" });
+      window.dispatchEvent(new CustomEvent("fleetops-session-expired"));
+    }
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     const detail = Array.isArray(body?.detail)
@@ -55,7 +66,7 @@ function collectionPath(path: string) {
     team: "/api/v1/users",
     financials: "/api/v1/expenses",
     expenses: "/api/v1/expenses",
-    maintenanceTemplates: "/api/v1/maintenance-templates",
+    maintenanceTemplates: "/api/v1/maintenance/templates",
     planning: "/api/v1/maintenance-plans",
     compliance: "/api/v1/compliance",
     reports: "/api/v1/reports",
@@ -76,11 +87,24 @@ function queryPath(path: string, input: unknown) {
   if (path === "compliance.summary") return "/api/v1/compliance/summary";
   if (path === "billing.plans") return "/api/v1/subscription/plans";
   if (path === "billing.status") return "/api/v1/subscription";
+  if (path === "billing.invoices" || path === "financials.invoices") return "/api/v1/billing/invoices";
   if (path === "activity.recent") return "/api/v1/activity-feed";
   if (path === "triage.queue") return "/api/v1/triage/queue";
   if (path === "planning.maintenance") return "/api/v1/maintenance-plans";
+  if (path === "maintenanceTemplates.list") return "/api/v1/maintenance/templates";
   if (path === "reports.maintenancePerformance") return "/api/v1/reports/maintenance-performance";
-  if (path === "team.members" || path === "team.operationalRoster" || path === "team.assignableMembers") return "/api/v1/users";
+  if (path === "team.members") return "/api/v1/users";
+  if (path === "team.operationalRoster") return "/api/v1/team/roster";
+  if (path === "team.assignableMembers") return "/api/v1/team/assignable-members";
+  if (path === "inventory.movements") return "/api/v1/inventory/movements";
+  if (path === "inventory.references" && (input as { partId?: string | number } | undefined)?.partId) return `/api/v1/inventory/parts/${(input as { partId: string | number }).partId}/references`;
+  if (path === "inventory.get" && (input as { partId?: string | number } | undefined)?.partId) return `/api/v1/inventory/parts/${(input as { partId: string | number }).partId}/detail`;
+  if (path === "financials.approvalQueue") return "/api/v1/financials/approval-queue";
+  if (path === "financials.reconcile") return "/api/v1/financials/reconciliation";
+  if (path === "notifications.sourceDetail" && (input as { notificationId?: string | number } | undefined)?.notificationId) return `/api/v1/notifications/${(input as { notificationId: string | number }).notificationId}/source-detail`;
+  if (path === "vendors.pricingHistory" && (input as { vendorId?: string | number } | undefined)?.vendorId) return `/api/v1/vendors/${(input as { vendorId: string | number }).vendorId}/pricing-history`;
+  if (path === "purchaseOrders.list") return "/api/v1/purchase-orders";
+  if (path === "compliance.summary") return "/api/v1/compliance/summary";
   const base = collectionPath(path);
   const value = input as { id?: string | number; vehicleId?: string | number; workOrderId?: string | number } | undefined;
   if (path.endsWith("detail") && value?.id) return `${base}/${value.id}`;
@@ -90,22 +114,39 @@ function queryPath(path: string, input: unknown) {
 }
 
 function mutationPath(path: string, input: unknown) {
-  const value = input as { id?: string | number; vehicleId?: string | number } | undefined;
+  const value = input as { id?: string | number; vehicleId?: string | number; workOrderId?: string | number; notificationId?: string | number; issueId?: string | number; partId?: string | number; poId?: string | number; vendorId?: string | number } | undefined;
   const base = collectionPath(path);
   if (path === "auth.logout") return "/api/v1/auth/logout";
-  if (path === "profile.update") return "/api/v1/auth/me";
+  if (path === "profile.update") return "/api/v1/users/me";
   if (path === "team.invite") return "/api/v1/invitations";
   if (path === "organizationSettings.update") return "/api/v1/organization/settings";
-  if (path.includes("startWork") && value?.id) return `/api/v1/work-orders/${value.id}/start`;
-  if (path.includes("complete") && value?.id) return `/api/v1/work-orders/${value.id}/complete`;
+  if (path.includes("startWork") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/start`;
+  if (path.includes("complete") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/complete`;
   if (path.includes("approve") && value?.id) return `/api/v1/work-orders/${value.id}/approve`;
   if (path.includes("assignVehicle") && value?.vehicleId) return `/api/v1/vehicles/${value.vehicleId}/assign-driver`;
+  if (path.includes("markRead") && value?.notificationId) return `/api/v1/notifications/${value.notificationId}`;
+  if (path.includes("resolve") && value?.notificationId) return `/api/v1/notifications/${value.notificationId}/resolve`;
+  if (path.includes("createWorkOrderFromIssue") && value?.issueId) return `/api/v1/triage/issues/${value.issueId}/create-work-order`;
+  if (path.includes("reservePart") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/reserve-part`;
+  if (path.includes("returnReservedPart") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/return-reserved-part`;
+  if (path.includes("receivePartial") && value?.poId) return `/api/v1/purchase-orders/${value.poId}/receive-partial`;
+  if (path.includes("pricingHistory") && value?.vendorId) return `/api/v1/vendors/${value.vendorId}/pricing-history`;
+  if (path.includes("applyTemplate") && value?.id) return `/api/v1/maintenance/templates/${value.id}/apply`;
+  if (path.includes("update") && value?.issueId) return `/api/v1/triage/issues/${value.issueId}`;
   if (value?.id && (path.endsWith("update") || path.endsWith("remove"))) return `${base}/${value.id}`;
   return base;
 }
 
+function mutationMethod(path: string) {
+  if (path.endsWith("update") || path.endsWith("updateStatus") || path === "profile.update" || path === "organizationSettings.update" || path.includes("markRead")) return "PATCH";
+  if (path.includes("updateChecklist") || path.includes("reconcile")) return "PUT";
+  if (path.endsWith("remove")) return "DELETE";
+  return "POST";
+}
+
 function useApiQuery(path: string, input: unknown, options?: QueryOptions) {
   const enabled = options?.enabled ?? true;
+  const inputKey = JSON.stringify(input);
   const [state, setState] = useState<{ data: unknown; error: Error | null; isLoading: boolean }>({ data: undefined, error: null, isLoading: enabled });
   const refetch = useCallback(async () => {
     if (!enabled) return;
@@ -118,7 +159,7 @@ function useApiQuery(path: string, input: unknown, options?: QueryOptions) {
       setState({ data: undefined, error: error as Error, isLoading: false });
       return { error };
     }
-  }, [enabled, input, path]);
+  }, [enabled, inputKey, path]);
   useEffect(() => { void refetch(); }, [refetch]);
   return { ...state, isError: Boolean(state.error), refetch };
 }
@@ -128,7 +169,7 @@ function useApiMutation(path: string, options?: MutationOptions) {
   const mutateAsync = useCallback(async (input?: unknown) => {
     setState({ error: null, isPending: true });
     try {
-      const data = await request(mutationPath(path, input), input, "POST");
+      const data = await request(mutationPath(path, input), input, mutationMethod(path));
       setState({ error: null, isPending: false });
       options?.onSuccess?.(data);
       return data;

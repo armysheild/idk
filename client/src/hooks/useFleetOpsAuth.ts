@@ -54,6 +54,7 @@ export function useFleetOpsAuth() {
   const signInWithEmail = async (email: string, password: string) => {
     setLoading(true);
     if (supabase) {
+      await supabase.auth.signOut({ scope: "local" });
       const result = await supabase.auth.signInWithPassword({ email: email.trim(), password });
       setSession(result.data.session);
       setUser(result.data.session?.user ?? null);
