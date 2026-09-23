@@ -191,6 +191,32 @@ function serializeInput(path: string, input: unknown): unknown {
   if (path === "profile.update") return {
     full_name: value.fullName,
     mobile_phone: value.mobilePhone ?? value.mobileNumber,
+    sms_alerts_enabled: value.smsAlertsEnabled ?? false,
+    whatsapp_alerts_enabled: value.whatsappAlertsEnabled ?? false,
+  };
+  if (path === "organizationSettings.update") return {
+    name: value.name,
+    subscription_plan: value.subscriptionPlan,
+    timezone: value.timezone,
+    odometer_max_daily_km: value.odometerMaxDailyKm,
+    labor_rate_per_hour: value.laborRatePerHour,
+    safety_contact_name: value.safetyContactName,
+    safety_contact_phone: value.safetyContactPhone,
+  };
+  if (path === "onboarding.complete") return {
+    organization_name: value.orgName,
+    first_name: String(value.fullName ?? "").trim().split(/\s+/)[0] ?? "",
+    last_name: String(value.fullName ?? "").trim().split(/\s+/).slice(1).join(" ") || "Owner",
+    mobile_phone: value.mobileNumber,
+    sms_alerts_enabled: value.smsAlertsEnabled ?? false,
+    whatsapp_alerts_enabled: value.whatsappAlertsEnabled ?? false,
+  };
+  if (path === "onboarding.completeInviteWithPassword") return {
+    token: value.token,
+    password: value.password,
+    mobile_phone: value.mobileNumber,
+    sms_alerts_enabled: value.smsAlertsEnabled ?? false,
+    whatsapp_alerts_enabled: value.whatsappAlertsEnabled ?? false,
   };
   if (path === "notifications.markRead") return { status: "read" };
   if (path === "driver.unsafeDisposition") return {

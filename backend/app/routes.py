@@ -310,6 +310,8 @@ def signup(payload: OrganizationSignup, database: Session = Depends(get_db)) -> 
         email=email,
         full_name=payload.full_name.strip(),
         mobile_phone=normalize_mobile_phone(payload.mobile_phone),
+        sms_alerts_enabled=payload.sms_alerts_enabled,
+        whatsapp_alerts_enabled=payload.whatsapp_alerts_enabled,
         password_hash=hash_password(payload.password),
         supabase_user_id=supabase_user_id,
         role="owner",
@@ -473,9 +475,13 @@ def update_my_profile(
     changes = {
         "full_name": payload.full_name.strip(),
         "mobile_phone": normalize_mobile_phone(payload.mobile_phone),
+        "sms_alerts_enabled": payload.sms_alerts_enabled,
+        "whatsapp_alerts_enabled": payload.whatsapp_alerts_enabled,
     }
     user.full_name = changes["full_name"]
     user.mobile_phone = changes["mobile_phone"]
+    user.sms_alerts_enabled = changes["sms_alerts_enabled"]
+    user.whatsapp_alerts_enabled = changes["whatsapp_alerts_enabled"]
     database.add(AuditLog(
         organization_id=user.organization_id,
         actor_user_id=user.id,
@@ -673,7 +679,9 @@ def accept_invitation(payload: InvitationAccept, database: Session = Depends(get
         organization_id=invitation.organization_id,
         email=invitation.email,
         full_name=invitation.full_name,
-        mobile_phone=invitation.mobile_phone,
+        mobile_phone=normalize_mobile_phone(payload.mobile_phone or invitation.mobile_phone),
+        sms_alerts_enabled=payload.sms_alerts_enabled,
+        whatsapp_alerts_enabled=payload.whatsapp_alerts_enabled,
         password_hash=hash_password(payload.password),
         supabase_user_id=supabase_user_id,
         role=invitation.role,
@@ -4658,6 +4666,11 @@ class OrganizationSettingsUpdate(BaseModel):
     """Schema for updating organization settings"""
     name: Optional[str] = None
     subscription_plan: Optional[str] = None
+    timezone: Optional[str] = None
+    odometer_max_daily_km: Optional[int] = None
+    labor_rate_per_hour: Optional[int] = None
+    safety_contact_name: Optional[str] = None
+    safety_contact_phone: Optional[str] = None
     
 
 @router.get("/organization/settings", response_model=dict)
@@ -4686,6 +4699,11 @@ def get_organization_settings(
         "subscription_status": org.subscription_status,
         "trial_ends_on": org.trial_ends_on,
         "subscription_renews_on": org.subscription_renews_on,
+        "timezone": org.timezone,
+        "odometer_max_daily_km": org.odometer_max_daily_km,
+        "labor_rate_per_hour": org.labor_rate_per_hour,
+        "safety_contact_name": org.safety_contact_name,
+        "safety_contact_phone": org.safety_contact_phone,
         "created_at": org.created_at.isoformat(),
         "user_count": user_count,
         "vehicle_count": vehicle_count,
@@ -4710,6 +4728,16 @@ def update_organization_settings(
         org.name = payload.name
     if payload.subscription_plan:
         org.subscription_plan = payload.subscription_plan
+    if payload.timezone is not None:
+        org.timezone = payload.timezone
+    if payload.odometer_max_daily_km is not None:
+        org.odometer_max_daily_km = payload.odometer_max_daily_km
+    if payload.labor_rate_per_hour is not None:
+        org.labor_rate_per_hour = payload.labor_rate_per_hour
+    if payload.safety_contact_name is not None:
+        org.safety_contact_name = payload.safety_contact_name
+    if payload.safety_contact_phone is not None:
+        org.safety_contact_phone = normalize_mobile_phone(payload.safety_contact_phone)
     
     database.add(org)
     database.commit()
@@ -4720,6 +4748,11 @@ def update_organization_settings(
         "name": org.name,
         "slug": org.slug,
         "subscription_plan": org.subscription_plan,
+        "timezone": org.timezone,
+        "odometer_max_daily_km": org.odometer_max_daily_km,
+        "labor_rate_per_hour": org.labor_rate_per_hour,
+        "safety_contact_name": org.safety_contact_name,
+        "safety_contact_phone": org.safety_contact_phone,
         "updated": True,
     }
 
@@ -4994,6 +5027,9 @@ class OnboardingBootstrap(BaseModel):
     last_name: str
     industry: Optional[str] = None
     fleet_size: Optional[str] = None
+    mobile_phone: Optional[str] = None
+    sms_alerts_enabled: bool = False
+    whatsapp_alerts_enabled: bool = False
 
 
 @router.get("/onboarding/status", response_model=dict)
@@ -5139,6 +5175,9 @@ def onboarding_bootstrap(
     
     # Update user profile
     user.full_name = f"{payload.first_name} {payload.last_name}"
+    user.mobile_phone = normalize_mobile_phone(payload.mobile_phone)
+    user.sms_alerts_enabled = payload.sms_alerts_enabled
+    user.whatsapp_alerts_enabled = payload.whatsapp_alerts_enabled
     database.add(user)
     
     # Create default stock locations

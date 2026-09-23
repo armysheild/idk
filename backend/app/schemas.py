@@ -39,6 +39,8 @@ class OrganizationSignup(BaseModel):
     full_name: str = Field(min_length=2, max_length=160)
     email: EmailStr
     mobile_phone: str | None = Field(default=None, max_length=32)
+    sms_alerts_enabled: bool = False
+    whatsapp_alerts_enabled: bool = False
     password: str = Field(min_length=8)
 
 
@@ -49,6 +51,8 @@ class UserRead(BaseModel):
     email: EmailStr
     full_name: str
     mobile_phone: str | None = None
+    sms_alerts_enabled: bool = False
+    whatsapp_alerts_enabled: bool = False
     role: str
     organization_id: int
     organization_name: str
@@ -88,6 +92,9 @@ class InvitationRead(BaseModel):
 class InvitationAccept(BaseModel):
     token: str = Field(min_length=32)
     password: str = Field(min_length=8)
+    mobile_phone: str | None = Field(default=None, max_length=32)
+    sms_alerts_enabled: bool = False
+    whatsapp_alerts_enabled: bool = False
 
 
 class InvitationAcceptRead(BaseModel):
@@ -165,6 +172,8 @@ class UserContactUpdate(BaseModel):
 class UserProfileUpdate(BaseModel):
     full_name: str = Field(min_length=2, max_length=160)
     mobile_phone: str | None = Field(default=None, max_length=32)
+    sms_alerts_enabled: bool = False
+    whatsapp_alerts_enabled: bool = False
 
 
 class NotificationPreferenceRead(BaseModel):
