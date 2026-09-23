@@ -387,6 +387,7 @@ class WorkOrderCreate(BaseModel):
     vehicle_id: int
     title: str = Field(min_length=2, max_length=200)
     description: str | None = None
+    workstream: str = Field(default="shared", pattern=r"^(shared|physical_repair|technical_diagnostics)$")
     priority: str = Field(default="Medium", pattern=r"^(Low|Medium|High|Critical)$")
     status: str = Field(default="Open", pattern=r"^(Draft|Open|Assigned|Scheduled|In progress|Ready for review|Completed|Closed|Archived)$")
     due_date: str | None = None
@@ -402,6 +403,7 @@ class WorkOrderRead(WorkOrderCreate):
 
     id: int
     organization_id: int
+    created_by: int | None
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
@@ -410,6 +412,7 @@ class WorkOrderRead(WorkOrderCreate):
 
 class WorkOrderUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=2, max_length=200)
+    workstream: str | None = Field(default=None, pattern=r"^(shared|physical_repair|technical_diagnostics)$")
     status: str | None = Field(default=None, pattern=r"^(Draft|Open|Assigned|Scheduled|In progress|Ready for review|Completed|Closed|Archived)$")
     priority: str | None = None
     due_date: str | None = None
@@ -867,6 +870,17 @@ class VendorRead(VendorCreate):
     id: int
     organization_id: int
     created_at: datetime
+
+
+class VendorUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=200)
+    vendor_type: str | None = Field(default=None, min_length=2, max_length=80)
+    gstin: str | None = Field(default=None, max_length=20)
+    contact_name: str | None = None
+    phone: str | None = None
+    email: EmailStr | None = None
+    address: str | None = None
+    active: bool | None = None
 
 
 class PurchaseOrderLineCreate(BaseModel):

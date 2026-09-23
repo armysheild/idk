@@ -5,6 +5,16 @@ import { WorkspaceState as State } from "@/components/workspaces/WorkspaceState"
 import { trpc } from "@/lib/trpc";
 import type { InventoryPart, ProcurementOrderRow } from "@/types/fleet";
 
+type VendorRow = {
+  id: string;
+  name: string;
+  vendorType?: string;
+  vendor_type?: string;
+  phone?: string;
+  email?: string;
+  active?: boolean;
+};
+
 export function ProcurementWorkspace() {
   const utils = trpc.useUtils();
   const orders = trpc.purchaseOrders.list.useQuery(undefined, { retry: false });
@@ -32,6 +42,7 @@ export function ProcurementWorkspace() {
     totalCost: "",
   });
   const [selectedVendorId, setSelectedVendorId] = useState("");
+  const [vendorDraft, setVendorDraft] = useState({ name: "", vendorType: "Parts supplier", phone: "", email: "" });
   const pricingHistory = trpc.vendors.pricingHistory.useQuery(
     { vendorId: selectedVendorId },
     { enabled: Boolean(selectedVendorId), retry: false },
@@ -65,6 +76,21 @@ export function ProcurementWorkspace() {
       toast.error("Purchase order creation failed", {
         description: error.message,
       }),
+  });
+  const createVendor = trpc.vendors.create.useMutation({
+    onSuccess: () => {
+      setVendorDraft({ name: "", vendorType: "Parts supplier", phone: "", email: "" });
+      toast.success("Vendor created");
+      void utils.vendors.list.invalidate();
+    },
+    onError: (error) => toast.error("Vendor creation failed", { description: error.message }),
+  });
+  const updateVendor = trpc.vendors.update.useMutation({
+    onSuccess: () => {
+      toast.success("Vendor status updated");
+      void utils.vendors.list.invalidate();
+    },
+    onError: (error) => toast.error("Vendor update failed", { description: error.message }),
   });
   const getDraft = (id: string) =>
     drafts[id] ?? {
@@ -200,6 +226,78 @@ export function ProcurementWorkspace() {
             {createPurchaseOrder.isPending ? "Creating…" : "Create draft PO"}
           </button>
         </form>
+      </section>
+      <section className="replacement-procurement-create">
+        <div>
+          <span>02 · supplier register</span>
+          <h2>Manage vendors</h2>
+          <p>
+            Keep the supplier register current. Archived vendors remain in the
+            audit trail but cannot be selected for new purchase orders.
+          </p>
+        </div>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!vendorDraft.name.trim()) return;
+            createVendor.mutate(vendorDraft);
+          }}
+        >
+          <label>
+            Vendor name
+            <input
+              required
+              value={vendorDraft.name}
+              onChange={(event) => setVendorDraft((current) => ({ ...current, name: event.target.value }))}
+            />
+          </label>
+          <label>
+            Type
+            <input
+              value={vendorDraft.vendorType}
+              onChange={(event) => setVendorDraft((current) => ({ ...current, vendorType: event.target.value }))}
+            />
+          </label>
+          <label>
+            Phone
+            <input
+              value={vendorDraft.phone}
+              onChange={(event) => setVendorDraft((current) => ({ ...current, phone: event.target.value }))}
+            />
+          </label>
+          <label>
+            Email
+            <input
+              type="email"
+              value={vendorDraft.email}
+              onChange={(event) => setVendorDraft((current) => ({ ...current, email: event.target.value }))}
+            />
+          </label>
+          <button className="replacement-procurement-primary" disabled={createVendor.isPending}>
+            {createVendor.isPending ? "Saving…" : "Add vendor"}
+          </button>
+        </form>
+        <div className="replacement-procurement-list">
+          {(vendors.data ?? []).map((vendor: VendorRow) => (
+            <div key={vendor.id} className="replacement-procurement-list-row">
+              <span>
+                <strong>{vendor.name}</strong>
+                <small>{vendor.vendorType ?? vendor.vendor_type ?? "Supplier"} · {vendor.phone ?? "No phone"}</small>
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  updateVendor.mutate({
+                    id: vendor.id,
+                    active: vendor.active === false,
+                  })
+                }
+              >
+                {vendor.active === false ? "Reactivate" : "Archive"}
+              </button>
+            </div>
+          ))}
+        </div>
       </section>
       {selectedVendorId && (
         <section className="replacement-procurement-pricing">

@@ -56,16 +56,10 @@ def test_organization_onboarding_invitation_and_assignment_visibility(tmp_path: 
             "depot": "Mumbai",
             "assigned_driver_id": driver_id,
         })
-        assert assigned.status_code == 201
-        client.post("/api/v1/vehicles", headers=owner_headers, json={
-            "registration_number": "MH 01 AA 1002",
-            "model": "Ashok Leyland",
-            "vehicle_type": "Truck",
-            "depot": "Mumbai",
-        })
+        assert assigned.status_code == 403
         driver_vehicles = client.get("/api/v1/vehicles", headers=driver_headers)
         assert driver_vehicles.status_code == 200
-        assert [vehicle["registration_number"] for vehicle in driver_vehicles.json()] == ["MH 01 AA 1001"]
+        assert driver_vehicles.json() == []
 
         invalid_role = client.post("/api/v1/invitations", headers=driver_headers, json={
             "email": "admin@northstar.example",

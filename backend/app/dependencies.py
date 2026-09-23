@@ -87,8 +87,8 @@ ROLE_PERMISSIONS = {
     "fleet_manager": {"fleet", "fleet_read", "maintenance_read", "compliance", "compliance_read", "notifications", "inventory_read", "finance_read", "fuel_read"},
     "inventory_manager": {"inventory", "inventory_read", "procurement", "procurement_read", "notifications"},
     "driver": {"driver", "fleet_read", "maintenance_read", "compliance_read", "fuel_read", "notifications"},
-    "mechanic": {"maintenance", "maintenance_read", "workshop", "inventory_read", "notifications"},
-    "technician": {"maintenance", "maintenance_read", "workshop", "inventory_read", "notifications"},
+    "mechanic": {"maintenance", "maintenance_physical", "maintenance_read", "workshop", "inventory_read", "notifications"},
+    "technician": {"maintenance", "maintenance_technical", "maintenance_read", "workshop", "inventory_read", "notifications"},
     "accountant": {"finance", "finance_read", "procurement_read", "fuel_read", "notifications"},
 }
 

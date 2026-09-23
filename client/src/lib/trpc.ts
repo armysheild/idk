@@ -130,6 +130,7 @@ function serializeInput(path: string, input: unknown): unknown {
     vehicle_id: value.vehicleId,
     title: value.title,
     description: value.description,
+    workstream: value.workstream ?? "shared",
     priority,
     status: workOrderStatus(value.status),
     assigned_user_id: value.assignedMechanicId ?? value.assignedUserId,
@@ -237,6 +238,16 @@ function serializeInput(path: string, input: unknown): unknown {
     email: value.email,
     address: value.address,
     active: value.active ?? true,
+  };
+  if (path === "vendors.update") return {
+    name: value.name,
+    vendor_type: value.vendorType ?? value.vendor_type,
+    gstin: value.gstin,
+    contact_name: value.contactPerson ?? value.contactName ?? value.contact_name,
+    phone: value.phone,
+    email: value.email,
+    address: value.address,
+    active: value.active,
   };
   if (path === "profile.update") return {
     full_name: value.fullName,
@@ -521,6 +532,7 @@ function mutationPath(path: string, input: unknown) {
   if (path === "workOrders.create") return "/api/v1/work-orders";
   if (path === "workOrders.updateStatus" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}`;
   if (path === "workOrders.update" && value?.id) return `/api/v1/work-orders/${value.id}`;
+  if (path === "vendors.update" && value?.id) return `/api/v1/vendors/${value.id}`;
   if (path === "purchaseOrders.create") return "/api/v1/purchase-orders";
   if (path === "purchaseOrders.updateStatus" && value?.id) return `/api/v1/purchase-orders/${value.id}`;
   if (path === "financials.create") return "/api/v1/expenses";

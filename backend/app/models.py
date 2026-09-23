@@ -166,6 +166,8 @@ class WorkOrder(Base):
     vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
+    workstream: Mapped[str] = mapped_column(String(20), default="shared", nullable=False)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
     priority: Mapped[str] = mapped_column(String(20), default="Medium", nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="Open", nullable=False)
     due_date: Mapped[Optional[str]] = mapped_column(String(20))

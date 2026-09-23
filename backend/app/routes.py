@@ -106,6 +106,7 @@ from .schemas import (
     VehicleUpdate,
     VendorCreate,
     VendorRead,
+    VendorUpdate,
     WorkOrderCreate,
     WorkOrderChecklistItemRead,
     WorkOrderChecklistUpdate,
@@ -1671,7 +1672,11 @@ def create_work_order(
         ))
         if assignee is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Assigned user must be a workshop user in this organization")
-    work_order = WorkOrder(organization_id=user.organization_id, **payload.model_dump())
+        if payload.workstream == "physical_repair" and assignee.role != "mechanic":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Physical repair work must be assigned to a Mechanic")
+        if payload.workstream == "technical_diagnostics" and assignee.role != "technician":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Technical diagnostic work must be assigned to a Technician")
+    work_order = WorkOrder(organization_id=user.organization_id, created_by=user.id, **payload.model_dump())
     database.add(work_order)
     database.flush()
     database.add(AuditLog(
@@ -1730,7 +1735,7 @@ def update_work_order(
         changes = {
             key: value
             for key, value in changes.items()
-            if key in {"title", "status", "priority", "due_date", "assigned_to", "assigned_user_id", "scheduled_for", "description"}
+            if key in {"title", "status", "workstream", "priority", "due_date", "assigned_to", "assigned_user_id", "scheduled_for", "description"}
         }
         if "status" in changes and changes["status"] not in {"Draft", "Open", "Assigned", "Scheduled"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Fleet managers can only update dispatch status")
@@ -1742,6 +1747,17 @@ def update_work_order(
             ))
             if assignee is None:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Assigned user must be a workshop user in this organization")
+            target_workstream = changes.get("workstream", work_order.workstream)
+            if target_workstream == "physical_repair" and assignee.role != "mechanic":
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Physical repair work must be assigned to a Mechanic")
+            if target_workstream == "technical_diagnostics" and assignee.role != "technician":
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Technical diagnostic work must be assigned to a Technician")
+        if "workstream" in changes and work_order.assigned_user_id is not None:
+            assignee = database.get(User, work_order.assigned_user_id)
+            if changes["workstream"] == "physical_repair" and assignee and assignee.role != "mechanic":
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This assignment is not compatible with physical repair work")
+            if changes["workstream"] == "technical_diagnostics" and assignee and assignee.role != "technician":
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This assignment is not compatible with technical diagnostic work")
         if "status" in changes:
             transitions = {
                 "Draft": {"Open", "Assigned", "Archived"},
@@ -1905,6 +1921,10 @@ def start_work_order(
     work_order = database.scalar(statement)
     if work_order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
+    if work_order.workstream == "physical_repair" and user.role != "mechanic":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Mechanics can execute physical repair work")
+    if work_order.workstream == "technical_diagnostics" and user.role != "technician":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Technicians can execute technical diagnostic work")
     if work_order.status not in {"Open", "Assigned"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only open or assigned work orders can be started")
     work_order.status = "In progress"
@@ -1939,6 +1959,10 @@ def complete_work_order(
     work_order = database.scalar(statement)
     if work_order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
+    if work_order.workstream == "physical_repair" and user.role != "mechanic":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Mechanics can execute physical repair work")
+    if work_order.workstream == "technical_diagnostics" and user.role != "technician":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Technicians can execute technical diagnostic work")
     if work_order.status != "In progress":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only in-progress work orders can be completed")
     checklist = database.scalars(select(WorkOrderChecklistItem).where(
@@ -2003,6 +2027,8 @@ def approve_work_order(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
     if work_order.status != "Ready for review":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only work orders ready for review can be approved")
+    if work_order.created_by == user.id or work_order.assigned_user_id == user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The work-order creator or executor cannot approve it")
     work_order.status = "Completed"
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -4013,6 +4039,38 @@ def create_vendor(
     return vendor
 
 
+@router.patch("/vendors/{vendor_id}", response_model=VendorRead)
+def update_vendor(
+    vendor_id: int,
+    payload: VendorUpdate,
+    request: Request,
+    user: User = Depends(require_permission("procurement")),
+    database: Session = Depends(get_db),
+) -> Vendor:
+    reserve_idempotency_key(request, user, database)
+    vendor = database.scalar(select(Vendor).where(
+        Vendor.id == vendor_id,
+        Vendor.organization_id == user.organization_id,
+    ))
+    if vendor is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vendor not found")
+    changes = payload.model_dump(exclude_unset=True)
+    for key, value in changes.items():
+        setattr(vendor, key, value)
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="vendor.updated",
+        entity_type="vendor",
+        entity_id=str(vendor.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps(changes),
+    ))
+    database.commit()
+    database.refresh(vendor)
+    return vendor
+
+
 @router.get("/purchase-orders", response_model=list[PurchaseOrderRead])
 def list_purchase_orders(user: User = Depends(require_permission("procurement_read")), database: Session = Depends(get_db)) -> list[PurchaseOrder]:
     statement = select(PurchaseOrder).options(selectinload(PurchaseOrder.lines)).where(PurchaseOrder.organization_id == user.organization_id).order_by(PurchaseOrder.id.desc())
@@ -4083,6 +4141,8 @@ def update_purchase_order_status(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
     if user.role == "inventory_manager" and payload.status == "Approved":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Purchase-order approval belongs to Super Admin / Owner")
+    if user.role == "owner" and payload.status == "Approved" and order.created_by == user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The purchase-order creator cannot approve it")
     if user.role == "owner" and payload.status != "Approved":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super Admin / Owner can only approve purchase orders")
     order.status = payload.status
@@ -4670,6 +4730,10 @@ def assign_work_order(
         ))
         if mechanic is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mechanic/Technician not found in this organization")
+        if work_order.workstream == "physical_repair" and mechanic.role != "mechanic":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Physical repair work must be assigned to a Mechanic")
+        if work_order.workstream == "technical_diagnostics" and mechanic.role != "technician":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Technical diagnostic work must be assigned to a Technician")
     else:
         mechanic = None
     
