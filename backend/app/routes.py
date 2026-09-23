@@ -8580,11 +8580,12 @@ def approve_expense(
 def reject_expense(
     expense_id: int,
     payload: dict,
+    request: Request,
     user: User = Depends(require_roles("owner", "accountant")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Reject an expense"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     expense = database.get(Expense, expense_id)
     if not expense or expense.organization_id != user.organization_id:
@@ -8623,11 +8624,12 @@ def reject_expense(
 @router.post("/financials/bulk-approve", response_model=dict)
 def bulk_approve_expenses(
     payload: dict,
+    request: Request,
     user: User = Depends(require_roles("owner", "accountant")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Bulk approve multiple expenses"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     expense_ids = payload.get("expense_ids", [])
     
