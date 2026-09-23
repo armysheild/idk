@@ -577,7 +577,7 @@ function useApiQuery(path: string, input: unknown, options?: QueryOptions) {
     if (!enabled) return;
     setState((current) => ({ ...current, isLoading: true, error: null }));
     try {
-      const data = await request(queryPath(path, input), input);
+      const data = await request(queryPath(path, input), input, "GET", path);
       setState({ data, error: null, isLoading: false });
       return { data };
     } catch (error) {
