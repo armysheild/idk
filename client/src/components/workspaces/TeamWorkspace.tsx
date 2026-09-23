@@ -5,7 +5,7 @@ import { trpc } from "@/lib/trpc";
 import type { Invitation, InvitationResponse, TeamMember } from "@/types/fleet";
 
 const roleOptions = ["FLEET_MANAGER", "MECHANIC", "TECHNICIAN", "DRIVER", "INVENTORY_MANAGER", "ACCOUNTANT"] as const;
-const roleLabel = (role: string) => role === "SUPERADMIN" ? "Superadmin · Organization owner" : role.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+const roleLabel = (role: string) => role === "SUPERADMIN" ? "Super Admin / Owner" : role.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 function State({ loading, error, empty, children }: { loading?: boolean; error?: boolean; empty?: boolean; children: React.ReactNode }) { if (loading) return <div className="workspace-state"><RefreshCw className="spin" size={18} /> Loading live VahanSync data…</div>; if (error) return <div className="workspace-state error-state">This workspace could not load from Supabase. Check your session and try again.</div>; if (empty) return <div className="workspace-state">No records yet. Use the action above to create the first record.</div>; return <>{children}</>; }
 
 export function TeamWorkspace({ enabled }: { enabled: boolean }) {

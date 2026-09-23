@@ -50,7 +50,7 @@ import { roleNavAccess } from "@/workspaceAccess";
 import LandingPage from "@/pages/LandingPage";
 
 const roles = [
-  { name: "Owner command center", short: "Owner", icon: LayoutDashboard },
+  { name: "Super Admin / Owner command center", short: "Super Admin / Owner", icon: LayoutDashboard },
   { name: "Fleet manager workspace", short: "Fleet manager", icon: Bus },
   { name: "Inventory manager workspace", short: "Inventory", icon: Package },
   { name: "Mechanic workspace", short: "Mechanic", icon: Wrench },
@@ -88,7 +88,7 @@ const navGroups = [
 ];
 
 const roleDescriptor: Record<string, string> = {
-  SUPERADMIN: "Executive governance",
+  SUPERADMIN: "Super Admin / Owner governance",
   FLEET_MANAGER: "Fleet readiness",
   INVENTORY_MANAGER: "Parts control",
   MECHANIC: "Repair execution",
@@ -171,7 +171,7 @@ export default function Home({ initialSection = "Command center", publicMode = "
   const currentRole = backendRole || "SUPERADMIN";
   const [role, setRole] = useState(roles[0]);
   useEffect(() => {
-    const matched = roles.find((item) => (currentRole === "SUPERADMIN" ? item.short === "Owner" : item.name.toUpperCase().startsWith(currentRole.replaceAll("_", " "))));
+    const matched = roles.find((item) => (currentRole === "SUPERADMIN" ? item.short === "Super Admin / Owner" : item.name.toUpperCase().startsWith(currentRole.replaceAll("_", " "))));
     if (matched) setRole(matched);
   }, [currentRole]);
   const [showRoleMenu, setShowRoleMenu] = useState(false);
@@ -191,7 +191,7 @@ export default function Home({ initialSection = "Command center", publicMode = "
   const searchInputRef = useRef<HTMLInputElement>(null);
   const allowedNavLabels = roleNavAccess[currentRole] ?? roleNavAccess.SUPERADMIN;
   const allowedNavItems = navItems.filter((item) => allowedNavLabels.includes(item.label));
-  const roleMenuOptions = currentRole === "SUPERADMIN" ? roles.filter((item) => item.short === "Owner") : roles.filter((item) => item.short === role.short);
+  const roleMenuOptions = currentRole === "SUPERADMIN" ? roles.filter((item) => item.short === "Super Admin / Owner") : roles.filter((item) => item.short === role.short);
   useEffect(() => {
     if (priorSessionUserId.current === sessionUserId) return;
     priorSessionUserId.current = sessionUserId;
@@ -319,7 +319,7 @@ export default function Home({ initialSection = "Command center", publicMode = "
 
   const chooseRole = (nextRole: typeof role) => {
     setShowRoleMenu(false);
-    if (currentRole !== "SUPERADMIN" || nextRole.name !== "Owner command center") { toast.info("Role switching is disabled", { description: "VahanSync opens the workspace assigned to your authenticated account." }); return; }
+    if (currentRole !== "SUPERADMIN" || nextRole.name !== "Super Admin / Owner command center") { toast.info("Role switching is disabled", { description: "VahanSync opens the workspace assigned to your authenticated account." }); return; }
     setActiveNav("Command center");
   };
 

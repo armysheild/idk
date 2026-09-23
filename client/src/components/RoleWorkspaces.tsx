@@ -20,7 +20,7 @@ const roleJourneys: Record<Role, string[]> = {
 };
 
 function RoleHeader({ role, organizationName, title, subtitle, icon: Icon }: Props & { title: string; subtitle: string; icon: typeof Activity }) {
-  const roleLabel = role === "SUPERADMIN" ? "Superadmin / Owner" : role.replaceAll("_", " ");
+  const roleLabel = role === "SUPERADMIN" ? "Super Admin / Owner" : role.replaceAll("_", " ");
   const journey = roleJourneys[role];
   return <header className={`replacement-role-hero replacement-role-${role.toLowerCase()}`}><div className="replacement-role-heading"><span>{roleLabel} · {organizationName ?? "Loading organization…"}</span><h1>{title}<em>.</em></h1><p>{subtitle}</p></div><div className="replacement-role-rail"><div className="replacement-role-connection"><Icon size={18} /><div><strong>Organization connected</strong><small>Tenant-scoped workspace</small></div></div><div className="replacement-role-journey" aria-label={`${roleLabel} workflow`}>{journey.map((step, index) => <span key={step} className={index === 0 ? "is-current" : ""}><b>{String(index + 1).padStart(2, "0")}</b>{step}</span>)}</div></div></header>;
 }
