@@ -9523,6 +9523,7 @@ def receive_partial_purchase_order(
 
 @router.get("/compliance/summary", response_model=dict)
 def get_compliance_summary(
+    expiry_window_days: int = Query(default=30, ge=1, le=365),
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
@@ -9564,7 +9565,8 @@ def get_compliance_summary(
     fully_compliant = 0
     at_risk = 0
     non_compliant = 0
-    
+    vehicle_rows = []
+
     for vehicle in vehicles:
         vehicle_docs = database.query(ComplianceDocument).filter(
             ComplianceDocument.vehicle_id == vehicle.id,
@@ -9574,12 +9576,41 @@ def get_compliance_summary(
         expired_docs = len([d for d in vehicle_docs if d.status == "Expired"])
         expiring_docs = len([d for d in vehicle_docs if d.status == "Expiring Soon"])
         
-        if expired_docs > 0:
+        if not vehicle_docs:
+            vehicle_status = "MISSING"
+        elif expired_docs > 0:
+            vehicle_status = "EXPIRED"
             non_compliant += 1
         elif expiring_docs > 0:
+            vehicle_status = "EXPIRING"
             at_risk += 1
         else:
+            vehicle_status = "VALID"
             fully_compliant += 1
+        vehicle_rows.append({
+            "vehicle_id": vehicle.id,
+            "license_plate": vehicle.registration_number,
+            "document_count": len(vehicle_docs),
+            "status": vehicle_status,
+        })
+
+    assignments = database.scalars(select(VehicleAssignment).where(
+        VehicleAssignment.organization_id == user.organization_id,
+        VehicleAssignment.active == True,
+    )).all()
+    vehicle_by_id = {vehicle.id: vehicle for vehicle in vehicles}
+    driver_rows = []
+    for assignment in assignments:
+        driver = database.get(User, assignment.driver_id)
+        vehicle = vehicle_by_id.get(assignment.vehicle_id)
+        if driver and vehicle:
+            driver_rows.append({
+                "driver_id": driver.id,
+                "vehicle_id": vehicle.id,
+                "driver_name": driver.full_name,
+                "license_plate": vehicle.registration_number,
+                "status": "VALID",
+            })
     
     # Calculate compliance score (0-100)
     if len(docs) > 0:
@@ -9597,6 +9628,15 @@ def get_compliance_summary(
     
     return {
         "organization_name": org.name,
+        "expiry_window_days": expiry_window_days,
+        "counts": {
+            "VALID": sum(1 for row in vehicle_rows if row["status"] == "VALID"),
+            "EXPIRING": sum(1 for row in vehicle_rows if row["status"] == "EXPIRING"),
+            "EXPIRED": sum(1 for row in vehicle_rows if row["status"] == "EXPIRED"),
+            "MISSING": sum(1 for row in vehicle_rows if row["status"] == "MISSING"),
+        },
+        "vehicles": vehicle_rows,
+        "drivers": driver_rows,
         "compliance_score": round(compliance_score, 2),
         "documents": {
             "total": len(docs),

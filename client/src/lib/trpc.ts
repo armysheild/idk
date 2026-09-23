@@ -344,7 +344,13 @@ async function request(path: string, input?: unknown, method = "GET", inputPath 
     Object.assign(error, { status: response.status, data: { code: response.status === 401 ? "UNAUTHORIZED" : "BAD_REQUEST" } });
     throw error;
   }
-  return response.status === 204 ? null : response.json().then(camelize);
+  if (response.status === 204) return null;
+  const payload = await response.json();
+  const normalized = camelize(payload);
+  if (inputPath === "financials.approvalQueue" && normalized && typeof normalized === "object") {
+    return (normalized as Record<string, unknown>).pendingItems ?? [];
+  }
+  return normalized;
 }
 
 async function uploadDocumentFile(documentId: string | number, fileData: string) {
