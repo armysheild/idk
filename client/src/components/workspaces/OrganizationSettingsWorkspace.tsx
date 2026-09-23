@@ -10,7 +10,6 @@ export function OrganizationSettingsWorkspace() {
   const [form, setForm] = useState({ timezone: "Asia/Kolkata", odometerMaxDailyKm: "1000", laborRatePerHour: "0", safetyContactName: "", safetyContactPhone: "" });
   const [activeTab, setActiveTab] = useState<"general" | "integrations">("general");
   const [integrationStates, setIntegrationStates] = useState<Record<string, { connected: boolean; lastSync?: string; error?: string }>>({
-    telematics: { connected: false },
     government: { connected: false },
     insurance: { connected: false },
     tax: { connected: false },
@@ -122,14 +121,9 @@ export function OrganizationSettingsWorkspace() {
           </form>
         ) : (
           <div className="integrations-grid">
-            <IntegrationCard
-              name="Telematics"
-              description="GPS tracking, fuel consumption, and odometer data"
-              state={integrationStates.telematics}
-              onConnect={() => handleIntegrationConnect("telematics")}
-              onSync={() => handleIntegrationSync("telematics")}
-              setState={(state) => setIntegrationStates(prev => ({ ...prev, telematics: state }))}
-            />
+            <div className="form-note" style={{ gridColumn: "1 / -1" }}>
+              Telematics provider setup and vehicle-device mapping are managed by the Fleet Manager in the dedicated Telematics workspace.
+            </div>
             <IntegrationCard
               name="Government"
               description="Vehicle RC verification and permit validation"
@@ -222,4 +216,3 @@ function IntegrationCard({
     </article>
   );
 }
-

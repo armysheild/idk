@@ -817,6 +817,10 @@ class TelematicsDeviceCreate(BaseModel):
     active: bool = True
 
 
+class TelematicsDeviceUpdate(BaseModel):
+    active: bool
+
+
 class TelematicsDeviceRead(TelematicsDeviceCreate):
     model_config = ConfigDict(from_attributes=True)
 
@@ -851,15 +855,21 @@ class TelematicsIntegrationCreate(BaseModel):
     base_url: str = Field(min_length=8, max_length=500)
     sync_path: str = Field(default="/readings", min_length=1, max_length=500)
     credential_ref: str | None = Field(default=None, max_length=160)
+    api_token: str | None = Field(default=None, min_length=1, max_length=500)
     active: bool = True
     sync_interval_minutes: int = Field(default=1440, ge=15, le=10080)
 
 
-class TelematicsIntegrationRead(TelematicsIntegrationCreate):
+class TelematicsIntegrationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     organization_id: int
+    provider: str
+    base_url: str
+    sync_path: str
+    active: bool
+    sync_interval_minutes: int
     last_synced_at: datetime | None
     last_sync_status: str | None
     created_at: datetime
@@ -872,6 +882,16 @@ class TelematicsHealthRead(BaseModel):
     stale_devices: int
     readings_last_24h: int
     flagged_odometer_readings: int
+
+
+class TelematicsOverviewDeviceRead(TelematicsDeviceRead):
+    latest_odometer_km: int | None
+    latest_recorded_at: datetime | None
+
+
+class TelematicsOverviewRead(BaseModel):
+    integrations: list[TelematicsIntegrationRead]
+    devices: list[TelematicsOverviewDeviceRead]
 
 
 class DocumentVersionRead(BaseModel):

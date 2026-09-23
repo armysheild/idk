@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     whatsapp_template_id: str | None = None
     telematics_default_timeout_seconds: int = 30
     telematics_cron_secret: str | None = None
+    telematics_credential_key: str | None = None
     razorpay_key_id: str | None = None
     razorpay_key_secret: str | None = None
     razorpay_webhook_secret: str | None = None

@@ -302,6 +302,22 @@ function serializeInput(path: string, input: unknown): unknown {
     work_order_part_usage_id: value.workOrderPartUsageId,
     quantity: value.quantity,
   };
+  if (path === "telematics.createIntegration" || path === "telematics.updateIntegration") return {
+    provider: value.provider,
+    base_url: value.baseUrl,
+    sync_path: value.syncPath || "/readings",
+    credential_ref: value.credentialRef || undefined,
+    api_token: value.apiToken || undefined,
+    active: value.active ?? true,
+    sync_interval_minutes: Number(value.syncIntervalMinutes || 1440),
+  };
+  if (path === "telematics.createDevice") return {
+    vehicle_id: value.vehicleId,
+    provider: value.provider,
+    device_identifier: value.deviceIdentifier,
+    active: value.active ?? true,
+  };
+  if (path === "telematics.updateDevice") return { active: value.active };
   if (path === "purchaseOrders.create") return {
     vendor_id: value.vendorId,
     lines: value.lines ?? [{ part_id: value.partId ?? 0, quantity: 1, unit_cost_paise: Math.round(Number(value.totalCost ?? 0) * 100) }],
@@ -434,6 +450,10 @@ function collectionPath(path: string) {
 function queryPath(path: string, input: unknown) {
   if (path === "auth.me") return "/api/v1/auth/me";
   if (path === "dashboard.summary") return "/api/v1/dashboard/summary";
+  if (path === "telematics.overview") return "/api/v1/telematics/overview";
+  if (path === "telematics.integrations") return "/api/v1/telematics/integrations";
+  if (path === "telematics.devices") return "/api/v1/telematics/devices";
+  if (path === "telematics.health") return "/api/v1/telematics/health";
   if (path === "financials.metrics") return "/api/v1/financials/metrics";
   if (path === "compliance.summary") return "/api/v1/compliance/summary";
   if (path === "billing.plans") return "/api/v1/subscription/plans";
@@ -513,12 +533,17 @@ function queryPath(path: string, input: unknown) {
 }
 
 function mutationPath(path: string, input: unknown) {
-  const value = input as { id?: string | number; vehicleId?: string | number; workOrderId?: string | number; notificationId?: string | number; issueId?: string | number; partId?: string | number; poId?: string | number; vendorId?: string | number; componentId?: string | number; documentId?: string | number; userId?: string | number; installationId?: string | number } | undefined;
+  const value = input as { id?: string | number; vehicleId?: string | number; workOrderId?: string | number; notificationId?: string | number; issueId?: string | number; partId?: string | number; poId?: string | number; vendorId?: string | number; componentId?: string | number; documentId?: string | number; userId?: string | number; installationId?: string | number; integrationId?: string | number } | undefined;
   const base = collectionPath(path);
   if (path === "auth.logout") return "/api/v1/auth/logout";
   if (path === "profile.update") return "/api/v1/users/me";
   if (path === "team.invite") return "/api/v1/invitations";
   if (path === "organizationSettings.update") return "/api/v1/organization/settings";
+  if (path === "telematics.createIntegration") return "/api/v1/telematics/integrations";
+  if (path === "telematics.createDevice") return "/api/v1/telematics/devices";
+  if (path === "telematics.updateDevice" && value?.id) return `/api/v1/telematics/devices/${value.id}`;
+  if (path === "telematics.syncIntegration" && value?.integrationId) return `/api/v1/telematics/integrations/${value.integrationId}/sync`;
+  if (path === "telematics.updateIntegration" && value?.integrationId) return `/api/v1/telematics/integrations/${value.integrationId}`;
   if (path === "documents.access" && (value?.documentId ?? value?.id)) return `/api/v1/documents/${value.documentId ?? value.id}/file`;
   if (path === "documents.create") return "/api/v1/documents";
   if (path === "documents.importCsv") return "/api/v1/documents/import-csv";

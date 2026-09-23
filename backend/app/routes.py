@@ -5,6 +5,8 @@ import csv
 import io
 import json
 import os
+import base64
+import hashlib
 import re
 import secrets
 from html import escape
@@ -13,6 +15,7 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict
@@ -79,10 +82,13 @@ from .schemas import (
     TollTransactionCreate,
     TollTransactionRead,
     TelematicsDeviceCreate,
+    TelematicsDeviceUpdate,
     TelematicsDeviceRead,
     TelematicsHealthRead,
     TelematicsIntegrationCreate,
     TelematicsIntegrationRead,
+    TelematicsOverviewRead,
+    TelematicsOverviewDeviceRead,
     TelemetryReadingCreate,
     TelemetryReadingRead,
     Token,
@@ -3837,6 +3843,14 @@ def list_telematics_devices(user: User = Depends(require_permission("fleet")), d
 
 
 def integration_credential(integration: TelematicsIntegration) -> str | None:
+    settings = get_settings()
+    if integration.credential_ciphertext:
+        key_material = settings.telematics_credential_key or settings.jwt_secret
+        key = base64.urlsafe_b64encode(hashlib.sha256(key_material.encode()).digest())
+        try:
+            return Fernet(key).decrypt(integration.credential_ciphertext.encode()).decode()
+        except (InvalidToken, ValueError):
+            return None
     if not integration.credential_ref:
         return None
     env_name = f"VAHANA_TELEMATICS_TOKEN_{integration.credential_ref.upper().replace('-', '_')}"
@@ -3980,6 +3994,31 @@ def telematics_health(
     )
 
 
+@router.get("/telematics/overview", response_model=TelematicsOverviewRead)
+def telematics_overview(
+    user: User = Depends(require_permission("fleet_read")),
+    database: Session = Depends(get_db),
+) -> TelematicsOverviewRead:
+    integrations = list(database.scalars(select(TelematicsIntegration).where(
+        TelematicsIntegration.organization_id == user.organization_id,
+    ).order_by(TelematicsIntegration.id.desc())).all())
+    devices = list(database.scalars(select(TelematicsDevice).where(
+        TelematicsDevice.organization_id == user.organization_id,
+    ).order_by(TelematicsDevice.id.desc())).all())
+    rows: list[TelematicsOverviewDeviceRead] = []
+    for device in devices:
+        latest = database.scalar(select(TelemetryReading).where(
+            TelemetryReading.organization_id == user.organization_id,
+            TelemetryReading.device_id == device.id,
+        ).order_by(TelemetryReading.recorded_at.desc(), TelemetryReading.id.desc()))
+        rows.append(TelematicsOverviewDeviceRead(
+            **TelematicsDeviceRead.model_validate(device).model_dump(),
+            latest_odometer_km=latest.odometer_km if latest else None,
+            latest_recorded_at=latest.recorded_at if latest else None,
+        ))
+    return TelematicsOverviewRead(integrations=integrations, devices=rows)
+
+
 @router.post("/telematics/integrations", response_model=TelematicsIntegrationRead, status_code=status.HTTP_201_CREATED)
 def create_telematics_integration(
     payload: TelematicsIntegrationCreate,
@@ -3987,7 +4026,20 @@ def create_telematics_integration(
     user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> TelematicsIntegration:
-    integration = TelematicsIntegration(organization_id=user.organization_id, **payload.model_dump())
+    provider = payload.provider.strip().lower()
+    duplicate = database.scalar(select(TelematicsIntegration).where(
+        TelematicsIntegration.organization_id == user.organization_id,
+        TelematicsIntegration.provider == provider,
+    ))
+    if duplicate is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This provider is already configured for the organization")
+    values = payload.model_dump(exclude={"api_token"})
+    values["provider"] = provider
+    integration = TelematicsIntegration(organization_id=user.organization_id, **values)
+    if payload.api_token:
+        key_material = get_settings().telematics_credential_key or get_settings().jwt_secret
+        key = base64.urlsafe_b64encode(hashlib.sha256(key_material.encode()).digest())
+        integration.credential_ciphertext = Fernet(key).encrypt(payload.api_token.encode()).decode()
     database.add(integration)
     database.flush()
     database.add(AuditLog(
@@ -3997,7 +4049,7 @@ def create_telematics_integration(
         entity_type="telematics_integration",
         entity_id=str(integration.id),
         request_id=request.headers.get("x-request-id", str(uuid4())),
-        changes=json.dumps({"provider": integration.provider, "credential_ref": integration.credential_ref}),
+        changes=json.dumps({"provider": integration.provider, "credential_configured": bool(payload.api_token or integration.credential_ref)}),
     ))
     database.commit()
     database.refresh(integration)
@@ -4017,12 +4069,33 @@ def update_telematics_integration(
     ))
     if integration is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Telematics integration not found")
-    integration.provider = payload.provider
+    provider = payload.provider.strip().lower()
+    duplicate = database.scalar(select(TelematicsIntegration).where(
+        TelematicsIntegration.organization_id == user.organization_id,
+        TelematicsIntegration.provider == provider,
+        TelematicsIntegration.id != integration_id,
+    ))
+    if duplicate is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This provider is already configured for the organization")
+    integration.provider = provider
     integration.base_url = payload.base_url
     integration.sync_path = payload.sync_path
     integration.credential_ref = payload.credential_ref
     integration.active = payload.active
     integration.sync_interval_minutes = payload.sync_interval_minutes
+    if payload.api_token:
+        key_material = get_settings().telematics_credential_key or get_settings().jwt_secret
+        key = base64.urlsafe_b64encode(hashlib.sha256(key_material.encode()).digest())
+        integration.credential_ciphertext = Fernet(key).encrypt(payload.api_token.encode()).decode()
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="telematics_integration.updated",
+        entity_type="telematics_integration",
+        entity_id=str(integration.id),
+        request_id=str(uuid4()),
+        changes=json.dumps({"provider": integration.provider, "credential_rotated": bool(payload.api_token)}),
+    ))
     database.commit()
     database.refresh(integration)
     return integration
@@ -4116,13 +4189,29 @@ def create_telematics_device(
     vehicle = database.scalar(select(Vehicle).where(Vehicle.id == payload.vehicle_id, Vehicle.organization_id == user.organization_id))
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found in this organization")
+    provider = payload.provider.strip().lower()
     existing = database.scalar(select(TelematicsDevice).where(
         TelematicsDevice.organization_id == user.organization_id,
+        TelematicsDevice.provider == provider,
         TelematicsDevice.device_identifier == payload.device_identifier,
     ))
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A telematics device with this identifier already exists")
-    device = TelematicsDevice(organization_id=user.organization_id, **payload.model_dump())
+    vehicle_device = database.scalar(select(TelematicsDevice).where(
+        TelematicsDevice.organization_id == user.organization_id,
+        TelematicsDevice.vehicle_id == payload.vehicle_id,
+        TelematicsDevice.provider == provider,
+        TelematicsDevice.active.is_(True),
+    ))
+    if vehicle_device is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This vehicle already has an active device for this provider")
+    device = TelematicsDevice(
+        organization_id=user.organization_id,
+        vehicle_id=payload.vehicle_id,
+        provider=provider,
+        device_identifier=payload.device_identifier.strip(),
+        active=payload.active,
+    )
     database.add(device)
     database.flush()
     database.add(AuditLog(
@@ -4133,6 +4222,35 @@ def create_telematics_device(
         entity_id=str(device.id),
         request_id=request.headers.get("x-request-id", str(uuid4())),
         changes=json.dumps({"vehicle_id": vehicle.id, "provider": device.provider}),
+    ))
+    database.commit()
+    database.refresh(device)
+    return device
+
+
+@router.patch("/telematics/devices/{device_id}", response_model=TelematicsDeviceRead)
+def update_telematics_device(
+    device_id: int,
+    payload: TelematicsDeviceUpdate,
+    request: Request,
+    user: User = Depends(require_roles("fleet_manager")),
+    database: Session = Depends(get_db),
+) -> TelematicsDevice:
+    device = database.scalar(select(TelematicsDevice).where(
+        TelematicsDevice.id == device_id,
+        TelematicsDevice.organization_id == user.organization_id,
+    ))
+    if device is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Telematics device not found")
+    device.active = payload.active
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="telematics_device.updated",
+        entity_type="telematics_device",
+        entity_id=str(device.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps({"active": device.active}),
     ))
     database.commit()
     database.refresh(device)

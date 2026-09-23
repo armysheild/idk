@@ -555,6 +555,7 @@ class TelematicsIntegration(Base):
     base_url: Mapped[str] = mapped_column(String(500), nullable=False)
     sync_path: Mapped[str] = mapped_column(String(500), default="/readings", nullable=False)
     credential_ref: Mapped[Optional[str]] = mapped_column(String(160))
+    credential_ciphertext: Mapped[Optional[str]] = mapped_column(Text)
     active: Mapped[bool] = mapped_column(default=True, nullable=False)
     sync_interval_minutes: Mapped[int] = mapped_column(Integer, default=1440, nullable=False)
     last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
