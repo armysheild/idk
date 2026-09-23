@@ -1,0 +1,34 @@
+{
+  "crons": [
+    {
+      "path": "/api/v1/telematics/cron-sync",
+      "schedule": "0 0 * * *"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/signup",
+      "destination": "/?page=signup"
+    },
+    {
+      "source": "/app",
+      "destination": "/?page=app"
+    },
+    {
+      "source": "/invite/:token",
+      "destination": "/?page=invite&token=:token"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/health"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
