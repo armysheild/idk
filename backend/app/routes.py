@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import base64
 import csv
 import io
 import json
@@ -4079,20 +4080,59 @@ def download_purchase_order(
     )
 
 
-def csv_export_payload(filename: str, headers: list[str], rows: list[list[object]]) -> dict[str, object]:
+def pdf_export_content(title: str, rows: list[list[object]]) -> str:
+    def pdf_text(value: object) -> str:
+        return str(value).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+    lines = [title, *(" | ".join(pdf_text(value) for value in row) for row in rows[:42])]
+    commands = ["BT", "/F1 8 Tf", "36 756 Td"]
+    for index, line in enumerate(lines):
+        if index:
+            commands.append("0 -16 Td")
+        commands.append(f"({line[:180]}) Tj")
+    commands.append("ET")
+    stream = "\n".join(commands).encode()
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+    ]
+    document = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for number, content in enumerate(objects, start=1):
+        offsets.append(len(document))
+        document.extend(f"{number} 0 obj\n".encode())
+        document.extend(content)
+        document.extend(b"\nendobj\n")
+    xref_offset = len(document)
+    document.extend(f"xref\n0 {len(objects) + 1}\n".encode())
+    document.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        document.extend(f"{offset:010d} 00000 n \n".encode())
+    document.extend(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF".encode())
+    return base64.b64encode(document).decode()
+
+
+def export_payload(filename: str, headers: list[str], rows: list[list[object]], export_format: str | None) -> dict[str, object]:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(headers)
     writer.writerows(rows)
+    content = output.getvalue()
+    if export_format == "pdf":
+        content = pdf_export_content(filename.removesuffix(".csv"), rows)
     return {
-        "filename": filename,
-        "content": output.getvalue(),
+        "filename": filename.removesuffix(".csv") + (".pdf" if export_format == "pdf" else ".csv"),
+        "content": content,
         "row_count": len(rows),
     }
 
 
 @router.get("/export/documents", response_model=dict)
 def export_documents(
+    format: str | None = Query(default=None, pattern="^(csv|pdf)$"),
     user: User = Depends(require_permission("compliance_read")),
     database: Session = Depends(get_db),
 ) -> dict:
@@ -4101,7 +4141,7 @@ def export_documents(
         .where(ComplianceDocument.organization_id == user.organization_id)
         .order_by(ComplianceDocument.expires_on.asc(), ComplianceDocument.id.asc())
     ).all()
-    return csv_export_payload(
+    return export_payload(
         "documents.csv",
         ["id", "vehicle_id", "name", "document_type", "issued_by", "expires_on", "file_key", "status"],
         [[
@@ -4114,11 +4154,13 @@ def export_documents(
             document.file_key or "",
             document.status,
         ] for document in documents],
+        format,
     )
 
 
 @router.get("/export/expenses", response_model=dict)
 def export_expenses(
+    format: str | None = Query(default=None, pattern="^(csv|pdf)$"),
     user: User = Depends(require_permission("finance_read")),
     database: Session = Depends(get_db),
 ) -> dict:
@@ -4127,7 +4169,7 @@ def export_expenses(
         .where(Expense.organization_id == user.organization_id)
         .order_by(Expense.incurred_on.desc(), Expense.id.desc())
     ).all()
-    return csv_export_payload(
+    return export_payload(
         "expenses.csv",
         ["id", "vehicle_id", "category", "description", "amount_paise", "gst_amount_paise", "incurred_on", "vendor", "status"],
         [[
@@ -4141,6 +4183,7 @@ def export_expenses(
             expense.vendor or "",
             expense.status,
         ] for expense in expenses],
+        format,
     )
 
 

@@ -297,6 +297,33 @@ async function request(path: string, input?: unknown, method = "GET", inputPath 
   return response.status === 204 ? null : response.json().then(camelize);
 }
 
+async function uploadDocumentFile(documentId: string | number, fileData: string) {
+  const match = fileData.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) throw new Error("The selected document file is invalid");
+  const bytes = Uint8Array.from(atob(match[2]), (character) => character.charCodeAt(0));
+  const form = new FormData();
+  form.append("file", new Blob([bytes], { type: match[1] }), `document-${documentId}`);
+  const send = async (token?: string) => fetch(`${API_BASE_URL}/api/v1/documents/${documentId}/file`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  let token = await accessToken();
+  let response = await send(token);
+  if (response.status === 401 && supabase) {
+    const refreshed = await supabase.auth.refreshSession();
+    if (refreshed.data.session?.access_token) {
+      token = refreshed.data.session.access_token;
+      response = await send(token);
+    }
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail || `File upload failed with status ${response.status}`);
+  }
+  return response.json().then(camelize);
+}
+
 function collectionPath(path: string) {
   const root = path.split(".")[0];
   const map: Record<string, string> = {
@@ -363,8 +390,10 @@ function queryPath(path: string, input: unknown) {
   if (path === "inventory.list") return "/api/v1/parts";
   if (path === "vendors.list") return "/api/v1/vendors";
   if (path === "purchaseOrders.list") return "/api/v1/purchase-orders";
-  if (path === "documents.exportCsv" || path === "documents.exportPdf") return "/api/v1/export/documents";
-  if (path === "financials.exportCsv" || path === "financials.exportPdf") return "/api/v1/export/expenses";
+  if (path === "documents.exportPdf") return "/api/v1/export/documents?format=pdf";
+  if (path === "documents.exportCsv") return "/api/v1/export/documents";
+  if (path === "financials.exportPdf") return "/api/v1/export/expenses?format=pdf";
+  if (path === "financials.exportCsv") return "/api/v1/export/expenses";
   if (path === "inventory.exportCsv") return "/api/v1/inventory/movements/export";
   if (path === "inventory.previewImport") return "/api/v1/inventory/movements/preview-text";
   if (path === "documents.previewImport") return "/api/v1/documents/preview-import";
@@ -507,7 +536,15 @@ function useApiMutation(path: string, options?: MutationOptions) {
   const mutateAsync = useCallback(async (input?: unknown) => {
     setState({ error: null, isPending: true });
     try {
-      const data = await request(mutationPath(path, input), input, mutationMethod(path), path);
+      let data: unknown;
+      if (path === "documents.create" && typeof (input as { fileData?: unknown } | undefined)?.fileData === "string") {
+        const document = await request(mutationPath(path, input), input, mutationMethod(path), path) as { id?: string | number };
+        if (!document.id) throw new Error("Document creation returned no identifier");
+        await uploadDocumentFile(document.id, (input as { fileData: string }).fileData);
+        data = document;
+      } else {
+        data = await request(mutationPath(path, input), input, mutationMethod(path), path);
+      }
       setState({ error: null, isPending: false });
       options?.onSuccess?.(data);
       return data;
