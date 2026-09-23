@@ -94,8 +94,9 @@ function queryPath(path: string, input: unknown) {
   if (path === "maintenanceTemplates.list") return "/api/v1/maintenance/templates";
   if (path === "reports.maintenancePerformance") return "/api/v1/reports/maintenance-performance";
   if (path === "vehicles.health") return "/api/v1/fleet/analytics";
-  if (path === "vehicles.odometerHistory") return "/api/v1/fleet/analytics";
+  if (path === "vehicles.odometerHistory" && (input as { vehicleId?: string | number } | undefined)?.vehicleId) return `/api/v1/vehicles/${(input as { vehicleId: string | number }).vehicleId}/odometer`;
   if (path === "workOrders.board") return "/api/v1/work-orders/board";
+  if (path === "workOrders.detail" && (input as { workOrderId?: string | number } | undefined)?.workOrderId) return `/api/v1/work-orders/${(input as { workOrderId: string | number }).workOrderId}`;
   if (path === "workOrders.handoffTimeline" && (input as { workOrderId?: string | number } | undefined)?.workOrderId) return `/api/v1/work-orders/${(input as { workOrderId: string | number }).workOrderId}/handoff-timeline`;
   if (path === "vehicleIssues.list") return "/api/v1/driver/issues";
   if (path === "driver.inspections") return "/api/v1/driver/inspections";
@@ -109,9 +110,15 @@ function queryPath(path: string, input: unknown) {
   if (path === "documents.list") return "/api/v1/documents";
   if (path === "notifications.list") return "/api/v1/notifications";
   if (path === "financials.list") return "/api/v1/expenses";
+  if (path === "financials.vehicles") return "/api/v1/vehicles";
   if (path === "inventory.list") return "/api/v1/parts";
   if (path === "vendors.list") return "/api/v1/vendors";
   if (path === "purchaseOrders.list") return "/api/v1/purchase-orders";
+  if (path === "documents.exportCsv" || path === "documents.exportPdf") return "/api/v1/export/documents";
+  if (path === "financials.exportCsv" || path === "financials.exportPdf") return "/api/v1/export/expenses";
+  if (path === "inventory.exportCsv") return "/api/v1/inventory/movements/export";
+  if (path === "inventory.previewImport") return "/api/v1/inventory/movements/preview";
+  if (path === "documents.previewImport") return "/api/v1/export/documents";
   if (path === "team.members") return "/api/v1/users";
   if (path === "team.operationalRoster") return "/api/v1/team/roster";
   if (path === "team.assignableMembers") return "/api/v1/team/assignable-members";
@@ -139,6 +146,18 @@ function mutationPath(path: string, input: unknown) {
   if (path === "profile.update") return "/api/v1/users/me";
   if (path === "team.invite") return "/api/v1/invitations";
   if (path === "organizationSettings.update") return "/api/v1/organization/settings";
+  if (path === "documents.access" && value?.documentId) return `/api/v1/documents/${value.documentId}/file`;
+  if (path === "documents.create") return "/api/v1/documents";
+  if (path === "documents.importCsv") return "/api/v1/audit/import";
+  if (path === "inventory.importCsv") return "/api/v1/inventory/movements/import";
+  if (path === "inventory.adjust" || path === "inventory.issue" || path === "inventory.receive" || path === "inventory.transfer") return "/api/v1/inventory/movements";
+  if (path === "team.removeMember" && value?.userId) return `/api/v1/users/${value.userId}`;
+  if (path === "team.updateRole" && value?.userId) return `/api/v1/users/${value.userId}`;
+  if (path === "team.revokeInvitation" && value?.id) return `/api/v1/invitations/${value.id}/revoke`;
+  if (path === "workOrders.assign" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/assign`;
+  if (path === "workOrders.bulkUpdate") return "/api/v1/work-orders/bulk-update";
+  if (path === "workOrders.updateChecklist" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/checklist`;
+  if (path === "maintenanceTemplates.applyTemplate" && value?.id) return `/api/v1/maintenance/templates/${value.id}/apply`;
   if (path === "driver.createInspection") return "/api/v1/driver/inspections";
   if (path === "driver.createFuelLog") return "/api/v1/fuel-transactions";
   if (path === "vehicleIssues.create") return "/api/v1/driver/issues";
@@ -183,6 +202,8 @@ function mutationPath(path: string, input: unknown) {
 }
 
 function mutationMethod(path: string) {
+  if (path === "documents.access") return "GET";
+  if (path === "vehicleIssues.updateStatus") return "PUT";
   if (path.endsWith("update") || path.endsWith("updateStatus") || path === "profile.update" || path.includes("markRead")) return "PATCH";
   if (path === "organizationSettings.update") return "PUT";
   if (path.includes("updateChecklist") || path.includes("reconcile")) return "PUT";
