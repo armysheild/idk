@@ -437,8 +437,8 @@ function mutationPath(path: string, input: unknown) {
 function mutationMethod(path: string) {
   if (path === "documents.access") return "GET";
   if (path === "vehicleIssues.updateStatus") return "PUT";
-  if (path.endsWith("update") || path.endsWith("updateStatus") || path === "profile.update" || path.includes("markRead")) return "PATCH";
   if (path === "organizationSettings.update") return "PUT";
+  if (path.endsWith("update") || path.endsWith("updateStatus") || path === "profile.update" || path.includes("markRead")) return "PATCH";
   if (path === "documents.archive") return "PATCH";
   if (path.includes("updateChecklist") || path.includes("reconcile")) return "PUT";
   if (path.endsWith("remove")) return "DELETE";

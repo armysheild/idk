@@ -4695,11 +4695,12 @@ def get_organization_settings(
 @router.put("/organization/settings", response_model=dict)
 def update_organization_settings(
     payload: OrganizationSettingsUpdate,
+    request: Request,
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Update organization settings"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     org = database.get(Organization, user.organization_id)
     if not org:
