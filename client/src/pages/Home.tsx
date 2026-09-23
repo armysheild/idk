@@ -91,8 +91,8 @@ const roleDescriptor: Record<string, string> = {
   SUPERADMIN: "Super Admin / Owner governance and oversight",
   FLEET_MANAGER: "Fleet readiness",
   INVENTORY_MANAGER: "Parts control",
-  MECHANIC: "Repair execution",
-  TECHNICIAN: "Repair execution",
+  MECHANIC: "Physical repair execution",
+  TECHNICIAN: "Diagnostics and technical evidence",
   DRIVER: "Route integrity",
   ACCOUNTANT: "INR finance",
 };

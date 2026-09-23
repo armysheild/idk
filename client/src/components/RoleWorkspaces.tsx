@@ -13,8 +13,8 @@ const roleJourneys: Record<Role, string[]> = {
   SUPERADMIN: ["Observe", "Govern", "Decide"],
   FLEET_MANAGER: ["Detect", "Dispatch", "Protect"],
   INVENTORY_MANAGER: ["Stock", "Supply", "Reconcile"],
-  MECHANIC: ["Receive", "Repair", "Close"],
-  TECHNICIAN: ["Receive", "Repair", "Close"],
+  MECHANIC: ["Receive", "Repair", "Handoff"],
+  TECHNICIAN: ["Diagnose", "Document", "Handoff"],
   DRIVER: ["Inspect", "Report", "Return"],
   ACCOUNTANT: ["Match", "Review", "Close"],
 };

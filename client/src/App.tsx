@@ -54,7 +54,8 @@ function GuardedWorkspaceRoute({ section, allowedRoles }: { section: string; all
 }
 
 function FleetManagerRoute() { return <GuardedWorkspaceRoute section="Fleet manager workspace" allowedRoles={["FLEET_MANAGER"]} />; }
-function MechanicRoute() { return <GuardedWorkspaceRoute section="Mechanic workspace" allowedRoles={["MECHANIC", "TECHNICIAN"]} />; }
+function MechanicRoute() { return <GuardedWorkspaceRoute section="Mechanic workspace" allowedRoles={["MECHANIC"]} />; }
+function TechnicianRoute() { return <GuardedWorkspaceRoute section="Technician workspace" allowedRoles={["TECHNICIAN"]} />; }
 function DriverRoute() { return <GuardedWorkspaceRoute section="Driver portal" allowedRoles={["DRIVER"]} />; }
 function AccountantRoute() { return <GuardedWorkspaceRoute section="Accountant ledger" allowedRoles={["ACCOUNTANT"]} />; }
 function TeamRoute() { return <GuardedWorkspaceRoute section="Team" allowedRoles={["SUPERADMIN"]} />; }
@@ -77,6 +78,7 @@ function App() {
             <Route path="/security" component={SecurityPage} />
             <Route path="/fleet-manager" component={FleetManagerRoute} />
             <Route path="/mechanic" component={MechanicRoute} />
+            <Route path="/technician" component={TechnicianRoute} />
             <Route path="/driver" component={DriverRoute} />
             <Route path="/accountant" component={AccountantRoute} />
             <Route path="/team" component={TeamRoute} />

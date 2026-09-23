@@ -249,6 +249,28 @@ export function MechanicExecutionWorkspace({
       .catch(() => toast.error("Evidence file could not be read"));
   };
   const label = role === "TECHNICIAN" ? "Technician" : "Mechanic";
+  const roleCopy =
+    role === "TECHNICIAN"
+      ? {
+          kicker: "Technician workspace · diagnostics handoff",
+          title: "Turn technical findings into a reliable repair decision",
+          description:
+            "Work only on assigned diagnostic, electrical, calibration, and technical evidence tasks. Record findings and proof before handing the order back for operational review.",
+          queue: "assigned technical orders",
+          record: "Technical findings",
+          notesPlaceholder:
+            "Describe diagnosis, measurements, calibration, and technical handoff notes",
+        }
+      : {
+          kicker: "Mechanic workspace · repair handoff",
+          title: "Make every repair a traceable return to service",
+          description:
+            "Work only on assigned physical repairs. Capture labor, parts, repair evidence, and the checklist before handing the shared work order back for review.",
+          queue: "assigned repair orders",
+          record: "Repair record",
+          notesPlaceholder:
+            "Describe diagnosis, repair performed, and handoff notes",
+        };
   const actionFor = (item: WorkOrderRow) =>
     item.status === "COMPLETED" ? (
       <b className="is-safe">Completed</b>
@@ -346,20 +368,14 @@ export function MechanicExecutionWorkspace({
     <main className="replacement-mechanic-execution">
       <header className="replacement-mechanic-hero">
         <div>
-          <span>{label} workspace · repair handoff</span>
-          <h1>
-            Make every repair a traceable return to service<em>.</em>
-          </h1>
-          <p>
-            {organizationName} work stays limited to the orders assigned to you.
-            Capture the repair evidence, parts, labor, and checklist before it
-            moves to Fleet Manager review.
-          </p>
+          <span>{roleCopy.kicker}</span>
+          <h1>{roleCopy.title}<em>.</em></h1>
+          <p>{organizationName} {roleCopy.description}</p>
         </div>
         <div className="replacement-mechanic-hero-chip">
           <Wrench size={20} />
           <strong>{open.length}</strong>
-          <small>assigned repair orders</small>
+          <small>{roleCopy.queue}</small>
         </div>
       </header>
       <section
@@ -429,7 +445,7 @@ export function MechanicExecutionWorkspace({
             <div>
               <span>02 · execution record</span>
               <h2>
-                {selected ? `Complete: ${selected.title}` : "Select a repair"}
+                {selected ? `${roleCopy.record}: ${selected.title}` : `Select ${label.toLowerCase()} work`}
               </h2>
             </div>
             <b>
@@ -458,7 +474,7 @@ export function MechanicExecutionWorkspace({
                   maxLength={5000}
                   value={repairNotes}
                   onChange={(event) => setRepairNotes(event.target.value)}
-                  placeholder="Describe diagnosis, repair performed, and handoff notes"
+                  placeholder={roleCopy.notesPlaceholder}
                 />
               </label>
               <small className="workspace-draft-status">

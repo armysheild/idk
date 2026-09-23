@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { useFleetOpsAuth } from "@/hooks/useFleetOpsAuth";
 
-const routeForRole = (role: string) => ({ FLEET_MANAGER: "/fleet-manager", INVENTORY_MANAGER: "/inventory", MECHANIC: "/mechanic", TECHNICIAN: "/mechanic", DRIVER: "/driver", ACCOUNTANT: "/accountant" }[role] ?? "/");
+const routeForRole = (role: string) => ({ FLEET_MANAGER: "/fleet-manager", INVENTORY_MANAGER: "/inventory", MECHANIC: "/mechanic", TECHNICIAN: "/technician", DRIVER: "/driver", ACCOUNTANT: "/accountant" }[role] ?? "/");
 
 export default function JoinOrganization() {
   const [, params] = useRoute("/join/:token");
