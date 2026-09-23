@@ -2440,6 +2440,76 @@ def create_document(
     return document
 
 
+class CsvTextPayload(BaseModel):
+    csv: str
+
+
+def document_csv_rows(csv_text: str) -> tuple[list[dict[str, str]], list[str]]:
+    rows = list(csv.DictReader(io.StringIO(csv_text)))
+    errors: list[str] = []
+    for index, row in enumerate(rows, start=2):
+        name = (row.get("name") or row.get("title") or "").strip()
+        document_type = (row.get("document_type") or row.get("doc_type") or "").strip()
+        expires_on = (row.get("expires_on") or row.get("expiry_date") or "").strip()
+        if len(name) < 2:
+            errors.append(f"Row {index}: name is required")
+        if len(document_type) < 2:
+            errors.append(f"Row {index}: document_type is required")
+        try:
+            date.fromisoformat(expires_on)
+        except ValueError:
+            errors.append(f"Row {index}: expires_on must be YYYY-MM-DD")
+    return rows, errors
+
+
+@router.post("/documents/preview-import", response_model=dict)
+def preview_document_import(
+    payload: CsvTextPayload,
+    user: User = Depends(require_permission("compliance_read")),
+) -> dict:
+    rows, errors = document_csv_rows(payload.csv)
+    return {
+        "valid_count": max(0, len(rows) - len({error.split(":")[0] for error in errors})),
+        "row_count": len(rows),
+        "errors": errors,
+    }
+
+
+@router.post("/documents/import-csv", response_model=dict)
+def import_documents_csv(
+    payload: CsvTextPayload,
+    request: Request,
+    user: User = Depends(require_permission("compliance")),
+    database: Session = Depends(get_db),
+) -> dict:
+    reserve_idempotency_key(request, user, database)
+    rows, errors = document_csv_rows(payload.csv)
+    if errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=errors)
+    imported_count = 0
+    for row in rows:
+        vehicle_id = int(row["vehicle_id"]) if row.get("vehicle_id") else None
+        if vehicle_id is not None and database.scalar(select(Vehicle).where(
+            Vehicle.id == vehicle_id,
+            Vehicle.organization_id == user.organization_id,
+        )) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Vehicle not found for row {imported_count + 2}")
+        document = ComplianceDocument(
+            organization_id=user.organization_id,
+            vehicle_id=vehicle_id,
+            name=(row.get("name") or row.get("title") or "").strip(),
+            document_type=(row.get("document_type") or row.get("doc_type") or "").strip(),
+            issued_by=(row.get("issued_by") or "").strip() or None,
+            expires_on=(row.get("expires_on") or row.get("expiry_date") or "").strip(),
+            file_key=(row.get("file_key") or row.get("file_url") or "").strip() or None,
+            status=(row.get("status") or "Valid").strip(),
+        )
+        database.add(document)
+        imported_count += 1
+    database.commit()
+    return {"imported": True, "imported_count": imported_count}
+
+
 @router.patch("/documents/{document_id}", response_model=DocumentRead)
 def update_document(
     document_id: int,
@@ -6210,6 +6280,68 @@ def preview_inventory_import(
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Preview failed: {str(e)}")
+
+
+@router.post("/inventory/movements/preview-text", response_model=dict)
+def preview_inventory_import_text(
+    payload: CsvTextPayload,
+    user: User = Depends(require_roles("owner", "inventory_manager")),
+) -> dict:
+    rows = list(csv.DictReader(io.StringIO(payload.csv)))
+    errors = [
+        f"Row {index}: Part ID, Location, and Quantity are required"
+        for index, row in enumerate(rows, start=2)
+        if not row.get("Part ID") or not row.get("Location") or not row.get("Quantity")
+    ]
+    return {
+        "valid_count": len(rows) - len(errors),
+        "row_count": len(rows),
+        "errors": errors,
+    }
+
+
+@router.post("/inventory/movements/import-text", response_model=dict)
+def import_inventory_movements_text(
+    payload: CsvTextPayload,
+    request: Request,
+    user: User = Depends(require_roles("owner", "inventory_manager")),
+    database: Session = Depends(get_db),
+) -> dict:
+    reserve_idempotency_key(request, user, database)
+    rows = list(csv.DictReader(io.StringIO(payload.csv)))
+    errors = [
+        f"Row {index}: Part ID, Location, and Quantity are required"
+        for index, row in enumerate(rows, start=2)
+        if not row.get("Part ID") or not row.get("Location") or not row.get("Quantity")
+    ]
+    if errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=errors)
+    imported_count = 0
+    for row in rows:
+        part_id = int(row["Part ID"])
+        location_id = int(row["Location"])
+        part = database.scalar(select(Part).where(
+            Part.id == part_id,
+            Part.organization_id == user.organization_id,
+        ))
+        location = database.scalar(select(StockLocation).where(
+            StockLocation.id == location_id,
+            StockLocation.organization_id == user.organization_id,
+        ))
+        if part is None or location is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part or location not found")
+        database.add(InventoryMovement(
+            organization_id=user.organization_id,
+            part_id=part_id,
+            location_id=location_id,
+            transaction_type=row.get("Type", "in"),
+            quantity=int(row["Quantity"]),
+            reference=row.get("Reference"),
+            created_by=user.id,
+        ))
+        imported_count += 1
+    database.commit()
+    return {"imported": True, "imported_count": imported_count}
 
 
 @router.get("/inventory/parts/by-location/{location_id}", response_model=list[dict])

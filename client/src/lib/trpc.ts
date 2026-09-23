@@ -366,8 +366,8 @@ function queryPath(path: string, input: unknown) {
   if (path === "documents.exportCsv" || path === "documents.exportPdf") return "/api/v1/export/documents";
   if (path === "financials.exportCsv" || path === "financials.exportPdf") return "/api/v1/export/expenses";
   if (path === "inventory.exportCsv") return "/api/v1/inventory/movements/export";
-  if (path === "inventory.previewImport") return "/api/v1/inventory/movements/preview";
-  if (path === "documents.previewImport") return "/api/v1/export/documents";
+  if (path === "inventory.previewImport") return "/api/v1/inventory/movements/preview-text";
+  if (path === "documents.previewImport") return "/api/v1/documents/preview-import";
   if (path === "team.members") return "/api/v1/users";
   if (path === "team.invitations") return "/api/v1/invitations";
   if (path === "team.operationalRoster") return "/api/v1/team/roster";
@@ -402,8 +402,8 @@ function mutationPath(path: string, input: unknown) {
   if (path === "organizationSettings.update") return "/api/v1/organization/settings";
   if (path === "documents.access" && (value?.documentId ?? value?.id)) return `/api/v1/documents/${value.documentId ?? value.id}/file`;
   if (path === "documents.create") return "/api/v1/documents";
-  if (path === "documents.importCsv") return "/api/v1/audit/import";
-  if (path === "inventory.importCsv") return "/api/v1/inventory/movements/import";
+  if (path === "documents.importCsv") return "/api/v1/documents/import-csv";
+  if (path === "inventory.importCsv") return "/api/v1/inventory/movements/import-text";
   if (path === "inventory.adjust" || path === "inventory.issue" || path === "inventory.receive" || path === "inventory.transfer") return "/api/v1/inventory/movements";
   if (path === "team.removeMember" && value?.userId) return `/api/v1/users/${value.userId}`;
   if (path === "team.updateRole" && value?.userId) return `/api/v1/users/${value.userId}`;
