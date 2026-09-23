@@ -4079,6 +4079,71 @@ def download_purchase_order(
     )
 
 
+def csv_export_payload(filename: str, headers: list[str], rows: list[list[object]]) -> dict[str, object]:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    return {
+        "filename": filename,
+        "content": output.getvalue(),
+        "row_count": len(rows),
+    }
+
+
+@router.get("/export/documents", response_model=dict)
+def export_documents(
+    user: User = Depends(require_permission("compliance_read")),
+    database: Session = Depends(get_db),
+) -> dict:
+    documents = database.scalars(
+        select(ComplianceDocument)
+        .where(ComplianceDocument.organization_id == user.organization_id)
+        .order_by(ComplianceDocument.expires_on.asc(), ComplianceDocument.id.asc())
+    ).all()
+    return csv_export_payload(
+        "documents.csv",
+        ["id", "vehicle_id", "name", "document_type", "issued_by", "expires_on", "file_key", "status"],
+        [[
+            document.id,
+            document.vehicle_id or "",
+            document.name,
+            document.document_type,
+            document.issued_by or "",
+            document.expires_on,
+            document.file_key or "",
+            document.status,
+        ] for document in documents],
+    )
+
+
+@router.get("/export/expenses", response_model=dict)
+def export_expenses(
+    user: User = Depends(require_permission("finance_read")),
+    database: Session = Depends(get_db),
+) -> dict:
+    expenses = database.scalars(
+        select(Expense)
+        .where(Expense.organization_id == user.organization_id)
+        .order_by(Expense.incurred_on.desc(), Expense.id.desc())
+    ).all()
+    return csv_export_payload(
+        "expenses.csv",
+        ["id", "vehicle_id", "category", "description", "amount_paise", "gst_amount_paise", "incurred_on", "vendor", "status"],
+        [[
+            expense.id,
+            expense.vehicle_id or "",
+            expense.category,
+            expense.description,
+            expense.amount_paise,
+            expense.gst_amount_paise,
+            expense.incurred_on,
+            expense.vendor or "",
+            expense.status,
+        ] for expense in expenses],
+    )
+
+
 @router.get("/export/{resource}")
 def export_resource(
     resource: str,
