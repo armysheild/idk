@@ -35,6 +35,22 @@ function camelize(value: unknown): unknown {
   if (result.inviteToken && !result.tokenHash) result.tokenHash = result.inviteToken;
   if (result.invitePath && !result.joinUrl) result.joinUrl = result.invitePath;
   if (result.totalPaise !== undefined && result.totalCost === undefined) result.totalCost = Number(result.totalPaise) / 100;
+  if (result.code && result.monthlyPricePaise !== undefined) {
+    result.id ??= String(result.code).toUpperCase();
+    result.platformFeeInr ??= Number(result.monthlyPricePaise) / 100;
+    result.overageVehicleFeeInr ??= Number(result.overageVehicleFeePaise ?? 0) / 100;
+  }
+  if (result.plan && typeof result.plan === "object") {
+    const plan = result.plan as Record<string, unknown>;
+    result.tier ??= typeof plan.code === "string" ? plan.code.toUpperCase() : undefined;
+    result.planName ??= plan.name;
+    result.maxVehicles ??= plan.maxVehicles;
+    result.maxUsers ??= plan.includedUsers;
+    result.activeVehicles ??= result.vehicleCount;
+    result.lifecycle ??= result.status;
+    result.isTrial ??= result.status === "trialing";
+    result.writeLocked ??= result.status === "suspended" || result.status === "cancelled";
+  }
   return result;
 }
 
