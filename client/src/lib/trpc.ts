@@ -415,6 +415,7 @@ function queryPath(path: string, input: unknown) {
   if (path === "workOrders.board") return "/api/v1/work-orders/board";
   if (path === "workOrders.detail" && (input as { workOrderId?: string | number } | undefined)?.workOrderId) return `/api/v1/work-orders/${(input as { workOrderId: string | number }).workOrderId}`;
   if (path === "workOrders.handoffTimeline" && (input as { workOrderId?: string | number } | undefined)?.workOrderId) return `/api/v1/work-orders/${(input as { workOrderId: string | number }).workOrderId}/handoff-timeline`;
+  if (path === "workOrders.handoffTimeline") return "/api/v1/work-orders/handoff-timeline";
   if (path === "vehicleIssues.list") return "/api/v1/driver/issues";
   if (path === "driver.inspections") return "/api/v1/driver/inspections";
   if (path === "driver.fuelLogs") return "/api/v1/fuel-transactions";

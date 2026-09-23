@@ -6074,6 +6074,42 @@ def get_work_order_board(
     }
 
 
+@router.get("/work-orders/handoff-timeline", response_model=list[dict])
+def work_order_handoff_timeline_overview(
+    user: User = Depends(require_permission("maintenance")),
+    database: Session = Depends(get_db),
+) -> list[dict]:
+    work_orders = list(database.scalars(
+        select(WorkOrder)
+        .where(WorkOrder.organization_id == user.organization_id)
+        .order_by(WorkOrder.created_at.desc())
+        .limit(50)
+    ).all())
+    vehicles = {
+        vehicle.id: vehicle.registration_number
+        for vehicle in database.scalars(
+            select(Vehicle).where(Vehicle.organization_id == user.organization_id)
+        ).all()
+    }
+    return [
+        {
+            "work_order_id": work_order.id,
+            "title": work_order.title,
+            "vehicle": vehicles.get(work_order.vehicle_id, "Unknown vehicle"),
+            "status": work_order.status.upper().replace(" ", "_"),
+            "priority": work_order.priority.upper(),
+            "assigned_mechanic": work_order.assigned_to or "Unassigned",
+            "updated_at": (
+                work_order.completed_at
+                or work_order.started_at
+                or work_order.created_at
+            ).isoformat(),
+            "activity": [],
+        }
+        for work_order in work_orders
+    ]
+
+
 @router.post("/work-orders/bulk-update", response_model=dict)
 def bulk_update_work_orders(
     payload: WorkOrderBulkUpdate,
