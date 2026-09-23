@@ -5244,11 +5244,12 @@ def delete_maintenance_template(
 def apply_maintenance_template(
     template_id: int,
     payload: dict,
+    request: Request,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Apply a maintenance template to a vehicle"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     vehicle_id = payload.get("vehicle_id")
     vehicle = database.get(Vehicle, vehicle_id)
@@ -5436,11 +5437,12 @@ def get_onboarding_checklist(
 @router.post("/onboarding/bootstrap", response_model=dict)
 def onboarding_bootstrap(
     payload: OnboardingBootstrap,
+    request: Request,
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Bootstrap initial onboarding data"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     org = database.get(Organization, user.organization_id)
     if not org:
@@ -6075,11 +6077,12 @@ def get_work_order_board(
 @router.post("/work-orders/bulk-update", response_model=dict)
 def bulk_update_work_orders(
     payload: WorkOrderBulkUpdate,
+    request: Request,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Bulk update multiple work orders"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     work_orders = database.query(WorkOrder).filter(
         WorkOrder.organization_id == user.organization_id,
@@ -6372,35 +6375,21 @@ def export_inventory_movements(
         InventoryMovement.organization_id == user.organization_id
     ).order_by(InventoryMovement.created_at.desc()).limit(1000).all()
     
-    # Build CSV content
-    csv_buffer = io.StringIO()
-    writer = csv.writer(csv_buffer)
-    writer.writerow([
-        "Movement ID", "Part ID", "Location", "Type", "Quantity",
-        "Reference", "Created By", "Created At"
-    ])
-    
-    for mv in movements:
-        writer.writerow([
-            mv.id,
-            mv.part_id,
-            mv.location_id,
-            mv.transaction_type,
-            mv.quantity,
-            mv.reference or "",
-            mv.created_by,
-            mv.created_at.isoformat(),
-        ])
-    
-    csv_content = csv_buffer.getvalue()
-    csv_buffer.close()
-    
-    return {
-        "format": "csv",
-        "total_records": len(movements),
-        "data": csv_content,
-        "export_timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+    return export_payload(
+        "inventory-movements.csv",
+        ["movement_id", "part_id", "location_id", "type", "quantity", "reference", "created_by", "created_at"],
+        [[
+            movement.id,
+            movement.part_id,
+            movement.location_id,
+            movement.transaction_type,
+            movement.quantity,
+            movement.reference or "",
+            movement.created_by,
+            movement.created_at.isoformat(),
+        ] for movement in movements],
+        None,
+    )
 
 
 @router.post("/inventory/movements/import", response_model=dict)
@@ -7038,11 +7027,12 @@ def get_triage_queue(
 def update_triage_issue(
     issue_id: int,
     payload: TriageIssueUpdate,
+    request: Request,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Update a triage issue"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     issue = database.get(VehicleIssue, issue_id)
     if not issue or issue.organization_id != user.organization_id:
@@ -7082,11 +7072,12 @@ def update_triage_issue(
 def create_work_order_from_issue(
     issue_id: int,
     payload: CreateWorkOrderFromIssue,
+    request: Request,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Convert a triage issue into a work order"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     issue = database.get(VehicleIssue, issue_id)
     if not issue or issue.organization_id != user.organization_id:
@@ -8358,11 +8349,12 @@ def get_financial_approval_queue(
 @router.post("/financials/expenses/{expense_id}/approve", response_model=dict)
 def approve_expense(
     expense_id: int,
+    request: Request,
     user: User = Depends(require_roles("owner", "accountant")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Approve an expense for reimbursement"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     expense = database.get(Expense, expense_id)
     if not expense or expense.organization_id != user.organization_id:
@@ -8596,11 +8588,12 @@ def check_plan_eligibility(
 
 @router.post("/billing/test/activate-starter", response_model=dict)
 def activate_starter_plan(
+    request: Request,
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Activate starter plan with test mode (no payment required)"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     org = database.get(Organization, user.organization_id)
     if not org:
@@ -8968,11 +8961,12 @@ def get_notification_source_detail(
 def escalate_notification(
     notification_id: int,
     payload: dict,
+    request: Request,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Escalate a notification to higher severity"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     notification = database.get(OperationalNotification, notification_id)
     if not notification or notification.organization_id != user.organization_id:
@@ -9027,11 +9021,12 @@ def escalate_notification(
 def resolve_notification(
     notification_id: int,
     payload: dict,
+    request: Request,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Mark a notification as resolved"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     notification = database.get(OperationalNotification, notification_id)
     if not notification or notification.organization_id != user.organization_id:
@@ -9112,11 +9107,12 @@ def get_pending_notifications(
 @router.post("/notifications/bulk-resolve", response_model=dict)
 def bulk_resolve_notifications(
     payload: dict,
+    request: Request,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Bulk resolve multiple notifications"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     notification_ids = payload.get("notification_ids", [])
     
@@ -9243,11 +9239,12 @@ def get_vendor_pricing_history(
 def receive_partial_purchase_order(
     po_id: int,
     payload: dict,
+    request: Request,
     user: User = Depends(require_roles("owner", "inventory_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Receive partial shipment with variance tracking"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     po = database.get(PurchaseOrder, po_id)
     if not po or po.organization_id != user.organization_id:
@@ -9255,6 +9252,7 @@ def receive_partial_purchase_order(
     
     # Get items being received
     items_received = payload.get("items", [])
+    received_quantity = 0
     
     for item in items_received:
         part_id = item.get("part_id")
@@ -9295,6 +9293,7 @@ def receive_partial_purchase_order(
         # Update inventory (good items only)
         part.quantity_on_hand += (quantity - damaged_qty)
         database.add(part)
+        received_quantity += quantity
         
         # Calculate variance
         expected = po_line.quantity
@@ -9336,6 +9335,7 @@ def receive_partial_purchase_order(
     return {
         "purchase_order_id": po_id,
         "items_received": len(items_received),
+        "receipt": {"quantity": received_quantity},
         "status": po.status,
         "received": True,
     }
