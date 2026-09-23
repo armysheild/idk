@@ -86,3 +86,43 @@ def test_provider_credentials_are_private_and_devices_share_provider_config(tmp_
         assert overview.status_code == 200
         assert overview.json()["integrations"][0]["provider"] == "samsara"
         assert {device["device_identifier"] for device in overview.json()["devices"]} == {"SAM-1001", "SAM-1002"}
+
+
+def test_vehicle_creation_can_assign_driver_and_attached_device(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    with TestClient(app) as client:
+        signup = client.post("/api/v1/auth/signup", json={
+            "organization_name": "Bundled Fleet",
+            "full_name": "Owner",
+            "email": f"owner-{uuid4().hex[:8]}@bundled.example",
+            "password": "OwnerPassword!123",
+        })
+        owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+        fleet_headers = _invite(client, owner_headers, f"fleet-{uuid4().hex[:8]}@bundled.example", "fleet_manager")
+        driver_headers = _invite(client, owner_headers, f"driver-{uuid4().hex[:8]}@bundled.example", "driver")
+        driver_id = client.get("/api/v1/auth/me", headers=driver_headers).json()["id"]
+        connected = client.post("/api/v1/telematics/integrations", headers=fleet_headers, json={
+            "provider": "IVFleet",
+            "base_url": "https://telemetry.example",
+            "api_token": "secret-token",
+        })
+        assert connected.status_code == 201
+
+        vehicle = client.post("/api/v1/vehicles", headers=fleet_headers, json={
+            "registration_number": "BF 01 AA 1001",
+            "model": "Fleet Truck",
+            "vehicle_type": "Truck",
+            "depot": "Main depot",
+            "assigned_driver_id": driver_id,
+            "telematics_provider": "IVFleet",
+            "telematics_device_identifier": "IVF-1001",
+        })
+        assert vehicle.status_code == 201
+        assert vehicle.json()["assigned_driver_id"] == driver_id
+
+        overview = client.get("/api/v1/telematics/overview", headers=fleet_headers)
+        assert overview.status_code == 200
+        assert overview.json()["devices"][0]["vehicle_id"] == vehicle.json()["id"]
+        assert overview.json()["devices"][0]["device_identifier"] == "IVF-1001"

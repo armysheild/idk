@@ -298,6 +298,8 @@ class VehicleCreate(BaseModel):
     odometer_km: int = Field(default=0, ge=0)
     driver_name: str | None = None
     assigned_driver_id: int | None = None
+    telematics_provider: str | None = Field(default=None, min_length=2, max_length=80)
+    telematics_device_identifier: str | None = Field(default=None, min_length=2, max_length=160)
 
 
 class VehicleRead(VehicleCreate):

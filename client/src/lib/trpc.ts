@@ -118,6 +118,8 @@ function serializeInput(path: string, input: unknown): unknown {
     status: vehicleStatus(value.status) ?? "Idle / parked",
     odometer_km: value.currentOdometer ?? 0,
     assigned_driver_id: value.driverId,
+    telematics_provider: value.telematicsProvider || undefined,
+    telematics_device_identifier: value.telematicsDeviceIdentifier || undefined,
   };
   if (path === "vehicles.update") return {
     model: [value.make, value.model].filter(Boolean).join(" ") || value.model,

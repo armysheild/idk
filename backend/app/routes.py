@@ -1156,6 +1156,25 @@ def create_vehicle(
         driver_name = driver.full_name
     else:
         driver_name = payload.driver_name.strip() if payload.driver_name else None
+    provider = payload.telematics_provider.strip().lower() if payload.telematics_provider else None
+    device_identifier = payload.telematics_device_identifier.strip() if payload.telematics_device_identifier else None
+    if bool(provider) != bool(device_identifier):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provider and device identifier must be provided together")
+    if provider and device_identifier:
+        integration = database.scalar(select(TelematicsIntegration).where(
+            TelematicsIntegration.organization_id == user.organization_id,
+            TelematicsIntegration.provider == provider,
+            TelematicsIntegration.active.is_(True),
+        ))
+        if integration is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Configure this active telematics provider before attaching a device")
+        duplicate_device = database.scalar(select(TelematicsDevice).where(
+            TelematicsDevice.organization_id == user.organization_id,
+            TelematicsDevice.provider == provider,
+            TelematicsDevice.device_identifier == device_identifier,
+        ))
+        if duplicate_device is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This device identifier is already mapped in the organization")
 
     vehicle = Vehicle(
         organization_id=user.organization_id,
@@ -1184,6 +1203,25 @@ def create_vehicle(
             reading_km=vehicle.odometer_km,
             source="vehicle_creation",
             is_flagged=False,
+        ))
+    if provider and device_identifier:
+        device = TelematicsDevice(
+            organization_id=user.organization_id,
+            vehicle_id=vehicle.id,
+            provider=provider,
+            device_identifier=device_identifier,
+            active=True,
+        )
+        database.add(device)
+        database.flush()
+        database.add(AuditLog(
+            organization_id=user.organization_id,
+            actor_user_id=user.id,
+            action="telematics_device.created",
+            entity_type="telematics_device",
+            entity_id=str(device.id),
+            request_id=request.headers.get("x-request-id", str(uuid4())),
+            changes=json.dumps({"vehicle_id": vehicle.id, "provider": provider, "source": "vehicle_creation"}),
         ))
     database.add(AuditLog(
         organization_id=user.organization_id,
