@@ -88,7 +88,7 @@ const navGroups = [
 ];
 
 const roleDescriptor: Record<string, string> = {
-  SUPERADMIN: "Super Admin / Owner governance",
+  SUPERADMIN: "Super Admin / Owner governance and oversight",
   FLEET_MANAGER: "Fleet readiness",
   INVENTORY_MANAGER: "Parts control",
   MECHANIC: "Repair execution",

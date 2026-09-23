@@ -41,7 +41,7 @@ export function OrganizationSettingsWorkspace() {
   return (
     <section className="panel workspace-form">
       <div>
-        <div className="panel-kicker">Superadmin governance</div>
+        <div className="panel-kicker">Super Admin / Owner governance</div>
         <h2>Organization settings</h2>
         <p>Configure operating controls and the internal INR labor rate used when approved work orders are posted to the ledger.</p>
       </div>

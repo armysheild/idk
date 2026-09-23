@@ -1349,7 +1349,7 @@ def list_components(user: User = Depends(require_permission("maintenance_read"))
 def create_component(
     payload: ComponentCreate,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> VehicleComponent:
     vehicle = database.scalar(select(Vehicle).where(Vehicle.id == payload.vehicle_id, Vehicle.organization_id == user.organization_id))
@@ -1391,7 +1391,7 @@ def update_component(
     component_id: int,
     payload: ComponentUpdate,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> VehicleComponent:
     statement = select(VehicleComponent).where(
@@ -1438,7 +1438,7 @@ def update_component(
 def delete_component(
     component_id: int,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> Response:
     component = database.scalar(select(VehicleComponent).where(
@@ -1470,7 +1470,7 @@ def complete_component_service(
     component_id: int,
     odometer_km: int,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager", "mechanic")),
+    user: User = Depends(require_roles("fleet_manager", "mechanic")),
     database: Session = Depends(get_db),
 ) -> VehicleComponent:
     statement = select(VehicleComponent).where(
@@ -1651,7 +1651,7 @@ def create_driver_issue(
 def create_work_order(
     payload: WorkOrderCreate,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> WorkOrder:
     reserve_idempotency_key(request, user, database)
@@ -1771,7 +1771,7 @@ def update_work_order(
 def delete_work_order(
     work_order_id: int,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> Response:
     work_order = database.scalar(select(WorkOrder).where(
@@ -2037,7 +2037,7 @@ def archive_work_order(
 @router.get("/work-orders/{work_order_id}/parts", response_model=list[WorkOrderPartUsageRead])
 def list_work_order_parts(
     work_order_id: int,
-    user: User = Depends(require_permission("maintenance")),
+    user: User = Depends(require_permission("maintenance_read")),
     database: Session = Depends(get_db),
 ) -> list[WorkOrderPartUsage]:
     work_order = database.scalar(select(WorkOrder).where(
@@ -2055,7 +2055,7 @@ def list_work_order_parts(
 @router.get("/work-orders/{work_order_id}/timeline", response_model=list[AuditLogRead])
 def work_order_timeline(
     work_order_id: int,
-    user: User = Depends(require_permission("maintenance")),
+    user: User = Depends(require_permission("maintenance_read")),
     database: Session = Depends(get_db),
 ) -> list[AuditLog]:
     statement = select(WorkOrder).where(
@@ -2076,7 +2076,7 @@ def work_order_timeline(
 @router.get("/work-orders/{work_order_id}/evidence", response_model=list[WorkOrderEvidenceRead])
 def list_work_order_evidence(
     work_order_id: int,
-    user: User = Depends(require_permission("maintenance")),
+    user: User = Depends(require_permission("maintenance_read")),
     database: Session = Depends(get_db),
 ) -> list[WorkOrderEvidence]:
     work_order = database.scalar(select(WorkOrder).where(
@@ -2187,7 +2187,7 @@ def record_work_order_part(
 @router.get("/work-orders/{work_order_id}/download")
 def download_work_order(
     work_order_id: int,
-    user: User = Depends(require_permission("maintenance")),
+    user: User = Depends(require_permission("maintenance_read")),
     database: Session = Depends(get_db),
 ) -> Response:
     statement = select(WorkOrder).where(
@@ -2222,7 +2222,7 @@ def list_maintenance_plans(user: User = Depends(require_permission("maintenance_
 def create_maintenance_plan(
     payload: MaintenancePlanCreate,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> MaintenancePlan:
     vehicle = database.scalar(select(Vehicle).where(Vehicle.id == payload.vehicle_id, Vehicle.organization_id == user.organization_id))
@@ -3423,7 +3423,7 @@ def update_expense_status(
 def reconcile_expense(
     expense_id: int,
     request: Request,
-    user: User = Depends(require_roles("owner", "accountant")),
+    user: User = Depends(require_roles("accountant")),
     database: Session = Depends(get_db),
 ) -> Expense:
     expense = database.scalar(select(Expense).where(
@@ -3457,7 +3457,7 @@ def reverse_expense(
     expense_id: int,
     payload: ExpenseReversal,
     request: Request,
-    user: User = Depends(require_roles("owner", "accountant")),
+    user: User = Depends(require_roles("accountant")),
     database: Session = Depends(get_db),
 ) -> Expense:
     expense = database.scalar(select(Expense).where(
@@ -3755,7 +3755,7 @@ def telematics_health(
 def create_telematics_integration(
     payload: TelematicsIntegrationCreate,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> TelematicsIntegration:
     integration = TelematicsIntegration(organization_id=user.organization_id, **payload.model_dump())
@@ -3779,7 +3779,7 @@ def create_telematics_integration(
 def update_telematics_integration(
     integration_id: int,
     payload: TelematicsIntegrationCreate,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> TelematicsIntegration:
     integration = database.scalar(select(TelematicsIntegration).where(
@@ -3802,7 +3802,7 @@ def update_telematics_integration(
 @router.delete("/telematics/integrations/{integration_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_telematics_integration(
     integration_id: int,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> Response:
     integration = database.scalar(select(TelematicsIntegration).where(
@@ -4085,7 +4085,7 @@ def update_purchase_order_status(
 @router.get("/purchase-orders/{purchase_order_id}/receipts", response_model=list[PurchaseOrderReceiptRead])
 def list_purchase_order_receipts(
     purchase_order_id: int,
-    user: User = Depends(require_permission("procurement")),
+    user: User = Depends(require_permission("procurement_read")),
     database: Session = Depends(get_db),
 ) -> list[PurchaseOrderReceipt]:
     order = database.scalar(select(PurchaseOrder).where(
@@ -4539,7 +4539,7 @@ def assign_vehicle_driver(
     vehicle_id: int,
     payload: VehicleDriverAssignmentCreate,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Assign a driver to a vehicle"""
@@ -4631,7 +4631,7 @@ def assign_work_order(
     work_order_id: int,
     payload: WorkOrderAssignmentCreate,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Assign a work order to a mechanic/technician"""
@@ -4770,7 +4770,7 @@ def work_order_handoff_timeline(
 @router.post("/automation/evaluate-vehicle/{vehicle_id}", response_model=dict)
 def evaluate_vehicle_maintenance(
     vehicle_id: int,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Evaluate a vehicle for maintenance thresholds and auto-generate work orders"""
@@ -4791,7 +4791,7 @@ def evaluate_vehicle_maintenance(
 
 @router.post("/automation/evaluate-inventory", response_model=dict)
 def evaluate_low_inventory(
-    user: User = Depends(require_roles("owner", "inventory_manager")),
+    user: User = Depends(require_roles("inventory_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Evaluate inventory for low stock and create draft purchase orders"""
@@ -6013,7 +6013,7 @@ def reserve_part_for_work_order(
     work_order_id: int,
     payload: WorkOrderPartReservation,
     request: Request,
-    user: User = Depends(require_roles("owner", "mechanic", "technician")),
+    user: User = Depends(require_roles("mechanic", "technician")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Reserve a part for a work order"""
@@ -6065,7 +6065,7 @@ def return_reserved_part(
     work_order_id: int,
     payload: dict,
     request: Request,
-    user: User = Depends(require_roles("owner", "mechanic", "technician")),
+    user: User = Depends(require_roles("mechanic", "technician")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Return a reserved part (unused) back to inventory"""
@@ -6191,7 +6191,7 @@ def work_order_handoff_timeline_overview(
 def bulk_update_work_orders(
     payload: WorkOrderBulkUpdate,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Bulk update multiple work orders"""
@@ -6286,7 +6286,7 @@ def get_work_order_board_stats(
 @router.post("/work-orders/{work_order_id}/reorder-parts", response_model=dict)
 def reorder_parts_for_work_order(
     work_order_id: int,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Create purchase order for parts needed in a work order"""
@@ -6508,7 +6508,7 @@ def export_inventory_movements(
 @router.post("/inventory/movements/import", response_model=dict)
 def import_inventory_movements(
     file: UploadFile = File(...),
-    user: User = Depends(require_roles("owner", "inventory_manager")),
+    user: User = Depends(require_roles("inventory_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Import inventory movements from CSV file"""
@@ -6563,7 +6563,7 @@ def import_inventory_movements(
 @router.post("/inventory/movements/preview", response_model=dict)
 def preview_inventory_import(
     file: UploadFile = File(...),
-    user: User = Depends(require_roles("owner", "inventory_manager")),
+    user: User = Depends(require_roles("inventory_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Preview inventory import without committing"""
@@ -6590,7 +6590,7 @@ def preview_inventory_import(
 @router.post("/inventory/movements/preview-text", response_model=dict)
 def preview_inventory_import_text(
     payload: CsvTextPayload,
-    user: User = Depends(require_roles("owner", "inventory_manager")),
+    user: User = Depends(require_roles("inventory_manager")),
 ) -> dict:
     rows = list(csv.DictReader(io.StringIO(payload.csv)))
     errors = [
@@ -6609,7 +6609,7 @@ def preview_inventory_import_text(
 def import_inventory_movements_text(
     payload: CsvTextPayload,
     request: Request,
-    user: User = Depends(require_roles("owner", "inventory_manager")),
+    user: User = Depends(require_roles("inventory_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     reserve_idempotency_key(request, user, database)
@@ -7141,7 +7141,7 @@ def update_triage_issue(
     issue_id: int,
     payload: TriageIssueUpdate,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Update a triage issue"""
@@ -7186,7 +7186,7 @@ def create_work_order_from_issue(
     issue_id: int,
     payload: CreateWorkOrderFromIssue,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Convert a triage issue into a work order"""
@@ -7251,7 +7251,7 @@ def create_work_order_from_issue(
 def assign_triage_issue(
     issue_id: int,
     payload: dict,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Assign a triage issue to a mechanic/technician"""
@@ -7299,7 +7299,7 @@ def assign_triage_issue(
 def resolve_triage_issue(
     issue_id: int,
     payload: dict,
-    user: User = Depends(require_roles("owner", "fleet_manager", "mechanic")),
+    user: User = Depends(require_roles("fleet_manager", "mechanic")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Mark a triage issue as resolved"""
@@ -7404,7 +7404,7 @@ def get_triage_stats(
 @router.post("/triage/bulk-action", response_model=dict)
 def perform_triage_bulk_action(
     payload: dict,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Perform bulk action on multiple triage issues"""
@@ -9416,7 +9416,7 @@ def receive_partial_purchase_order(
     po_id: int,
     payload: dict,
     request: Request,
-    user: User = Depends(require_roles("owner", "inventory_manager")),
+    user: User = Depends(require_roles("inventory_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Receive partial shipment with variance tracking"""
@@ -9904,7 +9904,7 @@ def get_maintenance_plan(
 def update_vehicle_maintenance_schedule(
     vehicle_id: int,
     payload: dict,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Update maintenance schedule for a vehicle"""
@@ -9943,7 +9943,7 @@ def update_vehicle_maintenance_schedule(
 @router.post("/maintenance/plan/create", response_model=dict)
 def create_maintenance_plan_advanced(
     payload: dict,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Create a new maintenance plan"""
