@@ -93,6 +93,25 @@ function queryPath(path: string, input: unknown) {
   if (path === "planning.maintenance") return "/api/v1/maintenance-plans";
   if (path === "maintenanceTemplates.list") return "/api/v1/maintenance/templates";
   if (path === "reports.maintenancePerformance") return "/api/v1/reports/maintenance-performance";
+  if (path === "vehicles.health") return "/api/v1/fleet/analytics";
+  if (path === "vehicles.odometerHistory") return "/api/v1/fleet/analytics";
+  if (path === "workOrders.board") return "/api/v1/work-orders/board";
+  if (path === "workOrders.handoffTimeline" && (input as { workOrderId?: string | number } | undefined)?.workOrderId) return `/api/v1/work-orders/${(input as { workOrderId: string | number }).workOrderId}/handoff-timeline`;
+  if (path === "vehicleIssues.list") return "/api/v1/driver/issues";
+  if (path === "driver.inspections") return "/api/v1/driver/inspections";
+  if (path === "driver.fuelLogs") return "/api/v1/fuel-transactions";
+  if (path === "driver.dailyHome") return "/api/v1/drivers/summary";
+  if (path === "team.driverHandoffs") return "/api/v1/team/roster";
+  if (path === "audit.list") return "/api/v1/audit-log";
+  if (path === "organizationSettings.get") return "/api/v1/organization/settings";
+  if (path === "profile.get") return "/api/v1/auth/me";
+  if (path === "documents.versions" && (input as { documentId?: string | number } | undefined)?.documentId) return `/api/v1/compliance/documents/${(input as { documentId: string | number }).documentId}/versions`;
+  if (path === "documents.list") return "/api/v1/documents";
+  if (path === "notifications.list") return "/api/v1/notifications";
+  if (path === "financials.list") return "/api/v1/expenses";
+  if (path === "inventory.list") return "/api/v1/parts";
+  if (path === "vendors.list") return "/api/v1/vendors";
+  if (path === "purchaseOrders.list") return "/api/v1/purchase-orders";
   if (path === "team.members") return "/api/v1/users";
   if (path === "team.operationalRoster") return "/api/v1/team/roster";
   if (path === "team.assignableMembers") return "/api/v1/team/assignable-members";
@@ -114,12 +133,38 @@ function queryPath(path: string, input: unknown) {
 }
 
 function mutationPath(path: string, input: unknown) {
-  const value = input as { id?: string | number; vehicleId?: string | number; workOrderId?: string | number; notificationId?: string | number; issueId?: string | number; partId?: string | number; poId?: string | number; vendorId?: string | number } | undefined;
+  const value = input as { id?: string | number; vehicleId?: string | number; workOrderId?: string | number; notificationId?: string | number; issueId?: string | number; partId?: string | number; poId?: string | number; vendorId?: string | number; componentId?: string | number; documentId?: string | number; userId?: string | number } | undefined;
   const base = collectionPath(path);
   if (path === "auth.logout") return "/api/v1/auth/logout";
   if (path === "profile.update") return "/api/v1/users/me";
   if (path === "team.invite") return "/api/v1/invitations";
   if (path === "organizationSettings.update") return "/api/v1/organization/settings";
+  if (path === "driver.createInspection") return "/api/v1/driver/inspections";
+  if (path === "driver.createFuelLog") return "/api/v1/fuel-transactions";
+  if (path === "vehicleIssues.create") return "/api/v1/driver/issues";
+  if (path === "vehicles.updateOdometer" && value?.vehicleId) return `/api/v1/vehicles/${value.vehicleId}`;
+  if (path === "vehicles.create") return "/api/v1/vehicles";
+  if (path === "vehicles.update" && value?.id) return `/api/v1/vehicles/${value.id}`;
+  if (path === "components.update" && value?.id) return `/api/v1/components/${value.id}`;
+  if (path === "workOrders.create") return "/api/v1/work-orders";
+  if (path === "workOrders.updateStatus" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}`;
+  if (path === "workOrders.update" && value?.id) return `/api/v1/work-orders/${value.id}`;
+  if (path === "purchaseOrders.create") return "/api/v1/purchase-orders";
+  if (path === "purchaseOrders.updateStatus" && value?.id) return `/api/v1/purchase-orders/${value.id}`;
+  if (path === "financials.create") return "/api/v1/expenses";
+  if (path === "financials.approve" && value?.id) return `/api/v1/financials/expenses/${value.id}/approve`;
+  if (path === "financials.reverse" && value?.id) return `/api/v1/expenses/${value.id}/reverse`;
+  if (path === "financials.reconcileRecord" && value?.id) return `/api/v1/expenses/${value.id}/reconcile`;
+  if (path === "notifications.escalate" && value?.notificationId) return `/api/v1/notifications/${value.notificationId}/escalate`;
+  if (path === "notifications.resolve" && value?.notificationId) return `/api/v1/notifications/${value.notificationId}/resolve`;
+  if (path === "billingTest.activateStarter") return "/api/v1/billing/test/activate-starter";
+  if (path === "onboarding.complete") return "/api/v1/onboarding/bootstrap";
+  if (path === "onboarding.completeInviteWithPassword") return "/api/v1/auth/invitations/accept";
+  if (path === "triage.update" && value?.issueId) return `/api/v1/triage/issues/${value.issueId}`;
+  if (path === "vehicleIssues.updateStatus" && value?.id) return `/api/v1/triage/issues/${value.id}`;
+  if (path.includes("components.remove") && value?.componentId) return `/api/v1/components/${value.componentId}`;
+  if (path.includes("documents.update") && value?.documentId) return `/api/v1/documents/${value.documentId}`;
+  if (path.includes("documents.archive") && value?.documentId) return `/api/v1/documents/${value.documentId}`;
   if (path.includes("startWork") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/start`;
   if (path.includes("complete") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/complete`;
   if (path.includes("approve") && value?.id) return `/api/v1/work-orders/${value.id}/approve`;
@@ -138,7 +183,8 @@ function mutationPath(path: string, input: unknown) {
 }
 
 function mutationMethod(path: string) {
-  if (path.endsWith("update") || path.endsWith("updateStatus") || path === "profile.update" || path === "organizationSettings.update" || path.includes("markRead")) return "PATCH";
+  if (path.endsWith("update") || path.endsWith("updateStatus") || path === "profile.update" || path.includes("markRead")) return "PATCH";
+  if (path === "organizationSettings.update") return "PUT";
   if (path.includes("updateChecklist") || path.includes("reconcile")) return "PUT";
   if (path.endsWith("remove")) return "DELETE";
   return "POST";
@@ -147,6 +193,7 @@ function mutationMethod(path: string) {
 function useApiQuery(path: string, input: unknown, options?: QueryOptions) {
   const enabled = options?.enabled ?? true;
   const inputKey = JSON.stringify(input);
+  const queryKey = `${path}:${inputKey}`;
   const [state, setState] = useState<{ data: unknown; error: Error | null; isLoading: boolean }>({ data: undefined, error: null, isLoading: enabled });
   const refetch = useCallback(async () => {
     if (!enabled) return;
@@ -160,7 +207,17 @@ function useApiQuery(path: string, input: unknown, options?: QueryOptions) {
       return { error };
     }
   }, [enabled, inputKey, path]);
-  useEffect(() => { void refetch(); }, [refetch]);
+  useEffect(() => {
+    if (!enabled) return;
+    const callbacks = queryRegistry.get(queryKey) ?? new Set<() => Promise<unknown>>();
+    callbacks.add(refetch);
+    queryRegistry.set(queryKey, callbacks);
+    void refetch();
+    return () => {
+      callbacks.delete(refetch);
+      if (!callbacks.size) queryRegistry.delete(queryKey);
+    };
+  }, [enabled, queryKey, refetch]);
   return { ...state, isError: Boolean(state.error), refetch };
 }
 
@@ -182,12 +239,20 @@ function useApiMutation(path: string, options?: MutationOptions) {
   return { ...state, mutateAsync, mutate: (input?: unknown) => { void mutateAsync(input); } };
 }
 
-function createUtilsProxy(): any {
+const queryRegistry = new Map<string, Set<() => Promise<unknown>>>();
+
+function createUtilsProxy(path = ""): any {
   return new Proxy({}, {
     get(_target, property: string) {
-      if (property === "invalidate") return async () => undefined;
+      if (property === "invalidate") return async () => {
+        await Promise.all(
+          Array.from(queryRegistry.entries())
+            .filter(([key]) => key.startsWith(`${path}:`))
+            .flatMap(([, callbacks]) => Array.from(callbacks).map((callback) => callback())),
+        );
+      };
       if (property === "setData") return () => undefined;
-      return createUtilsProxy();
+      return createUtilsProxy(path ? `${path}.${property}` : property);
     },
   });
 }
