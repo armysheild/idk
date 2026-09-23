@@ -7855,8 +7855,27 @@ def get_maintenance_performance_report(
                 "completed": perf["completed"],
                 "completion_rate": round(completion_pct, 2),
             })
-    
+    title_counts = {}
+    for work_order in work_orders:
+        title_counts[work_order.title] = title_counts.get(work_order.title, 0) + 1
+    repeated_repairs = [
+        {"title": title, "count": count}
+        for title, count in title_counts.items()
+        if count > 1
+    ]
+    downtime_hours = sum(
+        (datetime.now(timezone.utc) - work_order.created_at).total_seconds() / 3600
+        for work_order in work_orders
+        if work_order.status != "Completed" and work_order.created_at
+    )
+
     return {
+        "turnaround_hours": avg_resolution_hours,
+        "downtime_hours": round(max(downtime_hours, 0), 2),
+        "repeat_repairs": repeated_repairs,
+        "completed_work_orders": completed,
+        "total_work_orders": total_work_orders,
+        "failure_patterns": repeated_repairs,
         "report_period": {
             "start_date": start_date,
             "end_date": end_date,
