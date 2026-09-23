@@ -1293,7 +1293,7 @@ def delete_vehicle(
 @router.get("/vehicles/{vehicle_id}/assignments", response_model=list[VehicleAssignmentRead])
 def list_vehicle_assignments(
     vehicle_id: int,
-    user: User = Depends(require_permission("fleet")),
+    user: User = Depends(require_permission("fleet_read")),
     database: Session = Depends(get_db),
 ) -> list[VehicleAssignment]:
     vehicle = database.scalar(select(Vehicle).where(
@@ -1470,7 +1470,7 @@ def complete_component_service(
     component_id: int,
     odometer_km: int,
     request: Request,
-    user: User = Depends(require_roles("fleet_manager", "mechanic")),
+    user: User = Depends(require_roles("mechanic", "technician")),
     database: Session = Depends(get_db),
 ) -> VehicleComponent:
     statement = select(VehicleComponent).where(
@@ -1705,7 +1705,7 @@ def update_work_order(
     work_order_id: int,
     payload: WorkOrderUpdate,
     request: Request,
-    user: User = Depends(require_permission("maintenance")),
+    user: User = Depends(require_roles("fleet_manager", "mechanic", "technician")),
     database: Session = Depends(get_db),
 ) -> WorkOrder:
     statement = select(WorkOrder).where(WorkOrder.id == work_order_id, WorkOrder.organization_id == user.organization_id)
@@ -1715,11 +1715,20 @@ def update_work_order(
     if work_order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
     changes = payload.model_dump(exclude_unset=True)
-    if user.role not in ("owner", "fleet_manager", "technician", "mechanic"):
+    if user.role not in ("fleet_manager", "technician", "mechanic"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only fleet or workshop roles can update work orders")
     if user.role in ("technician", "mechanic"):
-        changes = {key: value for key, value in changes.items() if key in {"description"}}
+        changes = {key: value for key, value in changes.items() if key in {"description", "status"}}
+        if "status" in changes and changes["status"] not in {"In progress", "Ready for review"}:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workshop roles can only update execution status")
     else:
+        changes = {
+            key: value
+            for key, value in changes.items()
+            if key in {"title", "status", "priority", "due_date", "assigned_to", "assigned_user_id", "scheduled_for", "description"}
+        }
+        if "status" in changes and changes["status"] not in {"Draft", "Open", "Assigned", "Scheduled"}:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Fleet managers can only update dispatch status")
         if "assigned_user_id" in changes and changes["assigned_user_id"] is not None:
             assignee = database.scalar(select(User).where(
                 User.id == changes["assigned_user_id"],
@@ -1803,7 +1812,7 @@ def delete_work_order(
 @router.get("/work-orders/{work_order_id}/checklist", response_model=list[WorkOrderChecklistItemRead])
 def list_work_order_checklist(
     work_order_id: int,
-    user: User = Depends(require_permission("maintenance")),
+    user: User = Depends(require_permission("maintenance_read")),
     database: Session = Depends(get_db),
 ) -> list[WorkOrderChecklistItem]:
     statement = select(WorkOrder).where(
@@ -1825,7 +1834,7 @@ def update_work_order_checklist(
     work_order_id: int,
     payload: WorkOrderChecklistUpdate,
     request: Request,
-    user: User = Depends(require_permission("maintenance")),
+    user: User = Depends(require_roles("mechanic", "technician")),
     database: Session = Depends(get_db),
 ) -> list[WorkOrderChecklistItem]:
     reserve_idempotency_key(request, user, database)
@@ -1878,7 +1887,7 @@ def update_work_order_checklist(
 def start_work_order(
     work_order_id: int,
     request: Request,
-    user: User = Depends(require_permission("maintenance")),
+    user: User = Depends(require_roles("mechanic", "technician")),
     database: Session = Depends(get_db),
 ) -> WorkOrder:
     reserve_idempotency_key(request, user, database)
@@ -1912,7 +1921,7 @@ def start_work_order(
 def complete_work_order(
     work_order_id: int,
     request: Request,
-    user: User = Depends(require_permission("maintenance")),
+    user: User = Depends(require_roles("mechanic", "technician")),
     database: Session = Depends(get_db),
 ) -> WorkOrder:
     reserve_idempotency_key(request, user, database)
@@ -1977,7 +1986,7 @@ def complete_work_order(
 def approve_work_order(
     work_order_id: int,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> WorkOrder:
     reserve_idempotency_key(request, user, database)
@@ -2007,7 +2016,7 @@ def approve_work_order(
 def archive_work_order(
     work_order_id: int,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> WorkOrder:
     reserve_idempotency_key(request, user, database)
@@ -2096,7 +2105,7 @@ def upload_work_order_evidence(
     work_order_id: int,
     request: Request,
     file: UploadFile = File(...),
-    user: User = Depends(require_permission("maintenance")),
+    user: User = Depends(require_roles("mechanic", "technician")),
     database: Session = Depends(get_db),
 ) -> WorkOrderEvidence:
     statement = select(WorkOrder).where(
@@ -4705,7 +4714,7 @@ def assign_work_order(
 @router.get("/work-orders/{work_order_id}/handoff-timeline", response_model=list[AuditEventRead])
 def work_order_handoff_timeline(
     work_order_id: int,
-    user: User = Depends(require_permission("maintenance")),
+    user: User = Depends(require_permission("maintenance_read")),
     database: Session = Depends(get_db),
 ) -> list[dict]:
     """Get complete handoff timeline for a work order with detailed audit events"""
@@ -6153,7 +6162,7 @@ def get_work_order_board(
 
 @router.get("/work-orders/handoff-timeline", response_model=list[dict])
 def work_order_handoff_timeline_overview(
-    user: User = Depends(require_permission("maintenance")),
+    user: User = Depends(require_permission("maintenance_read")),
     database: Session = Depends(get_db),
 ) -> list[dict]:
     work_orders = list(database.scalars(
