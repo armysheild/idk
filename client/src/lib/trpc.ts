@@ -77,6 +77,7 @@ function purchaseOrderStatus(value: unknown): string {
     PARTIALLY_RECEIVED: "Partially received",
     RECEIVED: "Received",
     CANCELLED: "Cancelled",
+    CLOSED: "Closed",
   };
   return typeof value === "string" ? statuses[value] ?? value : "Draft";
 }

@@ -906,7 +906,7 @@ class PurchaseOrderRead(BaseModel):
 
 
 class PurchaseOrderStatusUpdate(BaseModel):
-    status: str = Field(pattern="^(Draft|Submitted|Approved|Partially received|Received|Cancelled)$")
+    status: str = Field(pattern="^(Draft|Submitted|Approved|Partially received|Received|Cancelled|Closed)$")
 
 
 class PurchaseOrderReceiptCreate(BaseModel):

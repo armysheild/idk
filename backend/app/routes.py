@@ -9327,7 +9327,7 @@ def receive_partial_purchase_order(
     if total_received >= total_expected:
         po.status = "Received"
     else:
-        po.status = "Partial"
+        po.status = "Partially received"
     
     database.add(po)
     database.commit()
