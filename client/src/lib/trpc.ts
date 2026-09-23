@@ -15,6 +15,12 @@ function camelize(value: unknown): unknown {
   ]));
   if (result.registrationNumber && !result.licensePlate) result.licensePlate = result.registrationNumber;
   if (result.registrationNumber && !result.vin) result.vin = result.registrationNumber;
+  if (result.odometerKm !== undefined && result.currentOdometer === undefined) result.currentOdometer = result.odometerKm;
+  if (result.litresMilli !== undefined) {
+    result.liters ??= Number(result.litresMilli) / 1000;
+    result.amount ??= Number(result.totalAmountPaise ?? 0) / 100;
+    result.odometer ??= result.odometerKm;
+  }
   if (result.assignedUserId && !result.assignedMechanicId) result.assignedMechanicId = result.assignedUserId;
   if (result.name && result.documentType) {
     result.title ??= result.name;
