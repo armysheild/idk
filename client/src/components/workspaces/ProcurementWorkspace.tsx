@@ -386,7 +386,7 @@ export function ProcurementWorkspace() {
                 <article key={order.id}>
                   <header>
                     <div>
-                      <strong>PO-{order.id.slice(0, 8).toUpperCase()}</strong>
+                      <strong>PO-{String(order.id).slice(0, 8).toUpperCase()}</strong>
                       <p>
                         {order.vendor?.name ?? "Vendor pending"} · ₹
                         {Number(order.totalCost).toLocaleString("en-IN")}
