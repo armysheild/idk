@@ -709,7 +709,7 @@ def resend_invitation(
 def accept_invitation(payload: InvitationAccept, database: Session = Depends(get_db)) -> InvitationAcceptRead:
     invitation = database.scalar(select(OrganizationInvitation).where(
         OrganizationInvitation.token_hash == invitation_token_hash(payload.token)
-    ))
+    ).with_for_update())
     if invitation is None or not invitation_is_active(invitation):
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invitation is invalid or expired")
     if database.scalar(select(User).where(User.email == invitation.email)) is not None:
