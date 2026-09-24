@@ -581,7 +581,7 @@ def create_invitation(
         "role": invitation.role,
         "expires_at": invitation.expires_at,
         "invite_token": raw_token,
-        "invite_path": f"/invite/{raw_token}",
+            "invite_path": f"/join/{raw_token}",
     }
 
 
@@ -669,7 +669,7 @@ def resend_invitation(
         "role": invitation.role,
         "expires_at": invitation.expires_at,
         "invite_token": raw_token,
-        "invite_path": f"/invite/{raw_token}",
+        "invite_path": f"/join/{raw_token}",
     }
 
 
