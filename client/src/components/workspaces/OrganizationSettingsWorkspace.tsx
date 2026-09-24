@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { WorkspaceState as State } from "@/components/workspaces/WorkspaceState";
-import { Plug, CheckCircle, AlertCircle, RefreshCw } from "lucide-react";
+import { Plug, CheckCircle, AlertCircle } from "lucide-react";
 
 export function OrganizationSettingsWorkspace() {
   const utils = trpc.useUtils();
@@ -20,23 +20,6 @@ export function OrganizationSettingsWorkspace() {
   useEffect(() => { if (settings.data) setForm({ timezone: settings.data.timezone ?? "Asia/Kolkata", odometerMaxDailyKm: String(settings.data.odometerMaxDailyKm ?? 1000), laborRatePerHour: String(settings.data.laborRatePerHour ?? 0), safetyContactName: settings.data.safetyContactName ?? "", safetyContactPhone: settings.data.safetyContactPhone ?? "" }); }, [settings.data]);
   const update = trpc.organizationSettings.update.useMutation({ onSuccess: () => { toast.success("Organization settings saved"); void utils.organizationSettings.get.invalidate(); }, onError: (error) => toast.error("Settings update failed", { description: error.message }) });
   
-  const handleIntegrationConnect = (provider: string) => {
-    toast.success(`${provider} integration initiated. Redirecting to auth...`);
-    // Placeholder for actual auth flow
-  };
-
-  const handleIntegrationSync = (provider: string) => {
-    toast.loading(`Syncing ${provider}...`);
-    // Placeholder for actual sync
-    setTimeout(() => {
-      setIntegrationStates(prev => ({
-        ...prev,
-        [provider]: { ...prev[provider], lastSync: new Date().toLocaleString("en-IN") }
-      }));
-      toast.success(`${provider} synced successfully`);
-    }, 1000);
-  };
-
   return (
     <section className="panel workspace-form">
       <div>
@@ -128,40 +111,30 @@ export function OrganizationSettingsWorkspace() {
               name="Government"
               description="Vehicle RC verification and permit validation"
               state={integrationStates.government}
-              onConnect={() => handleIntegrationConnect("government")}
-              onSync={() => handleIntegrationSync("government")}
               setState={(state) => setIntegrationStates(prev => ({ ...prev, government: state }))}
             />
             <IntegrationCard
               name="Insurance"
               description="Policy dates and coverage verification"
               state={integrationStates.insurance}
-              onConnect={() => handleIntegrationConnect("insurance")}
-              onSync={() => handleIntegrationSync("insurance")}
               setState={(state) => setIntegrationStates(prev => ({ ...prev, insurance: state }))}
             />
             <IntegrationCard
               name="Tax & GST"
               description="GST return generation and filing"
               state={integrationStates.tax}
-              onConnect={() => handleIntegrationConnect("tax")}
-              onSync={() => handleIntegrationSync("tax")}
               setState={(state) => setIntegrationStates(prev => ({ ...prev, tax: state }))}
             />
             <IntegrationCard
               name="Fuel"
               description="Fuel vendor API for auto-reconciliation"
               state={integrationStates.fuel}
-              onConnect={() => handleIntegrationConnect("fuel")}
-              onSync={() => handleIntegrationSync("fuel")}
               setState={(state) => setIntegrationStates(prev => ({ ...prev, fuel: state }))}
             />
             <IntegrationCard
               name="Bank"
               description="Payment reconciliation and transaction matching"
               state={integrationStates.bank}
-              onConnect={() => handleIntegrationConnect("bank")}
-              onSync={() => handleIntegrationSync("bank")}
               setState={(state) => setIntegrationStates(prev => ({ ...prev, bank: state }))}
             />
           </div>
@@ -175,15 +148,11 @@ function IntegrationCard({
   name,
   description,
   state,
-  onConnect,
-  onSync,
   setState,
 }: {
   name: string;
   description: string;
   state: { connected: boolean; lastSync?: string; error?: string };
-  onConnect: () => void;
-  onSync: () => void;
   setState: (state: { connected: boolean; lastSync?: string; error?: string }) => void;
 }) {
   return (
@@ -203,16 +172,7 @@ function IntegrationCard({
           <>Not connected</>
         )}
       </div>
-      {state.lastSync && <small>Last sync: {state.lastSync}</small>}
-      <div className="integration-actions">
-        <button onClick={onConnect} className="secondary-button">
-          Connect
-        </button>
-        <button onClick={onSync} className="secondary-button" disabled={!state.connected}>
-          <RefreshCw size={14} />
-          Sync
-        </button>
-      </div>
+      <small>Integration connector not configured for this environment.</small>
     </article>
   );
 }

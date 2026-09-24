@@ -110,3 +110,9 @@ def require_permission(permission: str):
         return user
 
     return dependency
+
+
+def require_development_mode(user: User = Depends(get_current_user)) -> User:
+    if get_settings().environment.lower() != "development":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Development-only endpoint")
+    return user

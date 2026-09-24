@@ -11,7 +11,9 @@ describe("organization labor-rate settings", () => {
 
   it("persists a non-negative INR hourly rate through the settings mutation", () => {
     expect(source).toContain('Internal labor rate (₹ / hour)');
-    expect(source).toContain('type="number" min="0" step="0.01"');
+    expect(source).toContain('type="number"');
+    expect(source).toContain('min="0"');
+    expect(source).toContain('step="0.01"');
     expect(source).toContain("laborRatePerHour: Number(form.laborRatePerHour)");
   });
 });

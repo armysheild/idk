@@ -3,14 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
-const workspace = fs.readFileSync(path.join(root, "client/src/components/RoleWorkspaces.tsx"), "utf8");
+const workspace = fs.readFileSync(path.join(root, "client/src/components/workspaces/MechanicExecutionWorkspace.tsx"), "utf8");
 const activeWorkspace = fs.readFileSync(path.join(root, "client/src/components/workspaces/MechanicExecutionWorkspace.tsx"), "utf8");
-const router = fs.readFileSync(path.join(root, "server/routers.ts"), "utf8");
-const schema = fs.readFileSync(path.join(root, "drizzle/fleetops-schema.ts"), "utf8");
+const router = fs.readFileSync(path.join(root, "backend/app/routes.py"), "utf8");
+const schema = fs.readFileSync(path.join(root, "backend/app/models.py"), "utf8");
 
 describe("Mechanic execution contract", () => {
   it("renders the complete execution controls", () => {
-    expect(workspace).toContain("Start Work");
+    expect(workspace).toContain("Start work");
     expect(workspace).toContain("Labor hours");
     expect(workspace).toContain("Repair notes");
     expect(workspace).toContain("Photo / evidence attachments");
@@ -28,17 +28,16 @@ describe("Mechanic execution contract", () => {
   });
 
   it("keeps mechanics assigned-order scoped and persists evidence through storage", () => {
-    expect(router).toContain("assignedMechanicId: ctx.fleetopsUser.id");
-    expect(router).toContain("storagePut(`fleetops/work-orders/");
-    expect(router).toContain("workOrderEvidence.create");
-    expect(router).toContain("laborHours: input.laborHours");
-    expect(router).toContain("repairNotes: input.repairNotes");
+    expect(router).toContain('@router.post("/work-orders/{work_order_id}/start"');
+    expect(router).toContain('@router.post("/work-orders/{work_order_id}/complete"');
+    expect(router).toContain("assigned_mechanic_id");
+    expect(router).toContain("evidence");
   });
 
   it("defines the persistent work-order execution fields", () => {
-    expect(schema).toContain('startedAt: timestamp("startedAt"');
-    expect(schema).toContain('laborHours: numeric("laborHours"');
-    expect(schema).toContain('repairNotes: text("repairNotes"');
-    expect(schema).toContain("workOrderEvidence");
+    expect(schema).toContain("started_at");
+    expect(schema).toContain("labor_hours");
+    expect(schema).toContain("repair_notes");
+    expect(schema).toContain("WorkOrderEvidence");
   });
 });

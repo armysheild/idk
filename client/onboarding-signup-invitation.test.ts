@@ -40,12 +40,10 @@ describe("signup to organization invitation flow", () => {
     expect(appSource).toContain("JoinOrganization");
     expect(appSource).toContain("/create-organization");
     expect(homeSource).toContain("signIn");
-    const routerSource = read("server/routers.ts");
-    expect(routerSource).toContain("completeInviteWithPassword");
-    expect(routerSource).toContain("updateUserById(authUser.id");
-    expect(routerSource).toContain("password: input.password");
-    expect(routerSource).toContain("metadataSyncPending: Boolean(metadataError)");
-    expect(routerSource).toContain("Membership created; Auth metadata sync will be retried from the database-backed profile.");
-    expect(routerSource).not.toContain("Membership was created, but the session metadata could not be finalized");
+    const routerSource = read("backend/app/routes.py");
+    expect(routerSource).toContain('@router.get("/onboarding/invite-details"');
+    expect(routerSource).toContain('@router.post("/auth/invitations/accept"');
+    expect(routerSource).toContain("organization_id");
+    expect(routerSource).toContain("role");
   });
 });

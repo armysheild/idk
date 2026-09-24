@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
 const workspaceSource = readFileSync(new URL("./src/components/workspaces/ResourceWorkspace.tsx", import.meta.url), "utf8");
-const routerSource = readFileSync(new URL("../server/routers.ts", import.meta.url), "utf8");
+const routerSource = readFileSync(new URL("../backend/app/routes.py", import.meta.url), "utf8");
 
 describe("Inventory receipt workspace contract", () => {
   it("renders a persisted receipt form with INR cost and reason validation", () => {
@@ -15,10 +15,8 @@ describe("Inventory receipt workspace contract", () => {
   });
 
   it("keeps receipt mutations role- and tenant-scoped", () => {
-    expect(routerSource).toContain("receive: fleetOpsProcedure");
-    expect(routerSource).toContain('requireRole(ctx.fleetopsUser.role, ["SUPERADMIN", "INVENTORY_MANAGER"])');
-    expect(routerSource).toContain("orgId: ctx.fleetopsUser.orgId");
-    expect(routerSource).toContain('movementType: "RECEIPT"');
+    expect(routerSource).toContain('@router.post("/inventory/transactions"');
+    expect(routerSource).toContain('require_permission("inventory")');
+    expect(routerSource).toContain('payload.transaction_type');
   });
 });
-

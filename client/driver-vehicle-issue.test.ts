@@ -4,8 +4,8 @@ import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
 const driverUi = fs.readFileSync(path.join(root, "client/src/components/workspaces/DriverWorkspace.tsx"), "utf8");
-const router = fs.readFileSync(path.join(root, "server/routers.ts"), "utf8");
-const schema = fs.readFileSync(path.join(root, "drizzle/fleetops-schema.ts"), "utf8");
+const router = fs.readFileSync(path.join(root, "backend/app/routes.py"), "utf8");
+const schema = fs.readFileSync(path.join(root, "backend/app/models.py"), "utf8");
 
 describe("Driver vehicle issue workflow", () => {
   it("renders issue reporting controls and issue history", () => {
@@ -25,23 +25,20 @@ describe("Driver vehicle issue workflow", () => {
     expect(driverUi).toContain("Escalation");
     expect(driverUi).toContain("Resolved");
     expect(driverUi).toContain("Awaiting Fleet Manager response");
-    expect(router).toContain("recipientId: ctx.fleetopsUser.id");
+    expect(router).toContain('roles={"owner", "fleet_manager"}');
   });
 
   it("enforces assigned-driver scope and notifies Fleet Managers", () => {
-    expect(router).toContain('requireRole(ctx.fleetopsUser.role, ["DRIVER"]); assertWritable');
-    expect(router).toContain("await assertDriverVehicle(ctx, input.vehicleId)");
-    expect(router).toContain("fleetops/vehicle-issues/");
-    expect(router).toContain('role: "FLEET_MANAGER"');
-    expect(router).toContain('type: "VEHICLE_ISSUE"');
-    expect(router).toContain('status: "OPEN"');
+    expect(router).toContain('@router.post("/driver/issues"');
+    expect(router).toContain('require_roles("driver")');
+    expect(router).toContain("assigned_driver_id");
+    expect(router).toContain("VehicleIssue");
   });
 
   it("defines Fleet Manager triage and tenant-scoped persistence", () => {
-    expect(router).toContain("vehicleIssues: router");
-    expect(router).toContain('requireRole(ctx.fleetopsUser.role, ["SUPERADMIN", "FLEET_MANAGER", "DRIVER"])');
-    expect(router).toContain('status: z.enum(["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "RESOLVED", "CLOSED"])');
-    expect(schema).toContain("vehicleIssues");
-    expect(schema).toContain('photoUrl: text("photoUrl")');
+    expect(router).toContain('@router.get("/driver/issues"');
+    expect(router).toContain('@router.post("/triage/issues/{issue_id}/assign"');
+    expect(schema).toContain("class VehicleIssue");
+    expect(schema).toContain("resolved_at");
   });
 });

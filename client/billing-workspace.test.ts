@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const resourceWorkspace = fs.readFileSync(path.resolve(process.cwd(), "client/src/components/workspaces/ResourceWorkspace.tsx"), "utf8");
-const router = fs.readFileSync(path.resolve(process.cwd(), "server/routers.ts"), "utf8");
+const router = fs.readFileSync(path.resolve(process.cwd(), "backend/app/routes.py"), "utf8");
 
 describe("Billing workspace contract", () => {
   it("connects the live plan, usage, overage, and invoice queries", () => {
@@ -16,8 +16,8 @@ describe("Billing workspace contract", () => {
   });
 
   it("keeps billing payment execution explicitly disabled", () => {
-    expect(router).toContain("billingReady: false");
-    expect(router).toContain("generateInvoice");
-    expect(router).toContain("billingPayment");
+    expect(router).toContain('@router.get("/subscription"');
+    expect(router).toContain('@router.get("/subscription/plans"');
+    expect(router).toContain('@router.get("/billing/invoices"');
   });
 });

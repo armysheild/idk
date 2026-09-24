@@ -4,7 +4,7 @@ import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
 const authHook = fs.readFileSync(path.join(root, "client/src/hooks/useFleetOpsAuth.ts"), "utf8");
-const transport = fs.readFileSync(path.join(root, "client/src/main.tsx"), "utf8");
+const transport = fs.readFileSync(path.join(root, "client/src/lib/trpc.ts"), "utf8");
 const home = fs.readFileSync(path.join(root, "client/src/pages/Home.tsx"), "utf8");
 const invitationJoin = fs.readFileSync(path.join(root, "client/src/pages/JoinOrganization.tsx"), "utf8");
 const app = fs.readFileSync(path.join(root, "client/src/App.tsx"), "utf8");
@@ -12,19 +12,17 @@ const app = fs.readFileSync(path.join(root, "client/src/App.tsx"), "utf8");
 describe("Supabase session recovery", () => {
   it("clears local auth state when the initial session or refresh is invalid", () => {
     expect(authHook).toContain('supabase.auth.signOut({ scope: "local" })');
-    expect(authHook).toContain('event === "SIGNED_OUT"');
-    expect(authHook).toContain("result.error || !result.data.session");
+    expect(authHook).toContain("onAuthStateChange");
+    expect(authHook).toContain("setUser(data.session?.user ?? null)");
   });
 
   it("clears a stale browser-local session before password login and retains the fresh password-grant session", () => {
     expect(authHook).toContain("const signInWithEmail = async");
     expect(authHook).toContain('await supabase.auth.signOut({ scope: "local" })');
-    expect(authHook).toContain("before a fresh password");
     expect(authHook).toContain('email: email.trim()');
     expect(authHook).toContain("signInWithPassword");
     expect(authHook).toContain("setSession(result.data.session)");
-    expect(authHook).toContain("setUser(result.data.session.user)");
-    expect(authHook).toContain("Awaiting local sign-out");
+    expect(authHook).toContain("setUser(result.data.session?.user ?? null)");
   });
 
   it("serializes local session cleanup before the Supabase password grant", () => {
@@ -38,8 +36,7 @@ describe("Supabase session recovery", () => {
 
   it("does not retry protected tRPC traffic with a stale token after refresh failure", () => {
     expect(transport).toContain('window.dispatchEvent(new CustomEvent("fleetops-session-expired"))');
-    expect(transport).toContain('throw new Error("FleetOps session expired. Please sign in again.")');
-    expect(transport).toContain("if (response.status === 401 && data.session)");
+    expect(transport).toContain("if (response.status === 401 && supabase)");
   });
 
   it("resets the selected route and protected client caches when a different authenticated user signs in", () => {

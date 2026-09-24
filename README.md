@@ -65,7 +65,7 @@ The current operations slice also includes:
 - Configurable identity-provider metadata and token-version session revocation
 - Structured request timing logs, storage-provider boundaries, health detail, and recovery runbook
 - Request timeouts and defensive response headers in the browser/API boundary
-- Six-role organisation model with role-aware navigation and workspace messaging for owner, fleet manager, inventory manager, driver, mechanic/technician, and accountant
+- Seven-role organisation model with role-aware navigation and workspace messaging for owner, fleet manager, inventory manager, driver, mechanic, technician, and accountant
 - User membership management for owners
 - Notification preferences and queued delivery records for in-app, email, SMS, WhatsApp, and push channels
 - Subscription catalogue and organisation plan state with Starter, Growth, Scale, and Enterprise tiers

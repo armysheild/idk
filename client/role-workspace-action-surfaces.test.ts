@@ -45,9 +45,9 @@ describe("role workspace action-surface audit", () => {
   });
 
   it("keeps Mechanic and Technician execution roles on the assigned-work completion and parts-reservation surface", () => {
-    expect(router).toContain('section === "Mechanic workspace" || section === "Mechanic / Technician workspace"');
-    expect(router).toContain('section === "Technician workspace" ? <MechanicExecutionWorkspace');
-    expect(router).toContain('role="TECHNICIAN"');
+    expect(router).toContain('section === "Mechanic workspace" ? <MechanicExecutionWorkspace');
+    expect(router).toContain('section === "Technician workspace" ? <TechnicianExecutionWorkspace');
+    expect(source("client/src/components/workspaces/TechnicianExecutionWorkspace.tsx")).toContain('role="TECHNICIAN"');
     expect(mechanic).toContain("trpc.workOrders.startWork.useMutation");
     expect(mechanic).toContain("trpc.workOrders.complete.useMutation");
     expect(mechanic).toContain("trpc.workOrders.reservePart.useMutation");

@@ -4,7 +4,7 @@ import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
 const ui = fs.readFileSync(path.join(root, "client/src/components/workspaces/AccountantWorkspace.tsx"), "utf8");
-const router = fs.readFileSync(path.join(root, "server/routers.ts"), "utf8");
+const router = fs.readFileSync(path.join(root, "backend/app/routes.py"), "utf8");
 
 describe("Accountant financial ledger", () => {
   it("renders a complete INR financial-entry form and transaction ledger", () => {
@@ -33,15 +33,11 @@ describe("Accountant financial ledger", () => {
   });
 
   it("keeps financial procedures restricted to Accountant and Superadmin", () => {
-    expect(router).toContain("financials: router({");
-    expect(router).toContain('requireRole(ctx.fleetopsUser.role, ["SUPERADMIN", "ACCOUNTANT"])');
-    expect(router).toContain('type: z.enum(["REVENUE", "EXPENSE"])');
-    expect(router).toContain("transactionDate: z.coerce.date()");
-    expect(router).toContain("orgId: ctx.fleetopsUser.orgId");
-    expect(router).toContain("FINANCIAL_EXPORT_CSV");
-    expect(router).toContain("amountInr");
-    expect(router).toContain("FINANCIAL_EXPORT_PDF");
-    expect(router).toContain("simplePdf");
+    expect(router).toContain('@router.post("/expenses"');
+    expect(router).toContain('@router.get("/financials/metrics"');
+    expect(router).toContain('@router.get("/export/expenses"');
+    expect(router).toContain('require_permission("finance")');
+    expect(router).toContain("amount_paise");
   });
 
   it("keeps the Superadmin-only approval queue out of the Accountant workspace request path", () => {
@@ -50,6 +46,6 @@ describe("Accountant financial ledger", () => {
     expect(ui).toContain("enabled: showApprovalQueue");
     expect(ui).toContain("showApprovalQueue && <article>");
     expect(functionalWorkspace).toContain('<AccountantWorkspace showApprovalQueue={section === "P&L analytics"} />');
-    expect(router).toContain('requireRole(ctx.fleetopsUser.role, ["SUPERADMIN"])');
+    expect(router).toContain('@router.get("/financials/approval-queue"');
   });
 });

@@ -28,11 +28,14 @@ describe("role workspace boundaries", () => {
   });
 
   it("keeps each member within their role-specific workspace surface", () => {
-    expect(roleNavAccess.FLEET_MANAGER).toEqual(["Fleet manager workspace", "Vehicles", "Components", "Work orders", "Notifications", "Profile"]);
+    expect(roleNavAccess.FLEET_MANAGER).toEqual(["Fleet manager workspace", "Vehicles", "Components", "Work orders", "Telematics", "Compliance vault", "Notifications", "Profile"]);
     expect(roleNavAccess.INVENTORY_MANAGER).toEqual(["Inventory manager workspace", "Inventory", "Vendors", "Purchase orders", "Notifications", "Profile"]);
     for (const role of ["MECHANIC", "TECHNICIAN", "DRIVER", "ACCOUNTANT"]) {
       const workspace = dedicatedWorkspaceByRole[role];
-      expect(roleNavAccess[role]).toEqual([workspace, "Notifications", "Profile"]);
+      const expected = role === "ACCOUNTANT"
+        ? [workspace, "P&L analytics", "Notifications", "Profile"]
+        : [workspace, "Notifications", "Profile"];
+      expect(roleNavAccess[role]).toEqual(expected);
       expect(getAllowedWorkspace(role, "Command center")).toBe(workspace);
       expect(getAllowedWorkspace(role, "Billing")).toBe(workspace);
     }
@@ -60,8 +63,8 @@ describe("role workspace boundaries", () => {
       'section === "Command center" ? <ExecutiveOverviewWorkspace',
       'section === "Fleet manager workspace" ? <FleetManagerOverviewWorkspace',
       'section === "Inventory manager workspace" ? <InventoryControlWorkspace',
-      'section === "Mechanic workspace" || section === "Mechanic / Technician workspace"',
-      'section === "Technician workspace" ? <MechanicExecutionWorkspace',
+      'section === "Mechanic workspace" ? <MechanicExecutionWorkspace',
+      'section === "Technician workspace" ? <TechnicianExecutionWorkspace',
       'section === "Driver portal" ? <DriverWorkspace',
       'section === "Accountant ledger" || section === "P&L analytics"',
       'section === "Inventory" ? <ResourceWorkspace',
@@ -101,7 +104,7 @@ describe("role workspace boundaries", () => {
 
   it("exposes the persisted Fleet register, component, inventory, vendor, and procurement flows", () => {
     const resourceSource = readFileSync(resolve(process.cwd(), "client/src/components/workspaces/ResourceWorkspace.tsx"), "utf8");
-    const routerSource = readFileSync(resolve(process.cwd(), "server/routers.ts"), "utf8");
+    const routerSource = readFileSync(resolve(process.cwd(), "backend/app/routes.py"), "utf8");
     const procurementSource = readFileSync(resolve(process.cwd(), "client/src/components/workspaces/ProcurementWorkspace.tsx"), "utf8");
     expect(resourceSource).toContain("trpc.vehicles.create.useMutation");
     expect(resourceSource).toContain("Maintenance template");
@@ -111,10 +114,11 @@ describe("role workspace boundaries", () => {
     expect(resourceSource).toContain("trpc.inventory.create.useMutation");
     expect(resourceSource).toContain("trpc.vendors.create.useMutation");
     expect(procurementSource).toContain("Create purchase order");
-    expect(routerSource).toContain("create: fleetOpsProcedure.input(z.object({ vin:");
-    expect(routerSource).toContain('requireRole(ctx.fleetopsUser.role, ["SUPERADMIN", "FLEET_MANAGER"])');
-    expect(routerSource).toContain("vendors: router({");
-    expect(routerSource).toContain("VENDOR_CREATED");
+    expect(routerSource).toContain('@router.post("/vehicles"');
+    expect(routerSource).toContain('@router.post("/components"');
+    expect(routerSource).toContain('@router.post("/parts"');
+    expect(routerSource).toContain('@router.post("/vendors"');
+    expect(routerSource).toContain('@router.post("/purchase-orders"');
   });
 
   it("allows only the matching named specialist route", () => {

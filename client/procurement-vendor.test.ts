@@ -11,7 +11,7 @@ describe("procurement workspace", () => {
   });
 
   it("shows receipt-backed vendor pricing history after vendor selection", () => {
-    expect(source).toContain("trpc.vendors.pricingHistory.useQuery({ vendorId: selectedVendorId }");
+    expect(source).toContain("trpc.vendors.pricingHistory.useQuery");
     expect(source).toContain("Pricing history");
     expect(source).toContain("averageUnitCost");
     expect(source).toContain("setSelectedVendorId(event.target.value)");

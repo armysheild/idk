@@ -11,13 +11,14 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column("work_order_part_usage", sa.Column("issued_quantity", sa.Integer(), nullable=False, server_default="0"))
-    op.add_column("work_order_part_usage", sa.Column("issued_to_user_id", sa.Integer()))
-    op.add_column("work_order_part_usage", sa.Column("issued_at", sa.DateTime(timezone=True)))
-    op.add_column("work_order_part_usage", sa.Column("inventory_transaction_id", sa.Integer()))
-    op.create_index("ix_work_order_part_usage_inventory_transaction_id", "work_order_part_usage", ["inventory_transaction_id"])
-    op.create_foreign_key("fk_work_order_part_usage_issued_to_user", "work_order_part_usage", "users", ["issued_to_user_id"], ["id"])
-    op.create_foreign_key("fk_work_order_part_usage_inventory_transaction", "work_order_part_usage", "inventory_transactions", ["inventory_transaction_id"], ["id"])
+    with op.batch_alter_table("work_order_part_usage", recreate="always") as batch:
+        batch.add_column(sa.Column("issued_quantity", sa.Integer(), nullable=False, server_default="0"))
+        batch.add_column(sa.Column("issued_to_user_id", sa.Integer()))
+        batch.add_column(sa.Column("issued_at", sa.DateTime(timezone=True)))
+        batch.add_column(sa.Column("inventory_transaction_id", sa.Integer()))
+        batch.create_index("ix_work_order_part_usage_inventory_transaction_id", ["inventory_transaction_id"])
+        batch.create_foreign_key("fk_work_order_part_usage_issued_to_user", "users", ["issued_to_user_id"], ["id"])
+        batch.create_foreign_key("fk_work_order_part_usage_inventory_transaction", "inventory_transactions", ["inventory_transaction_id"], ["id"])
     op.create_table(
         "vehicle_part_installations",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -87,10 +88,11 @@ def downgrade():
     ):
         op.drop_index(f"ix_vehicle_part_installations_{column}", table_name="vehicle_part_installations")
     op.drop_table("vehicle_part_installations")
-    op.drop_constraint("fk_work_order_part_usage_inventory_transaction", "work_order_part_usage", type_="foreignkey")
-    op.drop_constraint("fk_work_order_part_usage_issued_to_user", "work_order_part_usage", type_="foreignkey")
-    op.drop_index("ix_work_order_part_usage_inventory_transaction_id", table_name="work_order_part_usage")
-    op.drop_column("work_order_part_usage", "inventory_transaction_id")
-    op.drop_column("work_order_part_usage", "issued_at")
-    op.drop_column("work_order_part_usage", "issued_to_user_id")
-    op.drop_column("work_order_part_usage", "issued_quantity")
+    with op.batch_alter_table("work_order_part_usage", recreate="always") as batch:
+        batch.drop_constraint("fk_work_order_part_usage_inventory_transaction", type_="foreignkey")
+        batch.drop_constraint("fk_work_order_part_usage_issued_to_user", type_="foreignkey")
+        batch.drop_index("ix_work_order_part_usage_inventory_transaction_id")
+        batch.drop_column("inventory_transaction_id")
+        batch.drop_column("issued_at")
+        batch.drop_column("issued_to_user_id")
+        batch.drop_column("issued_quantity")

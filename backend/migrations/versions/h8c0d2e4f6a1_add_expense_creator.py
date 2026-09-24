@@ -17,18 +17,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("expenses", sa.Column("created_by", sa.Integer(), nullable=True))
-    op.create_foreign_key(
-        "fk_expenses_created_by_users",
-        "expenses",
-        "users",
-        ["created_by"],
-        ["id"],
-    )
-    op.create_index("ix_expenses_created_by", "expenses", ["created_by"])
+    with op.batch_alter_table("expenses", recreate="always") as batch:
+        batch.add_column(sa.Column("created_by", sa.Integer(), nullable=True))
+        batch.create_foreign_key("fk_expenses_created_by_users", "users", ["created_by"], ["id"])
+        batch.create_index("ix_expenses_created_by", ["created_by"])
 
 
 def downgrade() -> None:
-    op.drop_index("ix_expenses_created_by", table_name="expenses")
-    op.drop_constraint("fk_expenses_created_by_users", "expenses", type_="foreignkey")
-    op.drop_column("expenses", "created_by")
+    with op.batch_alter_table("expenses", recreate="always") as batch:
+        batch.drop_index("ix_expenses_created_by")
+        batch.drop_constraint("fk_expenses_created_by_users", type_="foreignkey")
+        batch.drop_column("created_by")

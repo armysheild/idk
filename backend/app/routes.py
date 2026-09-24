@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings
 from .database import get_db
-from .dependencies import get_current_user, require_permission, require_roles
+from .dependencies import get_current_user, require_development_mode, require_permission, require_roles
 from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComplianceDocument, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
 from .security import create_access_token, hash_password, provision_supabase_user, verify_password
 from .schemas import (
@@ -3372,15 +3372,13 @@ def queue_role_notification(
             NotificationPreference.user_id == recipient.id,
             NotificationPreference.notification_type == notification_type,
         ))
-        channels = ["in_app"]
-        if recipient.mobile_phone:
-            channels.append("sms")
+        channels = ["in_app"] if preference is None or preference.in_app else []
         if preference is not None:
             if preference.email:
                 channels.append("email")
-            if preference.sms and "sms" not in channels:
+            if preference.sms and recipient.mobile_phone:
                 channels.append("sms")
-            if preference.whatsapp:
+            if preference.whatsapp and recipient.mobile_phone:
                 channels.append("whatsapp")
             if preference.push:
                 channels.append("push")
@@ -3456,16 +3454,14 @@ def sync_notifications(user: User, database: Session) -> None:
                 NotificationPreference.user_id == recipient.id,
                 NotificationPreference.notification_type == str(alert["type"]),
             ))
-            channels = ["in_app"]
+            channels = ["in_app"] if preference is None or preference.in_app else []
             if recipient.mobile_phone:
-                channels.append("sms")
+                if preference is not None and preference.sms:
+                    channels.append("sms")
             if preference is not None:
                 if preference.email:
                     channels.append("email")
-                if preference.sms:
-                    if "sms" not in channels:
-                        channels.append("sms")
-                if preference.whatsapp:
+                if preference.whatsapp and recipient.mobile_phone:
                     channels.append("whatsapp")
                 if preference.push:
                     channels.append("push")
@@ -9176,6 +9172,7 @@ def bulk_approve_expenses(
 
 @router.post("/billing/test/check-plan-eligibility", response_model=dict)
 def check_plan_eligibility(
+    _: User = Depends(require_development_mode),
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
@@ -9274,6 +9271,7 @@ def check_plan_eligibility(
 @router.post("/billing/test/activate-starter", response_model=dict)
 def activate_starter_plan(
     request: Request,
+    _: User = Depends(require_development_mode),
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
@@ -9323,6 +9321,7 @@ def activate_starter_plan(
 @router.post("/billing/test/upgrade-plan", response_model=dict)
 def upgrade_plan_test(
     payload: dict,
+    _: User = Depends(require_development_mode),
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
@@ -9364,6 +9363,7 @@ def upgrade_plan_test(
 
 @router.get("/billing/test/plans", response_model=dict)
 def get_test_plans(
+    _: User = Depends(require_development_mode),
     user: User = Depends(get_current_user),
     database: Session = Depends(get_db),
 ) -> dict:
@@ -9434,6 +9434,7 @@ def get_test_plans(
 @router.post("/billing/test/create-invoice", response_model=dict)
 def create_test_invoice(
     payload: dict,
+    _: User = Depends(require_development_mode),
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
@@ -9488,6 +9489,7 @@ def create_test_invoice(
 @router.post("/billing/test/simulate-payment", response_model=dict)
 def simulate_payment(
     payload: dict,
+    _: User = Depends(require_development_mode),
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
