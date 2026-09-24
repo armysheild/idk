@@ -296,6 +296,13 @@ def invitation_is_active(invitation: OrganizationInvitation) -> bool:
     return invitation.accepted_at is None and invitation.revoked_at is None and expires_at > datetime.now(timezone.utc)
 
 
+def invitation_join_url(request: Request, token: str) -> str:
+    origin = request.headers.get("origin")
+    if origin:
+        return f"{origin.rstrip('/')}/join/{token}"
+    return f"/join/{token}"
+
+
 def trial_end_date() -> str:
     return (datetime.now(timezone.utc).date() + timedelta(days=14)).isoformat()
 
@@ -581,7 +588,8 @@ def create_invitation(
         "role": invitation.role,
         "expires_at": invitation.expires_at,
         "invite_token": raw_token,
-            "invite_path": f"/join/{raw_token}",
+        "invite_path": f"/join/{raw_token}",
+        "invite_url": invitation_join_url(request, raw_token),
     }
 
 
@@ -670,6 +678,7 @@ def resend_invitation(
         "expires_at": invitation.expires_at,
         "invite_token": raw_token,
         "invite_path": f"/join/{raw_token}",
+        "invite_url": invitation_join_url(request, raw_token),
     }
 
 
