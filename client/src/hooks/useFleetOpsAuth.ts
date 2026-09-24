@@ -98,21 +98,20 @@ export function useFleetOpsAuth() {
     signInWithEmail,
     signUpWithEmail: async (email: string, password: string, fullName: string) => {
       if (supabase) {
-        const response = await fetch(`${API_BASE_URL}/api/v1/auth/signup`, {
+        const response = await fetch(`${API_BASE_URL}/api/v1/auth/signup-account`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             email: email.trim(),
             password,
             full_name: fullName,
-            organization_name: fullName,
           }),
         });
         if (!response.ok) {
           const body = await response.json().catch(() => null);
           return {
             data: { user: null, session: null },
-            error: new Error(body?.detail || "Unable to create organization"),
+            error: new Error(body?.detail || "Unable to create account"),
           };
         }
         return supabase.auth.signInWithPassword({ email: email.trim(), password });

@@ -54,7 +54,7 @@ def decode_supabase_token(token: str) -> dict[str, Any]:
     return payload
 
 
-def provision_supabase_user(email: str, password: str, full_name: str) -> str | None:
+def provision_supabase_user(email: str, password: str, full_name: str, metadata: dict[str, Any] | None = None) -> str | None:
     settings = get_settings()
     if settings.auth_provider != "supabase" or settings.environment.lower() == "development":
         return None
@@ -71,7 +71,7 @@ def provision_supabase_user(email: str, password: str, full_name: str) -> str | 
             "email": email,
             "password": password,
             "email_confirm": True,
-            "user_metadata": {"full_name": full_name},
+            "user_metadata": {"full_name": full_name, **(metadata or {})},
         },
         timeout=30,
     )

@@ -61,6 +61,8 @@ from .schemas import (
     InventoryMovementCreate,
     InventoryMovementRead,
     LoginRequest,
+    AccountSignup,
+    AccountSignupRead,
     OrganizationSignup,
     OrganizationSignupRead,
     MaintenancePlanCreate,
@@ -356,6 +358,27 @@ def signup(payload: OrganizationSignup, database: Session = Depends(get_db)) -> 
         user=user,
         access_token=create_access_token(str(user.id), user.token_version),
     )
+
+
+@router.post("/auth/signup-account", response_model=AccountSignupRead, status_code=status.HTTP_201_CREATED)
+def signup_account(payload: AccountSignup, database: Session = Depends(get_db)) -> AccountSignupRead:
+    email = payload.email.lower()
+    if database.scalar(select(User).where(User.email == email)) is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A user with this email already exists")
+    try:
+        supabase_user_id = provision_supabase_user(
+            email,
+            payload.password,
+            payload.full_name.strip(),
+            metadata={"fullName": payload.full_name.strip(), "needsOnboarding": True},
+        )
+    except ValueError as error:
+        detail = str(error)
+        code = status.HTTP_409_CONFLICT if "already exists" in detail else status.HTTP_503_SERVICE_UNAVAILABLE
+        raise HTTPException(status_code=code, detail=detail) from error
+    if not supabase_user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Organization setup requires Supabase Auth")
+    return AccountSignupRead(user_id=supabase_user_id, email=email)
 
 
 @router.post("/auth/login", response_model=Token)
