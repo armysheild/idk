@@ -39,6 +39,7 @@ function camelize(value: unknown): unknown {
     }));
   }
   if (result.inviteToken && !result.tokenHash) result.tokenHash = result.inviteToken;
+  if (result.inviteUrl && !result.joinUrl) result.joinUrl = result.inviteUrl;
   if (result.invitePath && !result.joinUrl) result.joinUrl = result.invitePath;
   if (result.totalPaise !== undefined && result.totalCost === undefined) result.totalCost = Number(result.totalPaise) / 100;
   if (result.code && result.monthlyPricePaise !== undefined) {

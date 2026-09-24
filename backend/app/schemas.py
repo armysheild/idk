@@ -44,6 +44,18 @@ class OrganizationSignup(BaseModel):
     password: str = Field(min_length=8)
 
 
+class AccountSignup(BaseModel):
+    full_name: str = Field(min_length=2, max_length=160)
+    email: EmailStr
+    password: str = Field(min_length=8)
+
+
+class AccountSignupRead(BaseModel):
+    user_id: str
+    email: EmailStr
+    needs_onboarding: bool = True
+
+
 class UserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
