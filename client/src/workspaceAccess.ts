@@ -5,7 +5,7 @@ export const roleNavAccess: Record<string, string[]> = {
   MECHANIC: ["Mechanic workspace", "Notifications", "Profile"],
   TECHNICIAN: ["Technician workspace", "Notifications", "Profile"],
   DRIVER: ["Driver portal", "Notifications", "Profile"],
-  ACCOUNTANT: ["Accountant ledger", "Notifications", "Profile"],
+  ACCOUNTANT: ["Accountant ledger", "P&L analytics", "Notifications", "Profile"],
 };
 
 export const dedicatedWorkspaceByRole: Record<string, string> = {

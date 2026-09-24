@@ -6126,6 +6126,9 @@ def get_dashboard_summary(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "organization_id": org.id,
             "organization_name": org.name,
+            "role": user.role.upper(),
+            "org": {"id": org.id, "name": org.name},
+            "needs_onboarding": False,
             "fleet_overview": {
                 "total_vehicles": scoped_vehicle_count,
                 "active_vehicles": 0,
@@ -6260,6 +6263,9 @@ def get_dashboard_summary(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "organization_id": org.id,
         "organization_name": org.name,
+        "role": user.role.upper(),
+        "org": {"id": org.id, "name": org.name},
+        "needs_onboarding": False,
         "fleet_overview": {
             "total_vehicles": vehicle_count,
             "active_vehicles": active_vehicle_count,

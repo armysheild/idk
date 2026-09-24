@@ -70,6 +70,7 @@ const navItems = [
   { label: "Vehicles", icon: Bus },
   { label: "Components", icon: Wrench },
   { label: "Work orders", icon: Wrench },
+  { label: "Telematics", icon: Gauge },
   { label: "Inventory", icon: Package },
   { label: "Vendors", icon: Users },
   { label: "Purchase orders", icon: ClipboardCheck },
@@ -83,7 +84,7 @@ const navItems = [
 
 const navGroups = [
   { label: "Command", items: ["Command center", "Fleet manager workspace", "Inventory manager workspace", "Mechanic workspace", "Technician workspace", "Driver portal", "Accountant ledger"] },
-  { label: "Operations", items: ["Vehicles", "Components", "Work orders", "Inventory", "Vendors", "Purchase orders", "Compliance vault"] },
+  { label: "Operations", items: ["Vehicles", "Components", "Work orders", "Telematics", "Inventory", "Vendors", "Purchase orders", "Compliance vault"] },
   { label: "Control", items: ["Notifications", "P&L analytics", "Billing", "Team", "Profile"] },
 ];
 

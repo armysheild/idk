@@ -629,7 +629,6 @@ function useApiQuery(path: string, input: unknown, options?: QueryOptions) {
   const queryKey = `${path}:${inputKey}`;
   const [state, setState] = useState<{ data: unknown; error: Error | null; isLoading: boolean }>({ data: undefined, error: null, isLoading: enabled });
   const refetch = useCallback(async () => {
-    if (!enabled) return;
     setState((current) => ({ ...current, isLoading: true, error: null }));
     try {
       const data = await request(queryPath(path, input), input, "GET", path);

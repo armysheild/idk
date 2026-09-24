@@ -10,7 +10,7 @@ export function ProfileWorkspace({ organizationName, onSignOut }: { organization
   const [mobileNumber, setMobileNumber] = useState("");
   const [smsAlertsEnabled, setSmsAlertsEnabled] = useState(false);
   const [whatsappAlertsEnabled, setWhatsappAlertsEnabled] = useState(false);
-  useEffect(() => { if (profile.data) { setFullName(profile.data.fullName); setMobileNumber(profile.data.mobileNumber); setSmsAlertsEnabled(profile.data.smsAlertsEnabled); setWhatsappAlertsEnabled(profile.data.whatsappAlertsEnabled); } }, [profile.data]);
+  useEffect(() => { if (profile.data) { setFullName(profile.data.fullName ?? ""); setMobileNumber(profile.data.mobileNumber ?? ""); setSmsAlertsEnabled(Boolean(profile.data.smsAlertsEnabled)); setWhatsappAlertsEnabled(Boolean(profile.data.whatsappAlertsEnabled)); } }, [profile.data]);
   const update = trpc.profile.update.useMutation({
     onSuccess: async () => { await utils.profile.get.invalidate(); toast.success("Profile updated", { description: "Your organization profile is current." }); },
     onError: (error) => toast.error("Profile could not be saved", { description: error.message }),
@@ -19,7 +19,7 @@ export function ProfileWorkspace({ organizationName, onSignOut }: { organization
   if (profile.error || !profile.data) return <section className="profile-workspace"><h2>Your profile could not load.</h2><p>{profile.error?.message ?? "Please retry this signed-in workspace."}</p></section>;
   const member = profile.data;
   return <section className="profile-workspace">
-    <header className="profile-hero"><div className="profile-avatar">{member.fullName.slice(0, 2).toUpperCase()}</div><div><span>VahanSync member profile</span><h2>{member.fullName}</h2><p>{member.role.replaceAll("_", " ")} · {organizationName ?? member.organizationName}</p></div><ShieldCheck size={21} aria-label="Authenticated member" /></header>
+    <header className="profile-hero"><div className="profile-avatar">{String(member.fullName ?? member.email).slice(0, 2).toUpperCase()}</div><div><span>VahanSync member profile</span><h2>{member.fullName ?? "Unnamed member"}</h2><p>{String(member.role ?? "").replaceAll("_", " ")} · {organizationName ?? member.organizationName}</p></div><ShieldCheck size={21} aria-label="Authenticated member" /></header>
     <div className="profile-grid">
       <form className="profile-card" onSubmit={(event) => { event.preventDefault(); update.mutate({ fullName: fullName.trim(), mobileNumber: mobileNumber.trim(), smsAlertsEnabled, whatsappAlertsEnabled }); }}>
         <div className="profile-card-head"><UserRound size={19} /><div><strong>Personal details</strong><p>Used across your VahanSync workspace and audit trail.</p></div></div>
