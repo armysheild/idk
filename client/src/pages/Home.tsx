@@ -272,7 +272,7 @@ export default function Home({ initialSection = "Command center", publicMode = "
     } else if (error) {
       setAuthError(describeAuthError(error, "sign-up"));
     } else if (!data.session) {
-      setAuthError("Account created. Confirm your email, then sign in to continue organization setup.");
+      setAuthError("Account created, but no active session was returned. Please sign in to continue.");
     }
     setAuthSubmitting(false);
   };
