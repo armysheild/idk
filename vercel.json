@@ -20,11 +20,11 @@
     },
     {
       "source": "/health",
-      "destination": "/api/health"
+      "destination": "/api?path=/health"
     },
     {
-      "source": "/api/(.*)",
-      "destination": "/api/$1"
+      "source": "/api/:path*",
+      "destination": "/api?path=/:path*"
     },
     {
       "source": "/(.*)",
