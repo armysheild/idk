@@ -25,9 +25,9 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings
 from .database import get_db
-from .dependencies import get_current_user, require_development_mode, require_permission, require_roles
+from .dependencies import get_current_user, oauth2_scheme, require_development_mode, require_permission, require_roles
 from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComplianceDocument, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
-from .security import create_access_token, hash_password, provision_supabase_user, verify_password
+from .security import create_access_token, decode_supabase_token, hash_password, provision_supabase_user, verify_password
 from .schemas import (
     ComponentCreate,
     ComponentRead,
@@ -5938,10 +5938,60 @@ def get_onboarding_checklist(
 def onboarding_bootstrap(
     payload: OnboardingBootstrap,
     request: Request,
-    user: User = Depends(require_roles("owner")),
+    token: str = Depends(oauth2_scheme),
     database: Session = Depends(get_db),
 ) -> dict:
     """Bootstrap initial onboarding data"""
+    settings = get_settings()
+    if settings.auth_provider != "supabase":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Supabase onboarding is required")
+
+    try:
+        claims = decode_supabase_token(token)
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials") from error
+
+    subject = str(claims.get("sub", "")).strip()
+    email = str(claims.get("email", "")).strip().lower()
+    if not subject or not email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Supabase identity is incomplete")
+
+    user = database.scalar(select(User).where(User.supabase_user_id == subject))
+    if user is None:
+        user = database.scalar(select(User).where(User.email == email))
+    if user is None:
+        organization = Organization(
+            name=payload.organization_name.strip(),
+            slug=organization_slug(payload.organization_name, database),
+            subscription_status="trialing",
+            trial_ends_on=trial_end_date(),
+        )
+        database.add(organization)
+        database.flush()
+        user = User(
+            organization_id=organization.id,
+            email=email,
+            full_name=f"{payload.first_name} {payload.last_name}".strip(),
+            password_hash=hash_password(secrets.token_urlsafe(32)),
+            supabase_user_id=subject,
+            role="owner",
+        )
+        database.add(user)
+        database.flush()
+        database.add(AuditLog(
+            organization_id=organization.id,
+            actor_user_id=user.id,
+            action="organization.created",
+            entity_type="organization",
+            entity_id=str(organization.id),
+            request_id=request.headers.get("x-request-id", str(uuid4())),
+            changes=json.dumps({"name": organization.name, "slug": organization.slug, "source": "supabase_onboarding"}),
+        ))
+    elif user.role != "owner":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only organization owners can bootstrap onboarding")
+    elif user.supabase_user_id is None:
+        user.supabase_user_id = subject
+
     reserve_idempotency_key(request, user, database)
     
     org = database.get(Organization, user.organization_id)

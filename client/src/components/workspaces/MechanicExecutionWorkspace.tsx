@@ -224,18 +224,20 @@ export function MechanicExecutionWorkspace({
       /* mutation handlers show the actionable error */
     }
   };
+  const statusOf = (item: WorkOrderRow) =>
+    String(item.status).toUpperCase().replaceAll(" ", "_");
   const open =
-    orders.data?.filter((item: WorkOrderRow) => item.status !== "COMPLETED") ??
+    orders.data?.filter((item: WorkOrderRow) => statusOf(item) !== "COMPLETED") ??
     [];
   const activeRepairs = open.filter(
     (item: WorkOrderRow) =>
-      item.status === "IN_PROGRESS" || item.status === "REWORK",
+      statusOf(item) === "IN_PROGRESS" || statusOf(item) === "REWORK",
   ).length;
   const waitingForParts = open.filter(
-    (item: WorkOrderRow) => item.status === "WAITING_FOR_PARTS",
+    (item: WorkOrderRow) => statusOf(item) === "WAITING_FOR_PARTS",
   ).length;
   const readyForReview = open.filter(
-    (item: WorkOrderRow) => item.status === "READY_FOR_REVIEW",
+    (item: WorkOrderRow) => statusOf(item) === "READY_FOR_REVIEW",
   ).length;
   const selected = orders.data?.find(
     (item: WorkOrderRow) => item.id === selectedOrder,
@@ -289,13 +291,13 @@ export function MechanicExecutionWorkspace({
             "Describe diagnosis, repair performed, and handoff notes",
         };
   const actionFor = (item: WorkOrderRow) =>
-    item.status === "COMPLETED" ? (
+    statusOf(item) === "COMPLETED" ? (
       <b className="is-safe">Completed</b>
-    ) : item.status === "CANCELLED" ? (
+    ) : statusOf(item) === "CANCELLED" ? (
       <b className="is-alert">Cancelled</b>
     ) : (
       <aside>
-        {item.status === "OPEN" && (
+        {statusOf(item) === "OPEN" && (
           <button
             className="replacement-mechanic-secondary"
             disabled={start.isPending}
@@ -304,7 +306,7 @@ export function MechanicExecutionWorkspace({
             Start work
           </button>
         )}
-        {item.status === "IN_PROGRESS" && (
+        {statusOf(item) === "IN_PROGRESS" && (
           <>
             <button
               className="replacement-mechanic-secondary"
@@ -328,7 +330,7 @@ export function MechanicExecutionWorkspace({
             </button>
           </>
         )}
-        {item.status === "WAITING_FOR_PARTS" && (
+        {statusOf(item) === "WAITING_FOR_PARTS" && (
           <button
             className="replacement-mechanic-secondary"
             disabled={transition.isPending}
@@ -343,7 +345,7 @@ export function MechanicExecutionWorkspace({
             Resume work
           </button>
         )}
-        {item.status === "READY_FOR_REVIEW" && (
+        {statusOf(item) === "READY_FOR_REVIEW" && (
           <button
             className="replacement-mechanic-secondary"
             disabled={transition.isPending}
@@ -354,7 +356,7 @@ export function MechanicExecutionWorkspace({
             Request rework
           </button>
         )}
-        {item.status === "REWORK" && (
+        {statusOf(item) === "REWORK" && (
           <button
             className="replacement-mechanic-secondary"
             disabled={transition.isPending}
@@ -369,7 +371,7 @@ export function MechanicExecutionWorkspace({
             Resume rework
           </button>
         )}
-        {["IN_PROGRESS", "REWORK"].includes(item.status) && (
+        {["IN_PROGRESS", "REWORK"].includes(statusOf(item)) && (
           <button
             className="replacement-mechanic-primary"
             onClick={() => setSelectedOrder(item.id)}
