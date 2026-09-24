@@ -11,6 +11,8 @@ async def app(scope, receive, send):
     query_items = parse_qsl(scope.get("query_string", b"").decode(), keep_blank_values=True)
     forwarded_path = next((value for key, value in query_items if key == "path"), None)
     request_path = unquote(forwarded_path) if forwarded_path else scope["path"]
+    if forwarded_path and request_path.startswith("/v1/"):
+        request_path = f"/api{request_path}"
     if request_path == "/api":
         request_path = "/"
     elif request_path in {"/api/health", "/api/ready"}:
