@@ -7,7 +7,7 @@ import type { FleetVehicle, FuelLogRow, InspectionRow, NotificationRow, VehicleI
 
 export function DriverWorkspace() {
   const utils = trpc.useUtils();
-  const vehicles = trpc.vehicles.list.useQuery(undefined, { retry: false });
+  const vehicles = trpc.vehicles.list.useQuery(undefined, { enabled: false, retry: false });
   const dailyHome = trpc.driver.dailyHome.useQuery(undefined, { retry: false });
   const [vehicleId, setVehicleId] = useState("");
   const safeVehicles = dailyHome.data?.vehicle ? [dailyHome.data.vehicle] : vehicles.data?.filter((vehicle: FleetVehicle) => vehicle?.id && vehicle.licensePlate).slice(0, 1) ?? [];

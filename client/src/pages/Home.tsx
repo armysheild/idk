@@ -148,11 +148,11 @@ export default function Home({ initialSection = "Command center", publicMode = "
   const organizationLabel = organizationName || "Loading organization…";
   const organizationInitials = organizationName ? organizationName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() : "—";
   const operationalEnabled = Boolean(session && backendSummary && !metadataNeedsOnboarding && !backendSummary.needsOnboarding);
-  const canReadVehicles = ["SUPERADMIN", "FLEET_MANAGER", "MECHANIC", "TECHNICIAN", "DRIVER"].includes(backendRole);
+  const canReadVehicles = ["SUPERADMIN", "FLEET_MANAGER"].includes(backendRole);
   const canReadWorkOrders = ["SUPERADMIN", "FLEET_MANAGER", "MECHANIC", "TECHNICIAN"].includes(backendRole);
   const canReadInventory = ["SUPERADMIN", "INVENTORY_MANAGER"].includes(backendRole);
   const canReadFinancials = ["SUPERADMIN", "ACCOUNTANT"].includes(backendRole);
-  const canReadActivity = ["SUPERADMIN", "FLEET_MANAGER", "MECHANIC", "TECHNICIAN", "DRIVER"].includes(backendRole);
+  const canReadActivity = ["SUPERADMIN", "FLEET_MANAGER", "ACCOUNTANT"].includes(backendRole);
   const { data: liveVehicles, isLoading: vehiclesLoading, isError: vehiclesError } = trpc.vehicles.list.useQuery(undefined, { enabled: operationalEnabled && canReadVehicles, retry: false });
   const { data: liveOrders, isLoading: ordersLoading, isError: ordersError } = trpc.workOrders.list.useQuery(undefined, { enabled: operationalEnabled && canReadWorkOrders, retry: false });
   const { data: liveInventory, isLoading: inventoryLoading, isError: inventoryError } = trpc.inventory.list.useQuery(undefined, { enabled: operationalEnabled && canReadInventory, retry: false });
