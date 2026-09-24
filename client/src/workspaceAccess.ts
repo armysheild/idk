@@ -1,6 +1,6 @@
 export const roleNavAccess: Record<string, string[]> = {
-  SUPERADMIN: ["Command center", "Notifications", "Compliance vault", "P&L analytics", "Billing", "Team", "Profile"],
-  FLEET_MANAGER: ["Fleet manager workspace", "Vehicles", "Components", "Work orders", "Telematics", "Notifications", "Profile"],
+  SUPERADMIN: ["Command center", "Notifications", "P&L analytics", "Billing", "Team", "Profile"],
+  FLEET_MANAGER: ["Fleet manager workspace", "Vehicles", "Components", "Work orders", "Telematics", "Compliance vault", "Notifications", "Profile"],
   INVENTORY_MANAGER: ["Inventory manager workspace", "Inventory", "Vendors", "Purchase orders", "Notifications", "Profile"],
   MECHANIC: ["Mechanic workspace", "Notifications", "Profile"],
   TECHNICIAN: ["Technician workspace", "Notifications", "Profile"],
