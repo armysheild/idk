@@ -11,6 +11,7 @@ import JoinOrganization from "./pages/JoinOrganization";
 import { AboutPage, PricingPage, SecurityPage } from "./pages/MarketingPages";
 import { useFleetOpsAuth } from "./hooks/useFleetOpsAuth";
 import { trpc } from "./lib/trpc";
+import { getAllowedWorkspace } from "./workspaceAccess";
 import { Route, Switch, useRoute } from "wouter";
 
 function WorkspaceRoute() {
@@ -50,7 +51,10 @@ function GuardedWorkspaceRoute({ section, allowedRoles }: { section: string; all
   if (loading || (session && (summary.isLoading || recoveringSession))) return <div className="auth-page"><div className="auth-card"><h1>Loading workspace access…</h1><p>Confirming your current role session before opening operational data.</p></div></div>;
   if (session && summary.isError) return <div className="auth-page"><div className="auth-card"><h1>Workspace connection needs attention.</h1><p>{summaryUnauthorized ? "Your new role session is being confirmed. Please retry once without signing out." : "We could not load your assigned workspace. Please retry without leaving your secure session."}</p><button className="primary-button" onClick={() => { setRecoveryAttempted(false); void summary.refetch(); }}>Retry workspace load</button></div></div>;
   if (session && summary.data?.role && !allowedRoles.includes(summary.data.role)) return <div className="auth-page"><div className="auth-card"><h1>Workspace access restricted.</h1><p>Your VahanSync role does not have access to the {section} workspace.</p><a className="primary-button" href="/">Return to command center</a></div></div>;
-  return <Home initialSection={section} />;
+  const allowedSection = summary.data?.role
+    ? getAllowedWorkspace(summary.data.role, section)
+    : section;
+  return <Home initialSection={allowedSection} />;
 }
 
 function FleetManagerRoute() { return <GuardedWorkspaceRoute section="Fleet manager workspace" allowedRoles={["FLEET_MANAGER"]} />; }
