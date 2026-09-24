@@ -13,7 +13,7 @@ async def app(scope, receive, send):
     request_path = unquote(forwarded_path) if forwarded_path else scope["path"]
     if request_path == "/api":
         request_path = "/"
-    elif request_path.startswith("/api/"):
+    elif request_path in {"/api/health", "/api/ready"}:
         request_path = request_path[4:]
     if request_path != scope["path"]:
         scope = {
