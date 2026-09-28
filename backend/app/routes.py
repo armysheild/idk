@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session, selectinload
 from .config import get_settings
 from .database import get_db
 from .dependencies import get_current_user, oauth2_scheme, require_development_mode, require_permission, require_roles
-from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComplianceDocument, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationIntegration, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
+from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComplianceDocument, DocumentAccessLog, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationIntegration, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
 from .security import create_access_token, decode_supabase_token, hash_password, provision_supabase_user, verify_password
 from .schemas import (
     ComponentCreate,
@@ -36,6 +36,7 @@ from .schemas import (
     DriverInspectionRead,
     DocumentCreate,
     DocumentAssetRead,
+    DocumentAccessLogRead,
     DocumentVersionRead,
     DocumentRead,
     DocumentUpdate,
@@ -1429,7 +1430,14 @@ def list_vehicle_odometer(
 
 
 @router.get("/components", response_model=list[ComponentRead])
-def list_components(user: User = Depends(require_permission("maintenance_read")), database: Session = Depends(get_db)) -> list[VehicleComponent]:
+def list_components(
+    skip: int = 0,
+    limit: int = 20,
+    user: User = Depends(require_permission("maintenance_read")),
+    database: Session = Depends(get_db),
+) -> list[VehicleComponent]:
+    limit = min(max(limit, 1), 100)
+    skip = max(skip, 0)
     statement = select(VehicleComponent).where(VehicleComponent.organization_id == user.organization_id)
     if user.role == "driver":
         statement = statement.where(VehicleComponent.vehicle_id.in_(
@@ -1444,7 +1452,7 @@ def list_components(user: User = Depends(require_permission("maintenance_read"))
         ))
     elif user.role not in ("owner", "fleet_manager"):
         statement = statement.where(VehicleComponent.id == -1)
-    return list(database.scalars(statement.order_by(VehicleComponent.id.desc())).all())
+    return list(database.scalars(statement.order_by(VehicleComponent.id.desc()).offset(skip).limit(limit)).all())
 
 
 @router.post("/components", response_model=ComponentRead, status_code=status.HTTP_201_CREATED)
@@ -2576,8 +2584,15 @@ def create_maintenance_plan(
 
 
 @router.get("/parts", response_model=list[PartRead])
-def list_parts(user: User = Depends(require_permission("inventory_read")), database: Session = Depends(get_db)) -> list[Part]:
-    return list(database.scalars(select(Part).where(Part.organization_id == user.organization_id).order_by(Part.id.desc())).all())
+def list_parts(
+    skip: int = 0,
+    limit: int = 20,
+    user: User = Depends(require_permission("inventory_read")),
+    database: Session = Depends(get_db),
+) -> list[Part]:
+    limit = min(max(limit, 1), 100)
+    skip = max(skip, 0)
+    return list(database.scalars(select(Part).where(Part.organization_id == user.organization_id).order_by(Part.id.desc()).offset(skip).limit(limit)).all())
 
 
 @router.post("/parts", response_model=PartRead, status_code=status.HTTP_201_CREATED)
@@ -2781,8 +2796,15 @@ def create_stock_location(
 
 
 @router.get("/inventory/movements", response_model=list[InventoryMovementRead])
-def list_inventory_movements(user: User = Depends(require_roles("owner", "inventory_manager")), database: Session = Depends(get_db)) -> list[InventoryMovement]:
-    return list(database.scalars(select(InventoryMovement).where(InventoryMovement.organization_id == user.organization_id).order_by(InventoryMovement.id.desc())).all())
+def list_inventory_movements(
+    skip: int = 0,
+    limit: int = 20,
+    user: User = Depends(require_roles("owner", "inventory_manager")),
+    database: Session = Depends(get_db),
+) -> list[InventoryMovement]:
+    limit = min(max(limit, 1), 100)
+    skip = max(skip, 0)
+    return list(database.scalars(select(InventoryMovement).where(InventoryMovement.organization_id == user.organization_id).order_by(InventoryMovement.id.desc()).offset(skip).limit(limit)).all())
 
 
 @router.post("/inventory/movements", response_model=InventoryMovementRead, status_code=status.HTTP_201_CREATED)
@@ -2820,7 +2842,14 @@ def create_inventory_movement(
 
 
 @router.get("/documents", response_model=list[DocumentRead])
-def list_documents(user: User = Depends(require_permission("compliance_read")), database: Session = Depends(get_db)) -> list[ComplianceDocument]:
+def list_documents(
+    skip: int = 0,
+    limit: int = 20,
+    user: User = Depends(require_permission("compliance_read")),
+    database: Session = Depends(get_db),
+) -> list[ComplianceDocument]:
+    if limit < 1 or limit > 100:
+        limit = 20
     statement = select(ComplianceDocument).where(ComplianceDocument.organization_id == user.organization_id)
     if user.role == "driver":
         statement = statement.where(ComplianceDocument.vehicle_id.in_(
@@ -2828,7 +2857,7 @@ def list_documents(user: User = Depends(require_permission("compliance_read")), 
         ))
     elif user.role not in ("owner", "fleet_manager", "driver"):
         statement = statement.where(ComplianceDocument.id == -1)
-    documents = list(database.scalars(statement.order_by(ComplianceDocument.expires_on.asc())).all())
+    documents = list(database.scalars(statement.order_by(ComplianceDocument.expires_on.asc()).offset(skip).limit(limit)).all())
     today = date.today().isoformat()
     for document in documents:
         if document.expires_on < today:
@@ -3039,10 +3068,18 @@ def list_document_versions(
         ))
         if assigned is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    return list(database.scalars(select(DocumentVersion).where(
+    versions = list(database.scalars(select(DocumentVersion).where(
         DocumentVersion.document_id == document_id,
         DocumentVersion.organization_id == user.organization_id,
     ).order_by(DocumentVersion.version_number.desc())).all())
+    database.add(DocumentAccessLog(
+        organization_id=user.organization_id,
+        document_id=document.id,
+        actor_user_id=user.id,
+        access_type="versions",
+    ))
+    database.commit()
+    return versions
 
 
 @router.get("/documents/{document_id}/file")
@@ -3071,6 +3108,14 @@ def download_document_file(
     )
     if asset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document file not found")
+    database.add(DocumentAccessLog(
+        organization_id=user.organization_id,
+        document_id=document.id,
+        asset_id=asset.id,
+        actor_user_id=user.id,
+        access_type="download",
+    ))
+    database.commit()
     try:
         if get_settings().storage_backend == "local":
             path = resolve_object(asset.object_key)
@@ -3085,6 +3130,28 @@ def download_document_file(
         media_type=asset.content_type,
         headers={"Content-Disposition": f'attachment; filename="{asset.file_name}"'},
     )
+
+
+@router.get("/documents/{document_id}/access-history", response_model=list[DocumentAccessLogRead])
+def list_document_access_history(
+    document_id: int,
+    skip: int = 0,
+    limit: int = 50,
+    user: User = Depends(require_roles("owner", "fleet_manager")),
+    database: Session = Depends(get_db),
+) -> list[DocumentAccessLog]:
+    document = database.scalar(select(ComplianceDocument).where(
+        ComplianceDocument.id == document_id,
+        ComplianceDocument.organization_id == user.organization_id,
+    ))
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    limit = min(max(limit, 1), 100)
+    skip = max(skip, 0)
+    return list(database.scalars(select(DocumentAccessLog).where(
+        DocumentAccessLog.document_id == document_id,
+        DocumentAccessLog.organization_id == user.organization_id,
+    ).order_by(DocumentAccessLog.id.desc()).offset(skip).limit(limit)).all())
 
 
 def build_alerts(user: User, database: Session) -> list[dict[str, str | int]]:
@@ -3666,11 +3733,18 @@ def resolve_notification(
 
 
 @router.get("/expenses", response_model=list[ExpenseRead])
-def list_expenses(user: User = Depends(require_permission("finance_read")), database: Session = Depends(get_db)) -> list[Expense]:
+def list_expenses(
+    skip: int = 0,
+    limit: int = 20,
+    user: User = Depends(require_permission("finance_read")),
+    database: Session = Depends(get_db),
+) -> list[Expense]:
+    limit = min(max(limit, 1), 100)
+    skip = max(skip, 0)
     statement = select(Expense).where(Expense.organization_id == user.organization_id)
     if user.role not in ("owner", "accountant"):
         statement = statement.where(Expense.id == -1)
-    return list(database.scalars(statement.order_by(Expense.incurred_on.desc(), Expense.id.desc())).all())
+    return list(database.scalars(statement.order_by(Expense.incurred_on.desc(), Expense.id.desc()).offset(skip).limit(limit)).all())
 
 
 @router.post("/expenses", response_model=ExpenseRead, status_code=status.HTTP_201_CREATED)
@@ -3690,10 +3764,12 @@ def create_expense(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="GST components must equal the GST amount")
     if payload.igst_amount_paise and (payload.cgst_amount_paise or payload.sgst_amount_paise):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="IGST cannot be combined with CGST or SGST")
+    if payload.status == "Approved":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Expenses must be created as pending and approved by another authorized user",
+        )
     expense = Expense(organization_id=user.organization_id, created_by=user.id, **payload.model_dump())
-    if expense.status == "Approved":
-        expense.approved_by = user.id
-        expense.approved_at = utc_now()
     database.add(expense)
     database.flush()
     database.add(AuditLog(
@@ -3724,8 +3800,15 @@ def update_expense_status(
     ))
     if expense is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
-    if payload.status == "Approved" and user.role == "accountant" and expense.created_by == user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Accountants cannot approve their own expenses")
+    allowed = {
+        "Pending": {"Approved", "Rejected"},
+        "Approved": {"Rejected"},
+        "Rejected": set(),
+    }
+    if payload.status != expense.status and payload.status not in allowed.get(expense.status, set()):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Invalid expense transition: {expense.status} to {payload.status}")
+    if payload.status == "Approved" and expense.created_by == user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Users cannot approve their own expenses")
     expense.status = payload.status
     expense.approved_by = user.id if payload.status == "Approved" else None
     expense.approved_at = utc_now() if payload.status == "Approved" else None
@@ -3758,8 +3841,10 @@ def reconcile_expense(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
     if expense.status == "Rejected":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Rejected expenses cannot be reconciled")
-    if user.role == "accountant" and expense.created_by == user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Accountants cannot approve their own expenses")
+    if expense.status != "Pending":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only pending expenses can be reconciled")
+    if expense.created_by == user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Users cannot approve their own expenses")
     expense.status = "Approved"
     expense.approved_by = user.id
     expense.approved_at = utc_now()
@@ -3792,6 +3877,8 @@ def reverse_expense(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
     if expense.status == "Rejected":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Expense is already reversed")
+    if expense.status != "Approved":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only approved expenses can be reversed")
     expense.status = "Rejected"
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -4265,7 +4352,89 @@ def cron_sync_telematics(
         ).total_seconds() < integration.sync_interval_minutes * 60:
             continue
         results.append(sync_telematics_integration(integration, database))
-    return {"processed": len(results), "results": results}
+    maintenance_notifications = 0
+    document_notifications = 0
+    for organization in database.scalars(select(Organization)).all():
+        owner = database.scalar(select(User).where(
+            User.organization_id == organization.id,
+            User.role == "owner",
+        ).order_by(User.id.asc()))
+        if owner is None:
+            continue
+        sync_notifications(owner, database)
+        today = date.today()
+        horizon = today + timedelta(days=30)
+        for document in database.scalars(select(ComplianceDocument).where(
+            ComplianceDocument.organization_id == organization.id,
+        )).all():
+            if not document.expires_on:
+                continue
+            expires_on = date.fromisoformat(document.expires_on)
+            if expires_on <= horizon:
+                before = database.scalar(select(OperationalNotification.id).where(
+                    OperationalNotification.organization_id == organization.id,
+                    OperationalNotification.dedupe_key == f"document_expiry:{document.id}:{document.expires_on}",
+                ))
+                if before is None:
+                    queue_role_notification(
+                        database,
+                        organization_id=organization.id,
+                        notification_type="document_expiry",
+                        severity="CRITICAL" if expires_on < today else "HIGH",
+                        title=f"Compliance document expiring: {document.name}",
+                        detail=f"Expires on {document.expires_on}.",
+                        entity_type="compliance_document",
+                        entity_id=str(document.id),
+                        roles={"owner", "fleet_manager"},
+                        dedupe_key=f"document_expiry:{document.id}:{document.expires_on}",
+                    )
+                    document_notifications += 1
+        for plan in database.scalars(select(MaintenancePlan).where(
+            MaintenancePlan.organization_id == organization.id,
+            MaintenancePlan.active.is_(True),
+        )).all():
+            vehicle = database.get(Vehicle, plan.vehicle_id)
+            due = (
+                (plan.next_due_km is not None and vehicle is not None and vehicle.odometer_km >= plan.next_due_km)
+                or (plan.next_due_on is not None and plan.next_due_on <= horizon.isoformat())
+            )
+            if due:
+                queue_role_notification(
+                    database,
+                    organization_id=organization.id,
+                    notification_type="maintenance_due",
+                    severity="HIGH",
+                    title=f"Maintenance due: {plan.name}",
+                    detail=f"Vehicle {vehicle.registration_number if vehicle else plan.vehicle_id} requires scheduled maintenance.",
+                    entity_type="maintenance_plan",
+                    entity_id=str(plan.id),
+                    roles={"owner", "fleet_manager"},
+                    dedupe_key=f"maintenance_due:{plan.id}:{plan.next_due_km}:{plan.next_due_on}",
+                )
+                maintenance_notifications += 1
+    dispatched_notifications = 0
+    queued_deliveries = database.scalars(select(NotificationDelivery).where(
+        NotificationDelivery.channel.in_(("sms", "whatsapp")),
+        NotificationDelivery.status.in_(("queued", "failed")),
+    ).order_by(NotificationDelivery.id.asc()).limit(500)).all()
+    for delivery in queued_deliveries:
+        notification = database.get(OperationalNotification, delivery.notification_id)
+        recipient = database.get(User, delivery.user_id)
+        if notification is None or recipient is None:
+            continue
+        if delivery.channel == "sms":
+            dispatch_sms(delivery, notification, recipient)
+        else:
+            dispatch_whatsapp(delivery, notification, recipient)
+        dispatched_notifications += 1
+    database.commit()
+    return {
+        "processed": len(results),
+        "results": results,
+        "maintenance_notifications": maintenance_notifications,
+        "document_notifications": document_notifications,
+        "dispatched_notifications": dispatched_notifications,
+    }
 
 
 @router.post("/telematics/devices", response_model=TelematicsDeviceRead, status_code=status.HTTP_201_CREATED)
@@ -9207,8 +9376,10 @@ def approve_expense(
     expense = database.get(Expense, expense_id)
     if not expense or expense.organization_id != user.organization_id:
         raise HTTPException(status_code=404, detail="Expense not found")
-    if user.role == "accountant" and expense.created_by == user.id:
-        raise HTTPException(status_code=403, detail="Accountants cannot approve their own expenses")
+    if expense.status != "Pending":
+        raise HTTPException(status_code=409, detail="Only pending expenses can be approved")
+    if expense.created_by == user.id:
+        raise HTTPException(status_code=403, detail="Users cannot approve their own expenses")
     
     expense.status = "Approved"
     expense.approved_by = user.id

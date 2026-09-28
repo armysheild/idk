@@ -443,6 +443,18 @@ class DocumentVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
+class DocumentAccessLog(Base):
+    __tablename__ = "document_access_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("compliance_documents.id"), nullable=False, index=True)
+    asset_id: Mapped[Optional[int]] = mapped_column(ForeignKey("document_assets.id"), index=True)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    access_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
 class OperationalNotification(Base):
     __tablename__ = "operational_notifications"
 

@@ -974,6 +974,18 @@ class DocumentVersionRead(BaseModel):
     created_at: datetime
 
 
+class DocumentAccessLogRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    organization_id: int
+    document_id: int
+    asset_id: int | None
+    actor_user_id: int
+    access_type: str
+    created_at: datetime
+
+
 class VendorCreate(BaseModel):
     name: str = Field(min_length=2, max_length=200)
     vendor_type: str = Field(min_length=2, max_length=80)
