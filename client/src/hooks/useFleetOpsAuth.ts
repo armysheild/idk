@@ -97,7 +97,25 @@ export function useFleetOpsAuth() {
     isAuthenticated: Boolean(session),
     signInWithEmail,
     signUpWithEmail: async (email: string, password: string, fullName: string) => {
-      if (supabase) return supabase.auth.signUp({ email: email.trim(), password, options: { data: { fullName, needsOnboarding: true } } });
+      if (supabase) {
+        const response = await fetch(`${API_BASE_URL}/api/v1/auth/signup-account`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: email.trim(),
+            password,
+            full_name: fullName,
+          }),
+        });
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          return {
+            data: { user: null, session: null },
+            error: new Error(body?.detail || "Unable to create account"),
+          };
+        }
+        return supabase.auth.signInWithPassword({ email: email.trim(), password });
+      }
       const response = await fetch(`${API_BASE_URL}/api/v1/auth/signup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

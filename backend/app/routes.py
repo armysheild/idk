@@ -25,17 +25,19 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings
 from .database import get_db
-from .dependencies import get_current_user, require_development_mode, require_permission, require_roles
-from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComplianceDocument, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
-from .security import create_access_token, hash_password, provision_supabase_user, verify_password
+from .dependencies import get_current_user, oauth2_scheme, require_development_mode, require_permission, require_roles
+from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComponentServiceRecord, ComplianceDocument, DocumentAccessLog, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationFeatureFlag, OrganizationIntegration, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
+from .security import create_access_token, decode_supabase_token, hash_password, provision_supabase_user, verify_password
 from .schemas import (
     ComponentCreate,
     ComponentRead,
+    ComponentServiceRecordRead,
     ComponentUpdate,
     DriverInspectionCreate,
     DriverInspectionRead,
     DocumentCreate,
     DocumentAssetRead,
+    DocumentAccessLogRead,
     DocumentVersionRead,
     DocumentRead,
     DocumentUpdate,
@@ -61,8 +63,12 @@ from .schemas import (
     InventoryMovementCreate,
     InventoryMovementRead,
     LoginRequest,
+    AccountSignup,
+    AccountSignupRead,
     OrganizationSignup,
     OrganizationSignupRead,
+    OrganizationIntegrationRead,
+    OrganizationIntegrationUpdate,
     MaintenancePlanCreate,
     MaintenancePlanRead,
     NotificationRead,
@@ -139,6 +145,25 @@ from .schemas import (
 from .storage import download_object, resolve_object, save_upload
 
 router = APIRouter(prefix="/api/v1")
+
+
+def odometer_reading_is_flagged(
+    database: Session,
+    organization_id: int,
+    vehicle_id: int,
+    reading_km: int,
+    current_km: int,
+) -> bool:
+    latest = database.scalar(select(OdometerLog).where(
+        OdometerLog.organization_id == organization_id,
+        OdometerLog.vehicle_id == vehicle_id,
+    ).order_by(OdometerLog.created_at.desc()).limit(1))
+    organization = database.get(Organization, organization_id)
+    if latest is not None and latest.reading_km == reading_km:
+        return True
+    if organization is not None and reading_km - current_km > organization.odometer_max_daily_km:
+        return True
+    return False
 
 # Fixed Bug 26: Report field name mappings for consistent display
 VEHICLE_REPORT_FIELD_MAPPINGS = {
@@ -296,6 +321,13 @@ def invitation_is_active(invitation: OrganizationInvitation) -> bool:
     return invitation.accepted_at is None and invitation.revoked_at is None and expires_at > datetime.now(timezone.utc)
 
 
+def invitation_join_url(request: Request, token: str) -> str:
+    origin = request.headers.get("origin")
+    if origin:
+        return f"{origin.rstrip('/')}/join/{token}"
+    return f"/join/{token}"
+
+
 def trial_end_date() -> str:
     return (datetime.now(timezone.utc).date() + timedelta(days=14)).isoformat()
 
@@ -349,6 +381,27 @@ def signup(payload: OrganizationSignup, database: Session = Depends(get_db)) -> 
         user=user,
         access_token=create_access_token(str(user.id), user.token_version),
     )
+
+
+@router.post("/auth/signup-account", response_model=AccountSignupRead, status_code=status.HTTP_201_CREATED)
+def signup_account(payload: AccountSignup, database: Session = Depends(get_db)) -> AccountSignupRead:
+    email = payload.email.lower()
+    if database.scalar(select(User).where(User.email == email)) is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A user with this email already exists")
+    try:
+        supabase_user_id = provision_supabase_user(
+            email,
+            payload.password,
+            payload.full_name.strip(),
+            metadata={"fullName": payload.full_name.strip(), "needsOnboarding": True},
+        )
+    except ValueError as error:
+        detail = str(error)
+        code = status.HTTP_409_CONFLICT if "already exists" in detail else status.HTTP_503_SERVICE_UNAVAILABLE
+        raise HTTPException(status_code=code, detail=detail) from error
+    if not supabase_user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Organization setup requires Supabase Auth")
+    return AccountSignupRead(user_id=supabase_user_id, email=email)
 
 
 @router.post("/auth/login", response_model=Token)
@@ -581,7 +634,8 @@ def create_invitation(
         "role": invitation.role,
         "expires_at": invitation.expires_at,
         "invite_token": raw_token,
-        "invite_path": f"/invite/{raw_token}",
+        "invite_path": f"/join/{raw_token}",
+        "invite_url": invitation_join_url(request, raw_token),
     }
 
 
@@ -669,7 +723,8 @@ def resend_invitation(
         "role": invitation.role,
         "expires_at": invitation.expires_at,
         "invite_token": raw_token,
-        "invite_path": f"/invite/{raw_token}",
+        "invite_path": f"/join/{raw_token}",
+        "invite_url": invitation_join_url(request, raw_token),
     }
 
 
@@ -677,7 +732,7 @@ def resend_invitation(
 def accept_invitation(payload: InvitationAccept, database: Session = Depends(get_db)) -> InvitationAcceptRead:
     invitation = database.scalar(select(OrganizationInvitation).where(
         OrganizationInvitation.token_hash == invitation_token_hash(payload.token)
-    ))
+    ).with_for_update())
     if invitation is None or not invitation_is_active(invitation):
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invitation is invalid or expired")
     if database.scalar(select(User).where(User.email == invitation.email)) is not None:
@@ -1179,9 +1234,16 @@ def create_vehicle(
     vehicle = Vehicle(
         organization_id=user.organization_id,
         registration_number=registration_number,
+        vin=payload.vin.strip().upper() if payload.vin else None,
+        chassis_number=payload.chassis_number.strip().upper() if payload.chassis_number else None,
+        engine_number=payload.engine_number.strip().upper() if payload.engine_number else None,
+        make=payload.make.strip() if payload.make else None,
         model=payload.model.strip(),
+        model_year=payload.model_year,
         vehicle_type=payload.vehicle_type.strip(),
         depot=payload.depot.strip(),
+        assigned_route=payload.assigned_route.strip() if payload.assigned_route else None,
+        maintenance_template=payload.maintenance_template.strip() if payload.maintenance_template else None,
         status=payload.status,
         health=payload.health,
         odometer_km=payload.odometer_km,
@@ -1253,6 +1315,9 @@ def update_vehicle(
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
     changes = payload.model_dump(exclude_unset=True)
+    odometer_source = changes.pop("odometer_source", None) or (
+        "manual_driver" if user.role == "driver" else "vehicle_update"
+    )
     if user.role == "driver":
         if vehicle.assigned_driver_id != user.id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
@@ -1277,6 +1342,10 @@ def update_vehicle(
     previous_driver_id = vehicle.assigned_driver_id
     previous_odometer = vehicle.odometer_km
     for key, value in changes.items():
+        if key in {"vin", "chassis_number", "engine_number"} and value:
+            value = value.strip().upper()
+        elif isinstance(value, str) and key in {"make", "model", "depot", "assigned_route", "maintenance_template"}:
+            value = value.strip()
         setattr(vehicle, key, value)
     if "assigned_driver_id" in changes and changes["assigned_driver_id"] != previous_driver_id:
         active_assignment = database.scalar(select(VehicleAssignment).where(
@@ -1293,15 +1362,23 @@ def update_vehicle(
                 vehicle_id=vehicle.id,
                 driver_id=changes["assigned_driver_id"],
             ))
-    if "odometer_km" in changes and changes["odometer_km"] != previous_odometer:
+    if "odometer_km" in changes:
+        odometer_flagged = odometer_reading_is_flagged(
+            database,
+            user.organization_id,
+            vehicle.id,
+            changes["odometer_km"],
+            previous_odometer,
+        )
         database.add(OdometerLog(
             organization_id=user.organization_id,
             vehicle_id=vehicle.id,
             reading_km=changes["odometer_km"],
-            source="vehicle_update",
-            is_flagged=False,
+            source=odometer_source,
+            is_flagged=odometer_flagged,
         ))
-        evaluate_component_thresholds(user, vehicle, database)
+        if changes["odometer_km"] != previous_odometer:
+            evaluate_component_thresholds(user, vehicle, database)
     database.add(AuditLog(
         organization_id=user.organization_id,
         actor_user_id=user.id,
@@ -1381,7 +1458,14 @@ def list_vehicle_odometer(
 
 
 @router.get("/components", response_model=list[ComponentRead])
-def list_components(user: User = Depends(require_permission("maintenance_read")), database: Session = Depends(get_db)) -> list[VehicleComponent]:
+def list_components(
+    skip: int = 0,
+    limit: int = 20,
+    user: User = Depends(require_permission("maintenance_read")),
+    database: Session = Depends(get_db),
+) -> list[VehicleComponent]:
+    limit = min(max(limit, 1), 100)
+    skip = max(skip, 0)
     statement = select(VehicleComponent).where(VehicleComponent.organization_id == user.organization_id)
     if user.role == "driver":
         statement = statement.where(VehicleComponent.vehicle_id.in_(
@@ -1396,7 +1480,7 @@ def list_components(user: User = Depends(require_permission("maintenance_read"))
         ))
     elif user.role not in ("owner", "fleet_manager"):
         statement = statement.where(VehicleComponent.id == -1)
-    return list(database.scalars(statement.order_by(VehicleComponent.id.desc())).all())
+    return list(database.scalars(statement.order_by(VehicleComponent.id.desc()).offset(skip).limit(limit)).all())
 
 
 @router.post("/components", response_model=ComponentRead, status_code=status.HTTP_201_CREATED)
@@ -1409,6 +1493,13 @@ def create_component(
     vehicle = database.scalar(select(Vehicle).where(Vehicle.id == payload.vehicle_id, Vehicle.organization_id == user.organization_id))
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found in this organization")
+    if payload.inventory_part_id is not None:
+        part = database.scalar(select(Part).where(
+            Part.id == payload.inventory_part_id,
+            Part.organization_id == user.organization_id,
+        ))
+        if part is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inventory part not found in this organization")
     component_data = payload.model_dump()
     alert_threshold_km = component_data.get("alert_threshold_km")
     service_interval_km = component_data.get("service_interval_km")
@@ -1553,6 +1644,14 @@ def complete_component_service(
     component.next_service_km = odometer_km + component.service_interval_km if component.service_interval_km else None
     component.next_alert_km = odometer_km + component.alert_threshold_km if component.alert_threshold_km else component.next_service_km
     component.status = "Healthy"
+    database.add(ComponentServiceRecord(
+        organization_id=user.organization_id,
+        component_id=component.id,
+        vehicle_id=component.vehicle_id,
+        odometer_km=odometer_km,
+        service_type="service",
+        performed_by=user.id,
+    ))
     database.add(AuditLog(
         organization_id=user.organization_id,
         actor_user_id=user.id,
@@ -1565,6 +1664,26 @@ def complete_component_service(
     database.commit()
     database.refresh(component)
     return component
+
+
+@router.get("/components/{component_id}/service-history", response_model=list[ComponentServiceRecordRead])
+def list_component_service_history(
+    component_id: int,
+    skip: int = 0,
+    limit: int = 50,
+    user: User = Depends(require_permission("maintenance_read")),
+    database: Session = Depends(get_db),
+) -> list[ComponentServiceRecord]:
+    component = database.scalar(select(VehicleComponent).where(
+        VehicleComponent.id == component_id,
+        VehicleComponent.organization_id == user.organization_id,
+    ))
+    if component is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Component not found")
+    return list(database.scalars(select(ComponentServiceRecord).where(
+        ComponentServiceRecord.component_id == component_id,
+        ComponentServiceRecord.organization_id == user.organization_id,
+    ).order_by(ComponentServiceRecord.created_at.desc()).offset(max(skip, 0)).limit(min(max(limit, 1), 100))).all())
 
 
 @router.get("/work-orders", response_model=list[WorkOrderRead])
@@ -1615,6 +1734,13 @@ def create_driver_inspection(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle is not assigned to this driver")
     if payload.odometer_km < vehicle.odometer_km:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inspection odometer cannot move backwards")
+    odometer_flagged = odometer_reading_is_flagged(
+        database,
+        user.organization_id,
+        vehicle.id,
+        payload.odometer_km,
+        vehicle.odometer_km,
+    )
     vehicle.odometer_km = max(vehicle.odometer_km, payload.odometer_km)
     if payload.status == "UNSAFE":
         vehicle.status = "Out of service"
@@ -1624,7 +1750,7 @@ def create_driver_inspection(
         driver_id=user.id,
         reading_km=payload.odometer_km,
         source=f"driver_{payload.inspection_type}",
-        is_flagged=False,
+        is_flagged=odometer_flagged,
     ))
     evaluate_component_thresholds(user, vehicle, database)
     inspection = DriverInspection(
@@ -2521,8 +2647,15 @@ def create_maintenance_plan(
 
 
 @router.get("/parts", response_model=list[PartRead])
-def list_parts(user: User = Depends(require_permission("inventory_read")), database: Session = Depends(get_db)) -> list[Part]:
-    return list(database.scalars(select(Part).where(Part.organization_id == user.organization_id).order_by(Part.id.desc())).all())
+def list_parts(
+    skip: int = 0,
+    limit: int = 20,
+    user: User = Depends(require_permission("inventory_read")),
+    database: Session = Depends(get_db),
+) -> list[Part]:
+    limit = min(max(limit, 1), 100)
+    skip = max(skip, 0)
+    return list(database.scalars(select(Part).where(Part.organization_id == user.organization_id).order_by(Part.id.desc()).offset(skip).limit(limit)).all())
 
 
 @router.post("/parts", response_model=PartRead, status_code=status.HTTP_201_CREATED)
@@ -2726,8 +2859,15 @@ def create_stock_location(
 
 
 @router.get("/inventory/movements", response_model=list[InventoryMovementRead])
-def list_inventory_movements(user: User = Depends(require_roles("owner", "inventory_manager")), database: Session = Depends(get_db)) -> list[InventoryMovement]:
-    return list(database.scalars(select(InventoryMovement).where(InventoryMovement.organization_id == user.organization_id).order_by(InventoryMovement.id.desc())).all())
+def list_inventory_movements(
+    skip: int = 0,
+    limit: int = 20,
+    user: User = Depends(require_roles("owner", "inventory_manager")),
+    database: Session = Depends(get_db),
+) -> list[InventoryMovement]:
+    limit = min(max(limit, 1), 100)
+    skip = max(skip, 0)
+    return list(database.scalars(select(InventoryMovement).where(InventoryMovement.organization_id == user.organization_id).order_by(InventoryMovement.id.desc()).offset(skip).limit(limit)).all())
 
 
 @router.post("/inventory/movements", response_model=InventoryMovementRead, status_code=status.HTTP_201_CREATED)
@@ -2765,7 +2905,14 @@ def create_inventory_movement(
 
 
 @router.get("/documents", response_model=list[DocumentRead])
-def list_documents(user: User = Depends(require_permission("compliance_read")), database: Session = Depends(get_db)) -> list[ComplianceDocument]:
+def list_documents(
+    skip: int = 0,
+    limit: int = 20,
+    user: User = Depends(require_permission("compliance_read")),
+    database: Session = Depends(get_db),
+) -> list[ComplianceDocument]:
+    if limit < 1 or limit > 100:
+        limit = 20
     statement = select(ComplianceDocument).where(ComplianceDocument.organization_id == user.organization_id)
     if user.role == "driver":
         statement = statement.where(ComplianceDocument.vehicle_id.in_(
@@ -2773,7 +2920,7 @@ def list_documents(user: User = Depends(require_permission("compliance_read")), 
         ))
     elif user.role not in ("owner", "fleet_manager", "driver"):
         statement = statement.where(ComplianceDocument.id == -1)
-    documents = list(database.scalars(statement.order_by(ComplianceDocument.expires_on.asc())).all())
+    documents = list(database.scalars(statement.order_by(ComplianceDocument.expires_on.asc()).offset(skip).limit(limit)).all())
     today = date.today().isoformat()
     for document in documents:
         if document.expires_on < today:
@@ -2984,10 +3131,18 @@ def list_document_versions(
         ))
         if assigned is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    return list(database.scalars(select(DocumentVersion).where(
+    versions = list(database.scalars(select(DocumentVersion).where(
         DocumentVersion.document_id == document_id,
         DocumentVersion.organization_id == user.organization_id,
     ).order_by(DocumentVersion.version_number.desc())).all())
+    database.add(DocumentAccessLog(
+        organization_id=user.organization_id,
+        document_id=document.id,
+        actor_user_id=user.id,
+        access_type="versions",
+    ))
+    database.commit()
+    return versions
 
 
 @router.get("/documents/{document_id}/file")
@@ -3016,6 +3171,14 @@ def download_document_file(
     )
     if asset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document file not found")
+    database.add(DocumentAccessLog(
+        organization_id=user.organization_id,
+        document_id=document.id,
+        asset_id=asset.id,
+        actor_user_id=user.id,
+        access_type="download",
+    ))
+    database.commit()
     try:
         if get_settings().storage_backend == "local":
             path = resolve_object(asset.object_key)
@@ -3030,6 +3193,28 @@ def download_document_file(
         media_type=asset.content_type,
         headers={"Content-Disposition": f'attachment; filename="{asset.file_name}"'},
     )
+
+
+@router.get("/documents/{document_id}/access-history", response_model=list[DocumentAccessLogRead])
+def list_document_access_history(
+    document_id: int,
+    skip: int = 0,
+    limit: int = 50,
+    user: User = Depends(require_roles("owner", "fleet_manager")),
+    database: Session = Depends(get_db),
+) -> list[DocumentAccessLog]:
+    document = database.scalar(select(ComplianceDocument).where(
+        ComplianceDocument.id == document_id,
+        ComplianceDocument.organization_id == user.organization_id,
+    ))
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    limit = min(max(limit, 1), 100)
+    skip = max(skip, 0)
+    return list(database.scalars(select(DocumentAccessLog).where(
+        DocumentAccessLog.document_id == document_id,
+        DocumentAccessLog.organization_id == user.organization_id,
+    ).order_by(DocumentAccessLog.id.desc()).offset(skip).limit(limit)).all())
 
 
 def build_alerts(user: User, database: Session) -> list[dict[str, str | int]]:
@@ -3611,11 +3796,18 @@ def resolve_notification(
 
 
 @router.get("/expenses", response_model=list[ExpenseRead])
-def list_expenses(user: User = Depends(require_permission("finance_read")), database: Session = Depends(get_db)) -> list[Expense]:
+def list_expenses(
+    skip: int = 0,
+    limit: int = 20,
+    user: User = Depends(require_permission("finance_read")),
+    database: Session = Depends(get_db),
+) -> list[Expense]:
+    limit = min(max(limit, 1), 100)
+    skip = max(skip, 0)
     statement = select(Expense).where(Expense.organization_id == user.organization_id)
     if user.role not in ("owner", "accountant"):
         statement = statement.where(Expense.id == -1)
-    return list(database.scalars(statement.order_by(Expense.incurred_on.desc(), Expense.id.desc())).all())
+    return list(database.scalars(statement.order_by(Expense.incurred_on.desc(), Expense.id.desc()).offset(skip).limit(limit)).all())
 
 
 @router.post("/expenses", response_model=ExpenseRead, status_code=status.HTTP_201_CREATED)
@@ -3635,10 +3827,12 @@ def create_expense(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="GST components must equal the GST amount")
     if payload.igst_amount_paise and (payload.cgst_amount_paise or payload.sgst_amount_paise):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="IGST cannot be combined with CGST or SGST")
+    if payload.status == "Approved":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Expenses must be created as pending and approved by another authorized user",
+        )
     expense = Expense(organization_id=user.organization_id, created_by=user.id, **payload.model_dump())
-    if expense.status == "Approved":
-        expense.approved_by = user.id
-        expense.approved_at = utc_now()
     database.add(expense)
     database.flush()
     database.add(AuditLog(
@@ -3669,8 +3863,15 @@ def update_expense_status(
     ))
     if expense is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
-    if payload.status == "Approved" and user.role == "accountant" and expense.created_by == user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Accountants cannot approve their own expenses")
+    allowed = {
+        "Pending": {"Approved", "Rejected"},
+        "Approved": {"Rejected"},
+        "Rejected": set(),
+    }
+    if payload.status != expense.status and payload.status not in allowed.get(expense.status, set()):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Invalid expense transition: {expense.status} to {payload.status}")
+    if payload.status == "Approved" and expense.created_by == user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Users cannot approve their own expenses")
     expense.status = payload.status
     expense.approved_by = user.id if payload.status == "Approved" else None
     expense.approved_at = utc_now() if payload.status == "Approved" else None
@@ -3703,8 +3904,10 @@ def reconcile_expense(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
     if expense.status == "Rejected":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Rejected expenses cannot be reconciled")
-    if user.role == "accountant" and expense.created_by == user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Accountants cannot approve their own expenses")
+    if expense.status != "Pending":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only pending expenses can be reconciled")
+    if expense.created_by == user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Users cannot approve their own expenses")
     expense.status = "Approved"
     expense.approved_by = user.id
     expense.approved_at = utc_now()
@@ -3737,6 +3940,8 @@ def reverse_expense(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
     if expense.status == "Rejected":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Expense is already reversed")
+    if expense.status != "Approved":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only approved expenses can be reversed")
     expense.status = "Rejected"
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -4210,7 +4415,110 @@ def cron_sync_telematics(
         ).total_seconds() < integration.sync_interval_minutes * 60:
             continue
         results.append(sync_telematics_integration(integration, database))
-    return {"processed": len(results), "results": results}
+    maintenance_notifications = 0
+    maintenance_work_orders = 0
+    document_notifications = 0
+    for organization in database.scalars(select(Organization)).all():
+        owner = database.scalar(select(User).where(
+            User.organization_id == organization.id,
+            User.role == "owner",
+        ).order_by(User.id.asc()))
+        if owner is None:
+            continue
+        sync_notifications(owner, database)
+        today = date.today()
+        horizon = today + timedelta(days=30)
+        for document in database.scalars(select(ComplianceDocument).where(
+            ComplianceDocument.organization_id == organization.id,
+        )).all():
+            if not document.expires_on:
+                continue
+            expires_on = date.fromisoformat(document.expires_on)
+            if expires_on <= horizon:
+                before = database.scalar(select(OperationalNotification.id).where(
+                    OperationalNotification.organization_id == organization.id,
+                    OperationalNotification.dedupe_key == f"document_expiry:{document.id}:{document.expires_on}",
+                ))
+                if before is None:
+                    queue_role_notification(
+                        database,
+                        organization_id=organization.id,
+                        notification_type="document_expiry",
+                        severity="CRITICAL" if expires_on < today else "HIGH",
+                        title=f"Compliance document expiring: {document.name}",
+                        detail=f"Expires on {document.expires_on}.",
+                        entity_type="compliance_document",
+                        entity_id=str(document.id),
+                        roles={"owner", "fleet_manager"},
+                        dedupe_key=f"document_expiry:{document.id}:{document.expires_on}",
+                    )
+                    document_notifications += 1
+        for plan in database.scalars(select(MaintenancePlan).where(
+            MaintenancePlan.organization_id == organization.id,
+            MaintenancePlan.active.is_(True),
+        )).all():
+            vehicle = database.get(Vehicle, plan.vehicle_id)
+            due = (
+                (plan.next_due_km is not None and vehicle is not None and vehicle.odometer_km >= plan.next_due_km)
+                or (plan.next_due_on is not None and plan.next_due_on <= horizon.isoformat())
+            )
+            if due:
+                existing_work_order = database.scalar(select(WorkOrder).where(
+                    WorkOrder.organization_id == organization.id,
+                    WorkOrder.maintenance_plan_id == plan.id,
+                    WorkOrder.status.not_in(("Completed", "Cancelled", "Archived")),
+                ))
+                if existing_work_order is None and vehicle is not None:
+                    database.add(WorkOrder(
+                        organization_id=organization.id,
+                        vehicle_id=vehicle.id,
+                        maintenance_plan_id=plan.id,
+                        title=f"Scheduled maintenance: {plan.name}",
+                        description=f"Created automatically from maintenance plan {plan.id}.",
+                        workstream="maintenance",
+                        created_by=owner.id,
+                        priority="High",
+                        status="Open",
+                        due_date=plan.next_due_on,
+                    ))
+                    maintenance_work_orders += 1
+                queue_role_notification(
+                    database,
+                    organization_id=organization.id,
+                    notification_type="maintenance_due",
+                    severity="HIGH",
+                    title=f"Maintenance due: {plan.name}",
+                    detail=f"Vehicle {vehicle.registration_number if vehicle else plan.vehicle_id} requires scheduled maintenance.",
+                    entity_type="maintenance_plan",
+                    entity_id=str(plan.id),
+                    roles={"owner", "fleet_manager"},
+                    dedupe_key=f"maintenance_due:{plan.id}:{plan.next_due_km}:{plan.next_due_on}",
+                )
+                maintenance_notifications += 1
+    dispatched_notifications = 0
+    queued_deliveries = database.scalars(select(NotificationDelivery).where(
+        NotificationDelivery.channel.in_(("sms", "whatsapp")),
+        NotificationDelivery.status.in_(("queued", "failed")),
+    ).order_by(NotificationDelivery.id.asc()).limit(500)).all()
+    for delivery in queued_deliveries:
+        notification = database.get(OperationalNotification, delivery.notification_id)
+        recipient = database.get(User, delivery.user_id)
+        if notification is None or recipient is None:
+            continue
+        if delivery.channel == "sms":
+            dispatch_sms(delivery, notification, recipient)
+        else:
+            dispatch_whatsapp(delivery, notification, recipient)
+        dispatched_notifications += 1
+    database.commit()
+    return {
+        "processed": len(results),
+        "results": results,
+        "maintenance_notifications": maintenance_notifications,
+        "maintenance_work_orders": maintenance_work_orders,
+        "document_notifications": document_notifications,
+        "dispatched_notifications": dispatched_notifications,
+    }
 
 
 @router.post("/telematics/devices", response_model=TelematicsDeviceRead, status_code=status.HTTP_201_CREATED)
@@ -4309,9 +4617,24 @@ def ingest_telemetry(
     vehicle = database.get(Vehicle, device.vehicle_id)
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+    previous_odometer = vehicle.odometer_km
     if payload.odometer_km > vehicle.odometer_km:
         vehicle.odometer_km = payload.odometer_km
         evaluate_component_thresholds(user, vehicle, database)
+    if payload.odometer_km is not None:
+        database.add(OdometerLog(
+            organization_id=user.organization_id,
+            vehicle_id=device.vehicle_id,
+            reading_km=payload.odometer_km,
+            source="telematics",
+            is_flagged=odometer_reading_is_flagged(
+                database,
+                user.organization_id,
+                device.vehicle_id,
+                payload.odometer_km,
+                previous_odometer,
+            ),
+        ))
     reading = TelemetryReading(
         organization_id=user.organization_id,
         vehicle_id=device.vehicle_id,
@@ -5318,6 +5641,8 @@ def evaluate_escalations(
     
     for alert in alerts:
         alert.status = "read"
+        alert.escalation_level += 1
+        alert.escalated_at = utc_now()
         escalated_count += 1
         queue_role_notification(
             database,
@@ -5329,6 +5654,7 @@ def evaluate_escalations(
             entity_type=alert.entity_type,
             entity_id=alert.entity_id,
             roles={"owner"},
+            dedupe_key=f"alert_escalation:{alert.id}:{alert.escalation_level}",
         )
     
     # Find overdue critical work orders
@@ -5350,6 +5676,7 @@ def evaluate_escalations(
             entity_type="work_order",
             entity_id=str(order.id),
             roles={"owner"},
+            dedupe_key=f"work_order_escalation:{order.id}",
         )
         escalated_count += 1
     
@@ -5406,28 +5733,65 @@ def system_config(
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
     
+    defaults = {
+        "telematics": True,
+        "reporting": True,
+        "compliance": True,
+        "maintenance_planning": True,
+        "financial_tracking": True,
+        "inventory_management": True,
+        "work_order_automation": True,
+        "triage_system": True,
+        "activity_feed": True,
+    }
+    stored_flags = {
+        flag.feature_key: flag.enabled
+        for flag in database.scalars(select(OrganizationFeatureFlag).where(
+            OrganizationFeatureFlag.organization_id == org.id,
+        )).all()
+    }
+    features = {key: stored_flags.get(key, value) for key, value in defaults.items()}
     return {
         "organization_id": org.id,
         "organization_name": org.name,
         "plan": org.subscription_plan,
         "status": org.subscription_status,
-        "features": {
-            "telematics": True,  # VS has telematics
-            "reporting": True,
-            "compliance": True,
-            "maintenance_planning": True,
-            "financial_tracking": True,
-            "inventory_management": True,
-            "work_order_automation": True,
-            "triage_system": True,
-            "activity_feed": True,
-        },
+        "features": features,
         "api_endpoints": {
             "health": "/system/health",
             "version": "/system/version",
             "config": "/system/config",
         },
     }
+
+
+@router.put("/system/config/features/{feature_key}", response_model=dict)
+def update_feature_flag(
+    feature_key: str,
+    enabled: bool,
+    user: User = Depends(require_roles("owner")),
+    database: Session = Depends(get_db),
+) -> dict:
+    allowed = {"telematics", "reporting", "compliance", "maintenance_planning", "financial_tracking", "inventory_management", "work_order_automation", "triage_system", "activity_feed"}
+    if feature_key not in allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown feature flag")
+    flag = database.scalar(select(OrganizationFeatureFlag).where(
+        OrganizationFeatureFlag.organization_id == user.organization_id,
+        OrganizationFeatureFlag.feature_key == feature_key,
+    ))
+    if flag is None:
+        flag = OrganizationFeatureFlag(
+            organization_id=user.organization_id,
+            feature_key=feature_key,
+            enabled=enabled,
+            updated_by=user.id,
+        )
+        database.add(flag)
+    else:
+        flag.enabled = enabled
+        flag.updated_by = user.id
+    database.commit()
+    return {"feature_key": feature_key, "enabled": enabled}
 
 
 
@@ -5528,6 +5892,70 @@ def update_organization_settings(
         "safety_contact_phone": org.safety_contact_phone,
         "updated": True,
     }
+
+
+@router.get("/organization/integrations", response_model=list[OrganizationIntegrationRead])
+def list_organization_integrations(
+    user: User = Depends(require_roles("owner")),
+    database: Session = Depends(get_db),
+) -> list[OrganizationIntegration]:
+    providers = ("government", "insurance", "tax", "fuel", "bank")
+    existing = {
+        item.provider: item
+        for item in database.scalars(select(OrganizationIntegration).where(
+            OrganizationIntegration.organization_id == user.organization_id,
+        )).all()
+    }
+    for provider in providers:
+        if provider not in existing:
+            existing[provider] = OrganizationIntegration(
+                organization_id=user.organization_id,
+                provider=provider,
+                status="not_configured",
+            )
+            database.add(existing[provider])
+    database.commit()
+    return [existing[provider] for provider in providers]
+
+
+@router.put("/organization/integrations/{provider}", response_model=OrganizationIntegrationRead)
+def update_organization_integration(
+    provider: str,
+    payload: OrganizationIntegrationUpdate,
+    request: Request,
+    user: User = Depends(require_roles("owner")),
+    database: Session = Depends(get_db),
+) -> OrganizationIntegration:
+    if provider not in {"government", "insurance", "tax", "fuel", "bank"}:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integration provider not found")
+    reserve_idempotency_key(request, user, database)
+    integration = database.scalar(select(OrganizationIntegration).where(
+        OrganizationIntegration.organization_id == user.organization_id,
+        OrganizationIntegration.provider == provider,
+    ))
+    if integration is None:
+        integration = OrganizationIntegration(
+            organization_id=user.organization_id,
+            provider=provider,
+        )
+        database.add(integration)
+    integration.endpoint = payload.endpoint.strip() if payload.endpoint else None
+    integration.account_identifier = payload.account_identifier.strip() if payload.account_identifier else None
+    integration.active = payload.active
+    integration.status = "connected" if payload.active else "not_configured"
+    integration.last_checked_at = utc_now() if payload.active else None
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="organization.integration_updated",
+        entity_type="organization_integration",
+        entity_id=provider,
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps({"provider": provider, "active": payload.active}),
+    ))
+    database.commit()
+    database.refresh(integration)
+    return integration
 
 
 @router.get("/organization/quota", response_model=dict)
@@ -5938,10 +6366,60 @@ def get_onboarding_checklist(
 def onboarding_bootstrap(
     payload: OnboardingBootstrap,
     request: Request,
-    user: User = Depends(require_roles("owner")),
+    token: str = Depends(oauth2_scheme),
     database: Session = Depends(get_db),
 ) -> dict:
     """Bootstrap initial onboarding data"""
+    settings = get_settings()
+    if settings.auth_provider != "supabase":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Supabase onboarding is required")
+
+    try:
+        claims = decode_supabase_token(token)
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials") from error
+
+    subject = str(claims.get("sub", "")).strip()
+    email = str(claims.get("email", "")).strip().lower()
+    if not subject or not email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Supabase identity is incomplete")
+
+    user = database.scalar(select(User).where(User.supabase_user_id == subject))
+    if user is None:
+        user = database.scalar(select(User).where(User.email == email))
+    if user is None:
+        organization = Organization(
+            name=payload.organization_name.strip(),
+            slug=organization_slug(payload.organization_name, database),
+            subscription_status="trialing",
+            trial_ends_on=trial_end_date(),
+        )
+        database.add(organization)
+        database.flush()
+        user = User(
+            organization_id=organization.id,
+            email=email,
+            full_name=f"{payload.first_name} {payload.last_name}".strip(),
+            password_hash=hash_password(secrets.token_urlsafe(32)),
+            supabase_user_id=subject,
+            role="owner",
+        )
+        database.add(user)
+        database.flush()
+        database.add(AuditLog(
+            organization_id=organization.id,
+            actor_user_id=user.id,
+            action="organization.created",
+            entity_type="organization",
+            entity_id=str(organization.id),
+            request_id=request.headers.get("x-request-id", str(uuid4())),
+            changes=json.dumps({"name": organization.name, "slug": organization.slug, "source": "supabase_onboarding"}),
+        ))
+    elif user.role != "owner":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only organization owners can bootstrap onboarding")
+    elif user.supabase_user_id is None:
+        user.supabase_user_id = subject
+
     reserve_idempotency_key(request, user, database)
     
     org = database.get(Organization, user.organization_id)
@@ -9038,8 +9516,10 @@ def approve_expense(
     expense = database.get(Expense, expense_id)
     if not expense or expense.organization_id != user.organization_id:
         raise HTTPException(status_code=404, detail="Expense not found")
-    if user.role == "accountant" and expense.created_by == user.id:
-        raise HTTPException(status_code=403, detail="Accountants cannot approve their own expenses")
+    if expense.status != "Pending":
+        raise HTTPException(status_code=409, detail="Only pending expenses can be approved")
+    if expense.created_by == user.id:
+        raise HTTPException(status_code=403, detail="Users cannot approve their own expenses")
     
     expense.status = "Approved"
     expense.approved_by = user.id
@@ -9664,13 +10144,20 @@ def escalate_notification(
     notification = database.get(OperationalNotification, notification_id)
     if not notification or notification.organization_id != user.organization_id:
         raise HTTPException(status_code=404, detail="Notification not found")
+    if notification.status == "resolved":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Resolved notifications cannot be escalated")
     
     reason = payload.get("reason", "Escalated by user")
     escalated_to_severity = payload.get("severity", "CRITICAL")
+    severity_rank = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+    if severity_rank.get(escalated_to_severity, 0) <= severity_rank.get(notification.severity, 0):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Escalation must increase severity")
     
     # Update notification
     original_severity = notification.severity
     notification.severity = escalated_to_severity
+    notification.escalation_level += 1
+    notification.escalated_at = utc_now()
     database.add(notification)
     
     # Create audit event

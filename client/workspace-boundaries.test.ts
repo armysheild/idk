@@ -43,6 +43,12 @@ describe("role workspace boundaries", () => {
     expect(getAllowedWorkspace("INVENTORY_MANAGER", "Work orders")).toBe("Inventory manager workspace");
   });
 
+  it("normalizes direct generic workspace URLs before rendering Home", () => {
+    const appSource = readFileSync(resolve(process.cwd(), "client/src/App.tsx"), "utf8");
+    expect(appSource).toContain("getAllowedWorkspace(summary.data.role, section)");
+    expect(appSource).toContain("<Home initialSection={allowedSection} />");
+  });
+
   it("keeps Inventory Manager dashboard, parts, vendors, and purchase orders as distinct functional surfaces", () => {
     const routerSource = readFileSync(resolve(process.cwd(), "client/src/components/FunctionalWorkspace.tsx"), "utf8");
     const resourceSource = readFileSync(resolve(process.cwd(), "client/src/components/workspaces/ResourceWorkspace.tsx"), "utf8");

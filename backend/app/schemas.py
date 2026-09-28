@@ -29,6 +29,22 @@ class IdentityProviderMetadata(BaseModel):
     local_login_available: bool = True
 
 
+class OrganizationIntegrationUpdate(BaseModel):
+    endpoint: str | None = Field(default=None, max_length=500)
+    account_identifier: str | None = Field(default=None, max_length=160)
+    active: bool = False
+
+
+class OrganizationIntegrationRead(OrganizationIntegrationUpdate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    organization_id: int
+    provider: str
+    status: str
+    last_checked_at: datetime | None
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
@@ -42,6 +58,18 @@ class OrganizationSignup(BaseModel):
     sms_alerts_enabled: bool = False
     whatsapp_alerts_enabled: bool = False
     password: str = Field(min_length=8)
+
+
+class AccountSignup(BaseModel):
+    full_name: str = Field(min_length=2, max_length=160)
+    email: EmailStr
+    password: str = Field(min_length=8)
+
+
+class AccountSignupRead(BaseModel):
+    user_id: str
+    email: EmailStr
+    needs_onboarding: bool = True
 
 
 class UserRead(BaseModel):
@@ -290,9 +318,16 @@ class RazorpayWebhookPayload(BaseModel):
 class VehicleCreate(BaseModel):
     """Schema for creating or updating a vehicle with validation"""
     registration_number: str = Field(min_length=3, max_length=32)
+    vin: str | None = Field(default=None, min_length=5, max_length=32)
+    chassis_number: str | None = Field(default=None, max_length=120)
+    engine_number: str | None = Field(default=None, max_length=120)
+    make: str | None = Field(default=None, max_length=80)
     model: str = Field(min_length=2, max_length=160)
+    model_year: int | None = Field(default=None, ge=1980, le=2100)
     vehicle_type: str = Field(min_length=2, max_length=80)
     depot: str = Field(min_length=2, max_length=120)
+    assigned_route: str | None = Field(default=None, max_length=160)
+    maintenance_template: str | None = Field(default=None, max_length=80)
     status: str = Field(default="Idle / parked", pattern="^(Idle / parked|On route|In workshop|Out of service|Retired)$")
     health: int = Field(default=100, ge=0, le=100)
     odometer_km: int = Field(default=0, ge=0)
@@ -314,13 +349,21 @@ class ComponentCreate(BaseModel):
     vehicle_id: int
     name: str = Field(min_length=2, max_length=160)
     component_type: str = Field(min_length=2, max_length=80)
+    component_subtype: str | None = Field(default=None, max_length=120)
+    inventory_part_id: int | None = None
+    brand: str | None = Field(default=None, max_length=120)
+    part_number: str | None = Field(default=None, max_length=120)
     serial_number: str | None = None
+    installation_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     installed_at_km: int = Field(default=0, ge=0)
     last_service_km: int | None = Field(default=None, ge=0)
     service_interval_km: int | None = Field(default=None, gt=0)
+    expected_life_days: int | None = Field(default=None, gt=0)
     alert_threshold_km: int | None = Field(default=None, gt=0)
+    alert_threshold_days: int | None = Field(default=None, gt=0)
     next_alert_km: int | None = Field(default=None, ge=0)
     next_service_km: int | None = Field(default=None, ge=0)
+    notes: str | None = Field(default=None, max_length=4000)
     status: str = "Healthy"
 
 
@@ -332,26 +375,56 @@ class ComponentRead(ComponentCreate):
     created_at: datetime
 
 
+class ComponentServiceRecordRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    organization_id: int
+    component_id: int
+    vehicle_id: int
+    odometer_km: int
+    service_type: str
+    notes: str | None
+    performed_by: int
+    created_at: datetime
+
+
 class ComponentUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=160)
     component_type: str | None = Field(default=None, min_length=2, max_length=80)
+    component_subtype: str | None = Field(default=None, max_length=120)
+    inventory_part_id: int | None = None
+    brand: str | None = Field(default=None, max_length=120)
+    part_number: str | None = Field(default=None, max_length=120)
     serial_number: str | None = None
+    installation_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     installed_at_km: int | None = Field(default=None, ge=0)
     last_service_km: int | None = Field(default=None, ge=0)
     service_interval_km: int | None = Field(default=None, gt=0)
+    expected_life_days: int | None = Field(default=None, gt=0)
     alert_threshold_km: int | None = Field(default=None, gt=0)
+    alert_threshold_days: int | None = Field(default=None, gt=0)
     next_alert_km: int | None = Field(default=None, ge=0)
     next_service_km: int | None = Field(default=None, ge=0)
+    notes: str | None = Field(default=None, max_length=4000)
     status: str | None = None
 
 
 class VehicleUpdate(BaseModel):
+    vin: str | None = Field(default=None, min_length=5, max_length=32)
+    chassis_number: str | None = Field(default=None, max_length=120)
+    engine_number: str | None = Field(default=None, max_length=120)
+    make: str | None = Field(default=None, max_length=80)
     model: str | None = Field(default=None, min_length=2, max_length=160)
+    model_year: int | None = Field(default=None, ge=1980, le=2100)
     vehicle_type: str | None = Field(default=None, min_length=2, max_length=80)
     depot: str | None = Field(default=None, min_length=2, max_length=120)
+    assigned_route: str | None = Field(default=None, max_length=160)
+    maintenance_template: str | None = Field(default=None, max_length=80)
     status: str | None = None
     health: int | None = Field(default=None, ge=0, le=100)
     odometer_km: int | None = Field(default=None, ge=0)
+    odometer_source: str | None = Field(default=None, max_length=40)
     driver_name: str | None = None
     assigned_driver_id: int | None = None
 
@@ -515,6 +588,7 @@ class DriverInspectionCreate(BaseModel):
     status: str = Field(default="SAFE", pattern=r"^(SAFE|UNSAFE|REVIEW)$")
     odometer_km: int = Field(ge=0)
     notes: str | None = Field(default=None, max_length=2000)
+    photo_data: str | None = Field(default=None, max_length=10_000_000)
 
 
 class DriverInspectionRead(DriverInspectionCreate):
@@ -531,6 +605,8 @@ class VehicleIssueCreate(BaseModel):
     title: str = Field(min_length=2, max_length=200)
     detail: str = Field(min_length=3, max_length=5000)
     priority: str = Field(default="Medium", pattern=r"^(Low|Medium|High|Critical)$")
+    photo_data: str | None = Field(default=None, max_length=10_000_000)
+    photo_content_type: str | None = Field(default=None, max_length=120)
 
 
 class VehicleIssueRead(VehicleIssueCreate):
@@ -781,6 +857,7 @@ class FuelTransactionCreate(BaseModel):
     odometer_km: int = Field(ge=0)
     incurred_on: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     reference: str | None = None
+    receipt_data: str | None = Field(default=None, max_length=10_000_000)
 
 
 class FuelTransactionRead(FuelTransactionCreate):
@@ -908,6 +985,18 @@ class DocumentVersionRead(BaseModel):
     expires_on: str
     asset_id: int | None
     created_by: int
+    created_at: datetime
+
+
+class DocumentAccessLogRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    organization_id: int
+    document_id: int
+    asset_id: int | None
+    actor_user_id: int
+    access_type: str
     created_at: datetime
 
 

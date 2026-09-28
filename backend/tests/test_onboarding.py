@@ -46,6 +46,11 @@ def test_organization_onboarding_invitation_and_assignment_visibility(tmp_path: 
             "password": "DriverPassword!123",
         })
         assert driver_invite.status_code == 200
+        reused_invite = client.post("/api/v1/auth/invitations/accept", json={
+            "token": invitation.json()["invite_token"],
+            "password": "DifferentPassword!123",
+        })
+        assert reused_invite.status_code == 410
         driver_headers = {"Authorization": f"Bearer {driver_invite.json()['access_token']}"}
 
         driver_id = driver_invite.json()["user"]["id"]

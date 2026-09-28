@@ -22,6 +22,8 @@ class Organization(Base):
     subscription_status: Mapped[str] = mapped_column(String(24), default="trialing", nullable=False)
     trial_ends_on: Mapped[Optional[str]] = mapped_column(String(20))
     subscription_renews_on: Mapped[Optional[str]] = mapped_column(String(20))
+    trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    subscription_renews_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     razorpay_subscription_id: Mapped[Optional[str]] = mapped_column(String(120))
     razorpay_last_order_id: Mapped[Optional[str]] = mapped_column(String(120))
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Kolkata", nullable=False)
@@ -31,6 +33,33 @@ class Organization(Base):
     safety_contact_phone: Mapped[Optional[str]] = mapped_column(String(32))
     users: Mapped[list["User"]] = relationship(back_populates="organization")
     vehicles: Mapped[list["Vehicle"]] = relationship(back_populates="organization")
+
+
+class OrganizationIntegration(Base):
+    __tablename__ = "organization_integrations"
+    __table_args__ = (UniqueConstraint("organization_id", "provider", name="uq_organization_integrations_provider"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    endpoint: Mapped[Optional[str]] = mapped_column(String(500))
+    account_identifier: Mapped[Optional[str]] = mapped_column(String(160))
+    active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="not_configured", nullable=False)
+    last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class OrganizationFeatureFlag(Base):
+    __tablename__ = "organization_feature_flags"
+    __table_args__ = (UniqueConstraint("organization_id", "feature_key", name="uq_org_feature_flag"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
+    feature_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    updated_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
 
 class User(Base):
@@ -91,9 +120,16 @@ class Vehicle(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
     registration_number: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
+    vin: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    chassis_number: Mapped[Optional[str]] = mapped_column(String(120))
+    engine_number: Mapped[Optional[str]] = mapped_column(String(120))
+    make: Mapped[Optional[str]] = mapped_column(String(80))
     model: Mapped[str] = mapped_column(String(160), nullable=False)
+    model_year: Mapped[Optional[int]] = mapped_column(Integer)
     vehicle_type: Mapped[str] = mapped_column(String(80), nullable=False)
     depot: Mapped[str] = mapped_column(String(120), nullable=False)
+    assigned_route: Mapped[Optional[str]] = mapped_column(String(160))
+    maintenance_template: Mapped[Optional[str]] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(40), default="Idle / parked", nullable=False)
     health: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
     odometer_km: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -137,15 +173,38 @@ class VehicleComponent(Base):
     vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     component_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    component_subtype: Mapped[Optional[str]] = mapped_column(String(120))
+    inventory_part_id: Mapped[Optional[int]] = mapped_column(ForeignKey("parts.id"), index=True)
+    brand: Mapped[Optional[str]] = mapped_column(String(120))
+    part_number: Mapped[Optional[str]] = mapped_column(String(120))
     serial_number: Mapped[Optional[str]] = mapped_column(String(120))
+    installation_date: Mapped[Optional[str]] = mapped_column(String(20))
+    installation_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     installed_at_km: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_service_km: Mapped[Optional[int]] = mapped_column(Integer)
     service_interval_km: Mapped[Optional[int]] = mapped_column(Integer)
+    expected_life_days: Mapped[Optional[int]] = mapped_column(Integer)
     alert_threshold_km: Mapped[Optional[int]] = mapped_column(Integer)
+    alert_threshold_days: Mapped[Optional[int]] = mapped_column(Integer)
     next_alert_km: Mapped[Optional[int]] = mapped_column(Integer)
     next_service_km: Mapped[Optional[int]] = mapped_column(Integer)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(40), default="Healthy", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class ComponentServiceRecord(Base):
+    __tablename__ = "component_service_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
+    component_id: Mapped[int] = mapped_column(ForeignKey("vehicle_components.id"), nullable=False, index=True)
+    vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id"), nullable=False, index=True)
+    odometer_km: Mapped[int] = mapped_column(Integer, nullable=False)
+    service_type: Mapped[str] = mapped_column(String(40), nullable=False, default="service")
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    performed_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
 
 
 class WorkOrder(Base):
@@ -167,10 +226,12 @@ class WorkOrder(Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
     workstream: Mapped[str] = mapped_column(String(20), default="shared", nullable=False)
+    maintenance_plan_id: Mapped[Optional[int]] = mapped_column(ForeignKey("maintenance_plans.id"), index=True)
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
     priority: Mapped[str] = mapped_column(String(20), default="Medium", nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="Open", nullable=False)
     due_date: Mapped[Optional[str]] = mapped_column(String(20))
+    due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     assigned_to: Mapped[Optional[str]] = mapped_column(String(160))
     assigned_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     scheduled_for: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -262,6 +323,7 @@ class DriverInspection(Base):
     status: Mapped[str] = mapped_column(String(30), default="SAFE", nullable=False)
     odometer_km: Mapped[int] = mapped_column(Integer, nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text)
+    photo_data: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
@@ -275,6 +337,8 @@ class VehicleIssue(Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     detail: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[str] = mapped_column(String(20), default="Medium", nullable=False)
+    photo_data: Mapped[Optional[str]] = mapped_column(Text)
+    photo_content_type: Mapped[Optional[str]] = mapped_column(String(120))
     status: Mapped[str] = mapped_column(String(30), default="OPEN", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -291,6 +355,7 @@ class MaintenancePlan(Base):
     interval_days: Mapped[Optional[int]] = mapped_column(Integer)
     next_due_km: Mapped[Optional[int]] = mapped_column(Integer)
     next_due_on: Mapped[Optional[str]] = mapped_column(String(20))
+    next_due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     active: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
@@ -405,8 +470,21 @@ class DocumentVersion(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     document_type: Mapped[str] = mapped_column(String(80), nullable=False)
     expires_on: Mapped[str] = mapped_column(String(20), nullable=False)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     asset_id: Mapped[Optional[int]] = mapped_column(ForeignKey("document_assets.id"))
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class DocumentAccessLog(Base):
+    __tablename__ = "document_access_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("compliance_documents.id"), nullable=False, index=True)
+    asset_id: Mapped[Optional[int]] = mapped_column(ForeignKey("document_assets.id"), index=True)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    access_type: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
@@ -424,6 +502,8 @@ class OperationalNotification(Base):
     entity_id: Mapped[str] = mapped_column(String(80), nullable=False)
     dedupe_key: Mapped[str] = mapped_column(String(240), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(20), default="unread", nullable=False)
+    escalation_level: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    escalated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
@@ -526,6 +606,7 @@ class FuelTransaction(Base):
     odometer_km: Mapped[int] = mapped_column(Integer, nullable=False)
     incurred_on: Mapped[str] = mapped_column(String(20), nullable=False)
     reference: Mapped[Optional[str]] = mapped_column(String(120))
+    receipt_data: Mapped[Optional[str]] = mapped_column(Text)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
@@ -635,6 +716,7 @@ class PurchaseOrder(Base):
     order_number: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(30), default="Draft", nullable=False)
     expected_on: Mapped[Optional[str]] = mapped_column(String(20))
+    expected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     total_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -680,6 +762,8 @@ class BillingInvoice(Base):
     organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
     period_start: Mapped[str] = mapped_column(String(20), nullable=False)
     period_end: Mapped[str] = mapped_column(String(20), nullable=False)
+    period_start_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    period_end_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     plan: Mapped[str] = mapped_column(String(32), nullable=False)
     total_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="draft", nullable=False)

@@ -1,4 +1,5 @@
 {
+  "outputDirectory": "dist/public",
   "crons": [
     {
       "path": "/api/v1/telematics/cron-sync",
