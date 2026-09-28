@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session, selectinload
 from .config import get_settings
 from .database import get_db
 from .dependencies import get_current_user, oauth2_scheme, require_development_mode, require_permission, require_roles
-from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComplianceDocument, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
+from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComplianceDocument, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationIntegration, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
 from .security import create_access_token, decode_supabase_token, hash_password, provision_supabase_user, verify_password
 from .schemas import (
     ComponentCreate,
@@ -65,6 +65,8 @@ from .schemas import (
     AccountSignupRead,
     OrganizationSignup,
     OrganizationSignupRead,
+    OrganizationIntegrationRead,
+    OrganizationIntegrationUpdate,
     MaintenancePlanCreate,
     MaintenancePlanRead,
     NotificationRead,
@@ -1211,9 +1213,16 @@ def create_vehicle(
     vehicle = Vehicle(
         organization_id=user.organization_id,
         registration_number=registration_number,
+        vin=payload.vin.strip().upper() if payload.vin else None,
+        chassis_number=payload.chassis_number.strip().upper() if payload.chassis_number else None,
+        engine_number=payload.engine_number.strip().upper() if payload.engine_number else None,
+        make=payload.make.strip() if payload.make else None,
         model=payload.model.strip(),
+        model_year=payload.model_year,
         vehicle_type=payload.vehicle_type.strip(),
         depot=payload.depot.strip(),
+        assigned_route=payload.assigned_route.strip() if payload.assigned_route else None,
+        maintenance_template=payload.maintenance_template.strip() if payload.maintenance_template else None,
         status=payload.status,
         health=payload.health,
         odometer_km=payload.odometer_km,
@@ -1285,6 +1294,9 @@ def update_vehicle(
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
     changes = payload.model_dump(exclude_unset=True)
+    odometer_source = changes.pop("odometer_source", None) or (
+        "manual_driver" if user.role == "driver" else "vehicle_update"
+    )
     if user.role == "driver":
         if vehicle.assigned_driver_id != user.id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
@@ -1309,6 +1321,10 @@ def update_vehicle(
     previous_driver_id = vehicle.assigned_driver_id
     previous_odometer = vehicle.odometer_km
     for key, value in changes.items():
+        if key in {"vin", "chassis_number", "engine_number"} and value:
+            value = value.strip().upper()
+        elif isinstance(value, str) and key in {"make", "model", "depot", "assigned_route", "maintenance_template"}:
+            value = value.strip()
         setattr(vehicle, key, value)
     if "assigned_driver_id" in changes and changes["assigned_driver_id"] != previous_driver_id:
         active_assignment = database.scalar(select(VehicleAssignment).where(
@@ -1330,7 +1346,7 @@ def update_vehicle(
             organization_id=user.organization_id,
             vehicle_id=vehicle.id,
             reading_km=changes["odometer_km"],
-            source="vehicle_update",
+            source=odometer_source,
             is_flagged=False,
         ))
         evaluate_component_thresholds(user, vehicle, database)
@@ -1441,6 +1457,13 @@ def create_component(
     vehicle = database.scalar(select(Vehicle).where(Vehicle.id == payload.vehicle_id, Vehicle.organization_id == user.organization_id))
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found in this organization")
+    if payload.inventory_part_id is not None:
+        part = database.scalar(select(Part).where(
+            Part.id == payload.inventory_part_id,
+            Part.organization_id == user.organization_id,
+        ))
+        if part is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inventory part not found in this organization")
     component_data = payload.model_dump()
     alert_threshold_km = component_data.get("alert_threshold_km")
     service_interval_km = component_data.get("service_interval_km")
@@ -5560,6 +5583,70 @@ def update_organization_settings(
         "safety_contact_phone": org.safety_contact_phone,
         "updated": True,
     }
+
+
+@router.get("/organization/integrations", response_model=list[OrganizationIntegrationRead])
+def list_organization_integrations(
+    user: User = Depends(require_roles("owner")),
+    database: Session = Depends(get_db),
+) -> list[OrganizationIntegration]:
+    providers = ("government", "insurance", "tax", "fuel", "bank")
+    existing = {
+        item.provider: item
+        for item in database.scalars(select(OrganizationIntegration).where(
+            OrganizationIntegration.organization_id == user.organization_id,
+        )).all()
+    }
+    for provider in providers:
+        if provider not in existing:
+            existing[provider] = OrganizationIntegration(
+                organization_id=user.organization_id,
+                provider=provider,
+                status="not_configured",
+            )
+            database.add(existing[provider])
+    database.commit()
+    return [existing[provider] for provider in providers]
+
+
+@router.put("/organization/integrations/{provider}", response_model=OrganizationIntegrationRead)
+def update_organization_integration(
+    provider: str,
+    payload: OrganizationIntegrationUpdate,
+    request: Request,
+    user: User = Depends(require_roles("owner")),
+    database: Session = Depends(get_db),
+) -> OrganizationIntegration:
+    if provider not in {"government", "insurance", "tax", "fuel", "bank"}:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integration provider not found")
+    reserve_idempotency_key(request, user, database)
+    integration = database.scalar(select(OrganizationIntegration).where(
+        OrganizationIntegration.organization_id == user.organization_id,
+        OrganizationIntegration.provider == provider,
+    ))
+    if integration is None:
+        integration = OrganizationIntegration(
+            organization_id=user.organization_id,
+            provider=provider,
+        )
+        database.add(integration)
+    integration.endpoint = payload.endpoint.strip() if payload.endpoint else None
+    integration.account_identifier = payload.account_identifier.strip() if payload.account_identifier else None
+    integration.active = payload.active
+    integration.status = "connected" if payload.active else "not_configured"
+    integration.last_checked_at = utc_now() if payload.active else None
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="organization.integration_updated",
+        entity_type="organization_integration",
+        entity_id=provider,
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps({"provider": provider, "active": payload.active}),
+    ))
+    database.commit()
+    database.refresh(integration)
+    return integration
 
 
 @router.get("/organization/quota", response_model=dict)

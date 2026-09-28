@@ -14,7 +14,9 @@ function camelize(value: unknown): unknown {
     camelize(nested),
   ]));
   if (result.registrationNumber && !result.licensePlate) result.licensePlate = result.registrationNumber;
-  if (result.registrationNumber && !result.vin) result.vin = result.registrationNumber;
+  if (result.modelYear !== undefined && result.year === undefined) result.year = result.modelYear;
+  if (result.serviceIntervalKm !== undefined && result.expectedLifeKm === undefined) result.expectedLifeKm = result.serviceIntervalKm;
+  if (result.installedAtKm !== undefined && result.lastServicedOdometer === undefined) result.lastServicedOdometer = result.installedAtKm;
   if (result.odometerKm !== undefined && result.currentOdometer === undefined) result.currentOdometer = result.odometerKm;
   if (result.litresMilli !== undefined) {
     result.liters ??= Number(result.litresMilli) / 1000;
@@ -113,9 +115,16 @@ function serializeInput(path: string, input: unknown): unknown {
     : value.priority;
   if (path === "vehicles.create") return {
     registration_number: value.licensePlate,
-    model: [value.make, value.model].filter(Boolean).join(" "),
+    vin: value.vin || undefined,
+    chassis_number: value.chassisNumber || undefined,
+    engine_number: value.engineNumber || undefined,
+    make: value.make || undefined,
+    model: value.model,
+    model_year: value.year ? Number(value.year) : undefined,
     vehicle_type: value.vehicleType ?? "Vehicle",
     depot: value.depotLocation ?? "Main depot",
+    assigned_route: value.assignedRoute || undefined,
+    maintenance_template: value.maintenanceTemplate || undefined,
     status: vehicleStatus(value.status) ?? "Idle / parked",
     odometer_km: value.currentOdometer ?? 0,
     assigned_driver_id: value.driverId,
@@ -123,9 +132,16 @@ function serializeInput(path: string, input: unknown): unknown {
     telematics_device_identifier: value.telematicsDeviceIdentifier || undefined,
   };
   if (path === "vehicles.update") return {
-    model: [value.make, value.model].filter(Boolean).join(" ") || value.model,
+    vin: value.vin,
+    chassis_number: value.chassisNumber,
+    engine_number: value.engineNumber,
+    make: value.make,
+    model: value.model,
+    model_year: value.year ? Number(value.year) : undefined,
     vehicle_type: value.vehicleType,
     depot: value.depotLocation,
+    assigned_route: value.assignedRoute,
+    maintenance_template: value.maintenanceTemplate,
     status: vehicleStatus(value.status),
     odometer_km: value.currentOdometer,
   };
@@ -155,6 +171,16 @@ function serializeInput(path: string, input: unknown): unknown {
     status: value.status === "PASS" ? "SAFE" : value.status === "FAIL" ? "UNSAFE" : value.status,
     odometer_km: value.odometerKm ?? value.odometer ?? 0,
     notes: value.notes,
+    photo_data: value.photoData,
+  };
+  if (path === "vehicles.updateOdometer") return {
+    odometer_km: value.reading,
+    odometer_source: "manual_driver",
+  };
+  if (path === "organizationSettings.updateIntegration") return {
+    endpoint: value.endpoint,
+    account_identifier: value.accountIdentifier,
+    active: value.active,
   };
   if (path === "driver.createFuelLog") return {
     vehicle_id: value.vehicleId,
@@ -164,12 +190,15 @@ function serializeInput(path: string, input: unknown): unknown {
     price_per_litre_paise: Number(value.liters) > 0 ? Math.round((Number(value.amount ?? 0) / Number(value.liters)) * 100) : 0,
     odometer_km: value.odometer ?? 0,
     incurred_on: new Date().toISOString().slice(0, 10),
+    receipt_data: value.receiptData,
   };
   if (path === "vehicleIssues.create") return {
     vehicle_id: value.vehicleId,
     title: value.title,
     detail: value.description ?? value.detail,
     priority,
+    photo_data: value.photoData,
+    photo_content_type: value.photoContentType,
   };
   if (path === "documents.create" || path === "documents.update") return {
     vehicle_id: value.vehicleId,
@@ -201,10 +230,20 @@ function serializeInput(path: string, input: unknown): unknown {
     vehicle_id: value.vehicleId,
     name: value.name,
     component_type: value.componentType ?? "General",
+    component_subtype: value.componentSubtype,
+    inventory_part_id: value.inventoryPartId ? Number(value.inventoryPartId) : undefined,
+    brand: value.brand,
+    part_number: value.partNumber,
     serial_number: value.serialNumber,
-    installed_at_km: value.installedAtKm ?? 0,
-    service_interval_km: value.serviceIntervalKm,
+    installation_date: value.installationDate instanceof Date
+      ? value.installationDate.toISOString().slice(0, 10)
+      : value.installationDate,
+    installed_at_km: value.installedAtKm ?? value.installationOdometer ?? value.lastServicedOdometer ?? 0,
+    service_interval_km: value.serviceIntervalKm ?? value.expectedLifeKm,
+    expected_life_days: value.expectedLifeDays,
     alert_threshold_km: value.alertThresholdKm,
+    alert_threshold_days: value.alertThresholdDays,
+    notes: value.notes,
     status: value.status ?? "Healthy",
   };
   if (path === "inventory.create") return {
@@ -480,6 +519,7 @@ function queryPath(path: string, input: unknown) {
   if (path === "team.driverHandoffs") return "/api/v1/team/driver-handoffs";
   if (path === "audit.list") return "/api/v1/audit-log";
   if (path === "organizationSettings.get") return "/api/v1/organization/settings";
+  if (path === "organizationSettings.integrations") return "/api/v1/organization/integrations";
   if (path === "profile.get") return "/api/v1/auth/me";
   if (path === "onboarding.inviteDetails" && (input as { token?: string } | undefined)?.token) {
     return `/api/v1/onboarding/invite-details?token=${encodeURIComponent((input as { token: string }).token)}`;
@@ -536,12 +576,13 @@ function queryPath(path: string, input: unknown) {
 }
 
 function mutationPath(path: string, input: unknown) {
-  const value = input as { id?: string | number; vehicleId?: string | number; workOrderId?: string | number; notificationId?: string | number; issueId?: string | number; partId?: string | number; poId?: string | number; vendorId?: string | number; componentId?: string | number; documentId?: string | number; userId?: string | number; installationId?: string | number; integrationId?: string | number } | undefined;
+  const value = input as { id?: string | number; vehicleId?: string | number; workOrderId?: string | number; notificationId?: string | number; issueId?: string | number; partId?: string | number; poId?: string | number; vendorId?: string | number; componentId?: string | number; documentId?: string | number; userId?: string | number; installationId?: string | number; integrationId?: string | number; provider?: string } | undefined;
   const base = collectionPath(path);
   if (path === "auth.logout") return "/api/v1/auth/logout";
   if (path === "profile.update") return "/api/v1/users/me";
   if (path === "team.invite") return "/api/v1/invitations";
   if (path === "organizationSettings.update") return "/api/v1/organization/settings";
+  if (path === "organizationSettings.updateIntegration" && value?.provider) return `/api/v1/organization/integrations/${value.provider}`;
   if (path === "telematics.createIntegration") return "/api/v1/telematics/integrations";
   if (path === "telematics.createDevice") return "/api/v1/telematics/devices";
   if (path === "telematics.updateDevice" && value?.id) return `/api/v1/telematics/devices/${value.id}`;
