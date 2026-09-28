@@ -375,6 +375,20 @@ class ComponentRead(ComponentCreate):
     created_at: datetime
 
 
+class ComponentServiceRecordRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    organization_id: int
+    component_id: int
+    vehicle_id: int
+    odometer_km: int
+    service_type: str
+    notes: str | None
+    performed_by: int
+    created_at: datetime
+
+
 class ComponentUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=160)
     component_type: str | None = Field(default=None, min_length=2, max_length=80)

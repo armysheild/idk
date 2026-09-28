@@ -26,11 +26,12 @@ from sqlalchemy.orm import Session, selectinload
 from .config import get_settings
 from .database import get_db
 from .dependencies import get_current_user, oauth2_scheme, require_development_mode, require_permission, require_roles
-from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComplianceDocument, DocumentAccessLog, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationIntegration, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
+from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComponentServiceRecord, ComplianceDocument, DocumentAccessLog, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationFeatureFlag, OrganizationIntegration, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
 from .security import create_access_token, decode_supabase_token, hash_password, provision_supabase_user, verify_password
 from .schemas import (
     ComponentCreate,
     ComponentRead,
+    ComponentServiceRecordRead,
     ComponentUpdate,
     DriverInspectionCreate,
     DriverInspectionRead,
@@ -144,6 +145,25 @@ from .schemas import (
 from .storage import download_object, resolve_object, save_upload
 
 router = APIRouter(prefix="/api/v1")
+
+
+def odometer_reading_is_flagged(
+    database: Session,
+    organization_id: int,
+    vehicle_id: int,
+    reading_km: int,
+    current_km: int,
+) -> bool:
+    latest = database.scalar(select(OdometerLog).where(
+        OdometerLog.organization_id == organization_id,
+        OdometerLog.vehicle_id == vehicle_id,
+    ).order_by(OdometerLog.created_at.desc()).limit(1))
+    organization = database.get(Organization, organization_id)
+    if latest is not None and latest.reading_km == reading_km:
+        return True
+    if organization is not None and reading_km - current_km > organization.odometer_max_daily_km:
+        return True
+    return False
 
 # Fixed Bug 26: Report field name mappings for consistent display
 VEHICLE_REPORT_FIELD_MAPPINGS = {
@@ -1343,12 +1363,19 @@ def update_vehicle(
                 driver_id=changes["assigned_driver_id"],
             ))
     if "odometer_km" in changes and changes["odometer_km"] != previous_odometer:
+        odometer_flagged = odometer_reading_is_flagged(
+            database,
+            user.organization_id,
+            vehicle.id,
+            changes["odometer_km"],
+            previous_odometer,
+        )
         database.add(OdometerLog(
             organization_id=user.organization_id,
             vehicle_id=vehicle.id,
             reading_km=changes["odometer_km"],
             source=odometer_source,
-            is_flagged=False,
+            is_flagged=odometer_flagged,
         ))
         evaluate_component_thresholds(user, vehicle, database)
     database.add(AuditLog(
@@ -1616,6 +1643,14 @@ def complete_component_service(
     component.next_service_km = odometer_km + component.service_interval_km if component.service_interval_km else None
     component.next_alert_km = odometer_km + component.alert_threshold_km if component.alert_threshold_km else component.next_service_km
     component.status = "Healthy"
+    database.add(ComponentServiceRecord(
+        organization_id=user.organization_id,
+        component_id=component.id,
+        vehicle_id=component.vehicle_id,
+        odometer_km=odometer_km,
+        service_type="service",
+        performed_by=user.id,
+    ))
     database.add(AuditLog(
         organization_id=user.organization_id,
         actor_user_id=user.id,
@@ -1628,6 +1663,26 @@ def complete_component_service(
     database.commit()
     database.refresh(component)
     return component
+
+
+@router.get("/components/{component_id}/service-history", response_model=list[ComponentServiceRecordRead])
+def list_component_service_history(
+    component_id: int,
+    skip: int = 0,
+    limit: int = 50,
+    user: User = Depends(require_permission("maintenance_read")),
+    database: Session = Depends(get_db),
+) -> list[ComponentServiceRecord]:
+    component = database.scalar(select(VehicleComponent).where(
+        VehicleComponent.id == component_id,
+        VehicleComponent.organization_id == user.organization_id,
+    ))
+    if component is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Component not found")
+    return list(database.scalars(select(ComponentServiceRecord).where(
+        ComponentServiceRecord.component_id == component_id,
+        ComponentServiceRecord.organization_id == user.organization_id,
+    ).order_by(ComponentServiceRecord.created_at.desc()).offset(max(skip, 0)).limit(min(max(limit, 1), 100))).all())
 
 
 @router.get("/work-orders", response_model=list[WorkOrderRead])
@@ -1678,6 +1733,13 @@ def create_driver_inspection(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle is not assigned to this driver")
     if payload.odometer_km < vehicle.odometer_km:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inspection odometer cannot move backwards")
+    odometer_flagged = odometer_reading_is_flagged(
+        database,
+        user.organization_id,
+        vehicle.id,
+        payload.odometer_km,
+        vehicle.odometer_km,
+    )
     vehicle.odometer_km = max(vehicle.odometer_km, payload.odometer_km)
     if payload.status == "UNSAFE":
         vehicle.status = "Out of service"
@@ -1687,7 +1749,7 @@ def create_driver_inspection(
         driver_id=user.id,
         reading_km=payload.odometer_km,
         source=f"driver_{payload.inspection_type}",
-        is_flagged=False,
+        is_flagged=odometer_flagged,
     ))
     evaluate_component_thresholds(user, vehicle, database)
     inspection = DriverInspection(
@@ -4353,6 +4415,7 @@ def cron_sync_telematics(
             continue
         results.append(sync_telematics_integration(integration, database))
     maintenance_notifications = 0
+    maintenance_work_orders = 0
     document_notifications = 0
     for organization in database.scalars(select(Organization)).all():
         owner = database.scalar(select(User).where(
@@ -4399,6 +4462,25 @@ def cron_sync_telematics(
                 or (plan.next_due_on is not None and plan.next_due_on <= horizon.isoformat())
             )
             if due:
+                existing_work_order = database.scalar(select(WorkOrder).where(
+                    WorkOrder.organization_id == organization.id,
+                    WorkOrder.maintenance_plan_id == plan.id,
+                    WorkOrder.status.not_in(("Completed", "Cancelled", "Archived")),
+                ))
+                if existing_work_order is None and vehicle is not None:
+                    database.add(WorkOrder(
+                        organization_id=organization.id,
+                        vehicle_id=vehicle.id,
+                        maintenance_plan_id=plan.id,
+                        title=f"Scheduled maintenance: {plan.name}",
+                        description=f"Created automatically from maintenance plan {plan.id}.",
+                        workstream="maintenance",
+                        created_by=owner.id,
+                        priority="High",
+                        status="Open",
+                        due_date=plan.next_due_on,
+                    ))
+                    maintenance_work_orders += 1
                 queue_role_notification(
                     database,
                     organization_id=organization.id,
@@ -4432,6 +4514,7 @@ def cron_sync_telematics(
         "processed": len(results),
         "results": results,
         "maintenance_notifications": maintenance_notifications,
+        "maintenance_work_orders": maintenance_work_orders,
         "document_notifications": document_notifications,
         "dispatched_notifications": dispatched_notifications,
     }
@@ -4533,9 +4616,24 @@ def ingest_telemetry(
     vehicle = database.get(Vehicle, device.vehicle_id)
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+    previous_odometer = vehicle.odometer_km
     if payload.odometer_km > vehicle.odometer_km:
         vehicle.odometer_km = payload.odometer_km
         evaluate_component_thresholds(user, vehicle, database)
+    if payload.odometer_km is not None:
+        database.add(OdometerLog(
+            organization_id=user.organization_id,
+            vehicle_id=device.vehicle_id,
+            reading_km=payload.odometer_km,
+            source="telematics",
+            is_flagged=odometer_reading_is_flagged(
+                database,
+                user.organization_id,
+                device.vehicle_id,
+                payload.odometer_km,
+                previous_odometer,
+            ),
+        ))
     reading = TelemetryReading(
         organization_id=user.organization_id,
         vehicle_id=device.vehicle_id,
@@ -5542,6 +5640,8 @@ def evaluate_escalations(
     
     for alert in alerts:
         alert.status = "read"
+        alert.escalation_level += 1
+        alert.escalated_at = utc_now()
         escalated_count += 1
         queue_role_notification(
             database,
@@ -5553,6 +5653,7 @@ def evaluate_escalations(
             entity_type=alert.entity_type,
             entity_id=alert.entity_id,
             roles={"owner"},
+            dedupe_key=f"alert_escalation:{alert.id}:{alert.escalation_level}",
         )
     
     # Find overdue critical work orders
@@ -5574,6 +5675,7 @@ def evaluate_escalations(
             entity_type="work_order",
             entity_id=str(order.id),
             roles={"owner"},
+            dedupe_key=f"work_order_escalation:{order.id}",
         )
         escalated_count += 1
     
@@ -5630,28 +5732,65 @@ def system_config(
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
     
+    defaults = {
+        "telematics": True,
+        "reporting": True,
+        "compliance": True,
+        "maintenance_planning": True,
+        "financial_tracking": True,
+        "inventory_management": True,
+        "work_order_automation": True,
+        "triage_system": True,
+        "activity_feed": True,
+    }
+    stored_flags = {
+        flag.feature_key: flag.enabled
+        for flag in database.scalars(select(OrganizationFeatureFlag).where(
+            OrganizationFeatureFlag.organization_id == org.id,
+        )).all()
+    }
+    features = {key: stored_flags.get(key, value) for key, value in defaults.items()}
     return {
         "organization_id": org.id,
         "organization_name": org.name,
         "plan": org.subscription_plan,
         "status": org.subscription_status,
-        "features": {
-            "telematics": True,  # VS has telematics
-            "reporting": True,
-            "compliance": True,
-            "maintenance_planning": True,
-            "financial_tracking": True,
-            "inventory_management": True,
-            "work_order_automation": True,
-            "triage_system": True,
-            "activity_feed": True,
-        },
+        "features": features,
         "api_endpoints": {
             "health": "/system/health",
             "version": "/system/version",
             "config": "/system/config",
         },
     }
+
+
+@router.put("/system/config/features/{feature_key}", response_model=dict)
+def update_feature_flag(
+    feature_key: str,
+    enabled: bool,
+    user: User = Depends(require_roles("owner")),
+    database: Session = Depends(get_db),
+) -> dict:
+    allowed = {"telematics", "reporting", "compliance", "maintenance_planning", "financial_tracking", "inventory_management", "work_order_automation", "triage_system", "activity_feed"}
+    if feature_key not in allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown feature flag")
+    flag = database.scalar(select(OrganizationFeatureFlag).where(
+        OrganizationFeatureFlag.organization_id == user.organization_id,
+        OrganizationFeatureFlag.feature_key == feature_key,
+    ))
+    if flag is None:
+        flag = OrganizationFeatureFlag(
+            organization_id=user.organization_id,
+            feature_key=feature_key,
+            enabled=enabled,
+            updated_by=user.id,
+        )
+        database.add(flag)
+    else:
+        flag.enabled = enabled
+        flag.updated_by = user.id
+    database.commit()
+    return {"feature_key": feature_key, "enabled": enabled}
 
 
 
@@ -10004,13 +10143,20 @@ def escalate_notification(
     notification = database.get(OperationalNotification, notification_id)
     if not notification or notification.organization_id != user.organization_id:
         raise HTTPException(status_code=404, detail="Notification not found")
+    if notification.status == "resolved":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Resolved notifications cannot be escalated")
     
     reason = payload.get("reason", "Escalated by user")
     escalated_to_severity = payload.get("severity", "CRITICAL")
+    severity_rank = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+    if severity_rank.get(escalated_to_severity, 0) <= severity_rank.get(notification.severity, 0):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Escalation must increase severity")
     
     # Update notification
     original_severity = notification.severity
     notification.severity = escalated_to_severity
+    notification.escalation_level += 1
+    notification.escalated_at = utc_now()
     database.add(notification)
     
     # Create audit event
