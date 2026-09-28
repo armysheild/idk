@@ -1362,7 +1362,7 @@ def update_vehicle(
                 vehicle_id=vehicle.id,
                 driver_id=changes["assigned_driver_id"],
             ))
-    if "odometer_km" in changes and changes["odometer_km"] != previous_odometer:
+    if "odometer_km" in changes:
         odometer_flagged = odometer_reading_is_flagged(
             database,
             user.organization_id,
@@ -1377,7 +1377,8 @@ def update_vehicle(
             source=odometer_source,
             is_flagged=odometer_flagged,
         ))
-        evaluate_component_thresholds(user, vehicle, database)
+        if changes["odometer_km"] != previous_odometer:
+            evaluate_component_thresholds(user, vehicle, database)
     database.add(AuditLog(
         organization_id=user.organization_id,
         actor_user_id=user.id,
