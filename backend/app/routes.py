@@ -6694,7 +6694,7 @@ def get_dashboard_summary(
     # Count active vehicles (in use)
     active_vehicle_count = database.query(Vehicle).filter(
         Vehicle.organization_id == org.id,
-        Vehicle.status.in_(["In Transit", "On Delivery"])
+        Vehicle.status.not_in(["Out of service", "Retired"]),
     ).count()
     
     # Count work orders by status
@@ -6706,6 +6706,13 @@ def get_dashboard_summary(
     in_progress_work_orders = database.query(WorkOrder).filter(
         WorkOrder.organization_id == org.id,
         WorkOrder.status.in_(["In progress", "In Progress"])
+    ).count()
+    active_work_orders = database.query(WorkOrder).filter(
+        WorkOrder.organization_id == org.id,
+        WorkOrder.status.not_in(["Completed", "Cancelled", "Closed", "Archived"]),
+    ).count()
+    total_work_orders = database.query(WorkOrder).filter(
+        WorkOrder.organization_id == org.id,
     ).count()
     
     completed_today = database.query(WorkOrder).filter(
@@ -6807,6 +6814,8 @@ def get_dashboard_summary(
         "work_orders": {
             "open": open_work_orders,
             "in_progress": in_progress_work_orders,
+            "active": active_work_orders,
+            "total": total_work_orders,
             "completed_today": completed_today,
         },
         "alerts_and_notifications": {
