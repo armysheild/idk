@@ -44,6 +44,14 @@ export function MechanicExecutionWorkspace({
   const notifications = trpc.notifications.list.useQuery(undefined, {
     retry: false,
   });
+  const escalate = trpc.notifications.escalate.useMutation({
+    onSuccess: () => {
+      toast.success("Alert escalated to Fleet Manager");
+      void utils.notifications.list.invalidate();
+    },
+    onError: (error) =>
+      toast.error("Escalation failed", { description: error.message }),
+  });
   const [selectedOrder, setSelectedOrder] = useState<string | null>(null);
   const [laborHours, setLaborHours] = useState("0");
   const [repairNotes, setRepairNotes] = useState("");
@@ -717,6 +725,30 @@ export function MechanicExecutionWorkspace({
             .length ?? 0}{" "}
           unread recipient-scoped alerts
         </small>
+        <div className="replacement-mechanic-alerts">
+          {(notifications.data ?? [])
+            .filter((item: NotificationRow) => !item.isRead)
+            .slice(0, 5)
+            .map((item: NotificationRow) => (
+              <article key={item.id}>
+                <span>{item.title}</span>
+                <button
+                  type="button"
+                  className="replacement-mechanic-secondary"
+                  disabled={escalate.isPending}
+                  onClick={() =>
+                    escalate.mutate({
+                      notificationId: item.id,
+                      severity: "CRITICAL",
+                      reason: "Escalated from workshop execution",
+                    })
+                  }
+                >
+                  Escalate
+                </button>
+              </article>
+            ))}
+        </div>
       </section>
     </main>
   );

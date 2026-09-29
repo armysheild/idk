@@ -390,6 +390,7 @@ class ComponentServiceRecordRead(BaseModel):
 
 
 class ComponentUpdate(BaseModel):
+    vehicle_id: int | None = None
     name: str | None = Field(default=None, min_length=2, max_length=160)
     component_type: str | None = Field(default=None, min_length=2, max_length=80)
     component_subtype: str | None = Field(default=None, max_length=120)
@@ -529,6 +530,10 @@ class WorkOrderPartUsageRead(WorkOrderPartUsageCreate):
     work_order_id: int
     unit_cost_paise: int
     created_by: int
+    issued_quantity: int
+    issued_to_user_id: int | None
+    issued_at: datetime | None
+    inventory_transaction_id: int | None
     created_at: datetime
 
 

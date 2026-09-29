@@ -1554,6 +1554,13 @@ def update_component(
     if component is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Component not found")
     changes = payload.model_dump(exclude_unset=True)
+    if "vehicle_id" in changes:
+        vehicle = database.scalar(select(Vehicle).where(
+            Vehicle.id == changes["vehicle_id"],
+            Vehicle.organization_id == user.organization_id,
+        ))
+        if vehicle is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
     interval_km = changes.get("service_interval_km", component.service_interval_km)
     threshold_km = changes.get("alert_threshold_km", component.alert_threshold_km)
     if threshold_km is not None and interval_km is not None and threshold_km > interval_km:
@@ -2278,6 +2285,35 @@ def list_work_order_parts(
     ).order_by(WorkOrderPartUsage.id)).all())
 
 
+@router.get("/inventory/work-orders", response_model=list[WorkOrderRead])
+def list_inventory_work_order_queue(
+    user: User = Depends(require_permission("inventory_read")),
+    database: Session = Depends(get_db),
+) -> list[WorkOrder]:
+    return list(database.scalars(select(WorkOrder).where(
+        WorkOrder.organization_id == user.organization_id,
+        WorkOrder.status.not_in(("Completed", "Closed", "Archived")),
+    ).order_by(WorkOrder.created_at.desc()).limit(100)).all())
+
+
+@router.get("/inventory/work-orders/{work_order_id}/parts", response_model=list[WorkOrderPartUsageRead])
+def list_inventory_work_order_parts(
+    work_order_id: int,
+    user: User = Depends(require_permission("inventory_read")),
+    database: Session = Depends(get_db),
+) -> list[WorkOrderPartUsage]:
+    work_order = database.scalar(select(WorkOrder).where(
+        WorkOrder.id == work_order_id,
+        WorkOrder.organization_id == user.organization_id,
+    ))
+    if work_order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
+    return list(database.scalars(select(WorkOrderPartUsage).where(
+        WorkOrderPartUsage.organization_id == user.organization_id,
+        WorkOrderPartUsage.work_order_id == work_order_id,
+    ).order_by(WorkOrderPartUsage.id)).all())
+
+
 @router.get("/work-orders/{work_order_id}/part-installations", response_model=list[VehiclePartInstallationRead])
 def list_work_order_part_installations(
     work_order_id: int,
@@ -2558,6 +2594,12 @@ def record_work_order_part(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order or part not found")
     if payload.quantity <= 0:
         raise HTTPException(status_code=400, detail="Part quantity must be positive")
+    part = database.scalar(select(Part).where(
+        Part.id == payload.part_id,
+        Part.organization_id == user.organization_id,
+    ).with_for_update())
+    if part is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part not found")
     if part.quantity_on_hand < payload.quantity:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Insufficient stock for this work order")
     usage = WorkOrderPartUsage(
@@ -2569,6 +2611,21 @@ def record_work_order_part(
         created_by=user.id,
     )
     database.add(usage)
+    part.quantity_on_hand -= payload.quantity
+    transaction = InventoryTransaction(
+        organization_id=user.organization_id,
+        part_id=part.id,
+        transaction_type="issue",
+        quantity=payload.quantity,
+        created_by=user.id,
+        reference=f"Work order #{work_order.id} allocated",
+    )
+    database.add(transaction)
+    database.flush()
+    usage.issued_quantity = payload.quantity
+    usage.issued_to_user_id = work_order.assigned_user_id
+    usage.issued_at = utc_now()
+    usage.inventory_transaction_id = transaction.id
     database.add(AuditLog(
         organization_id=user.organization_id,
         actor_user_id=user.id,
@@ -6932,7 +6989,10 @@ def reserve_part_for_work_order(
     if user.role in ("mechanic", "technician") and work_order.assigned_user_id != user.id:
         raise HTTPException(status_code=404, detail="Work order not found")
     
-    part = database.get(Part, payload.part_id)
+    part = database.scalar(select(Part).where(
+        Part.id == payload.part_id,
+        Part.organization_id == user.organization_id,
+    ).with_for_update())
     if not part or part.organization_id != user.organization_id:
         raise HTTPException(status_code=404, detail="Part not found")
     
@@ -6941,7 +7001,9 @@ def reserve_part_for_work_order(
     if part.quantity_on_hand < payload.quantity:
         raise HTTPException(status_code=400, detail="Insufficient inventory")
     
-    # Record the part reservation
+    if work_order.assigned_user_id is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Work order must be assigned before reserving parts")
+
     part_usage = WorkOrderPartUsage(
         organization_id=user.organization_id,
         work_order_id=work_order_id,
@@ -6949,10 +7011,32 @@ def reserve_part_for_work_order(
         quantity=payload.quantity,
         unit_cost_paise=part.unit_cost_paise,
         created_by=user.id,
+        issued_quantity=payload.quantity,
+        issued_to_user_id=work_order.assigned_user_id,
+        issued_at=utc_now(),
     )
-    
+    part.quantity_on_hand -= payload.quantity
     database.add(part_usage)
-    
+    transaction = InventoryTransaction(
+        organization_id=user.organization_id,
+        part_id=part.id,
+        transaction_type="issue",
+        quantity=payload.quantity,
+        created_by=user.id,
+        reference=f"Work order #{work_order.id} reserved",
+    )
+    database.add(transaction)
+    database.flush()
+    part_usage.inventory_transaction_id = transaction.id
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="work_order_part.reserved",
+        entity_type="work_order_part_usage",
+        entity_id=str(part_usage.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps({"part_id": part.id, "quantity": payload.quantity}),
+    ))
     database.commit()
     database.refresh(part_usage)
     
@@ -6989,7 +7073,14 @@ def issue_work_order_part(
     if usage is None or work_order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order part reservation not found")
     if usage.inventory_transaction_id is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This reservation has already been issued")
+        return {
+            "work_order_id": work_order.id,
+            "usage_id": usage.id,
+            "inventory_transaction_id": usage.inventory_transaction_id,
+            "issued_to_user_id": usage.issued_to_user_id,
+            "quantity": usage.issued_quantity,
+            "issued": True,
+        }
     if payload.quantity != usage.quantity:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Issue the complete reserved quantity in one custody transfer")
     assignee = database.scalar(select(User).where(
@@ -7076,12 +7167,31 @@ def return_reserved_part(
     part_usage = database.query(WorkOrderPartUsage).filter(
         WorkOrderPartUsage.work_order_id == work_order_id,
         WorkOrderPartUsage.part_id == part_id,
+        WorkOrderPartUsage.organization_id == user.organization_id,
+        WorkOrderPartUsage.inventory_transaction_id.is_not(None),
     ).first()
     
     if not part_usage or part_usage.quantity < quantity:
         raise HTTPException(status_code=400, detail="Part not reserved in this work order")
     
-    # Update the usage record
+    if part_usage.issued_quantity:
+        if quantity > part_usage.issued_quantity:
+            raise HTTPException(status_code=400, detail="Return quantity exceeds issued quantity")
+        part.quantity_on_hand += quantity
+        database.add(InventoryTransaction(
+            organization_id=user.organization_id,
+            part_id=part.id,
+            transaction_type="receipt",
+            quantity=quantity,
+            created_by=user.id,
+            reference=f"Work order #{work_order.id} returned",
+        ))
+        part_usage.issued_quantity -= quantity
+        if part_usage.issued_quantity == 0:
+            part_usage.inventory_transaction_id = None
+            part_usage.issued_to_user_id = None
+            part_usage.issued_at = None
+
     part_usage.quantity -= quantity
     if part_usage.quantity == 0:
         database.delete(part_usage)
@@ -10135,7 +10245,7 @@ def escalate_notification(
     notification_id: int,
     payload: dict,
     request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
+    user: User = Depends(require_roles("owner", "fleet_manager", "mechanic", "technician")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Escalate a notification to higher severity"""
@@ -10144,6 +10254,15 @@ def escalate_notification(
     notification = database.get(OperationalNotification, notification_id)
     if not notification or notification.organization_id != user.organization_id:
         raise HTTPException(status_code=404, detail="Notification not found")
+    if user.role in ("mechanic", "technician"):
+        delivery = database.scalar(select(NotificationDelivery).where(
+            NotificationDelivery.notification_id == notification_id,
+            NotificationDelivery.organization_id == user.organization_id,
+            NotificationDelivery.user_id == user.id,
+            NotificationDelivery.channel == "in_app",
+        ))
+        if delivery is None:
+            raise HTTPException(status_code=404, detail="Notification not found")
     if notification.status == "resolved":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Resolved notifications cannot be escalated")
     
