@@ -400,9 +400,32 @@ function tokenFromStorage() {
 async function accessToken() {
   if (supabase) {
     const { data } = await supabase.auth.getSession();
-    if (data.session?.access_token) return data.session.access_token;
+    if (data.session?.access_token) sessionExpiredNotified = false;
+    return data.session?.access_token ?? undefined;
   }
   return tokenFromStorage() ?? undefined;
+}
+
+let sessionRecoveryPromise: Promise<string | undefined> | null = null;
+let sessionExpiredNotified = false;
+
+async function recoverSession(): Promise<string | undefined> {
+  if (!supabase) return undefined;
+  if (!sessionRecoveryPromise) {
+    sessionRecoveryPromise = supabase.auth.refreshSession()
+      .then(({ data }) => data.session?.access_token)
+      .finally(() => {
+        sessionRecoveryPromise = null;
+      });
+  }
+  return sessionRecoveryPromise;
+}
+
+async function expireSession() {
+  if (!supabase || sessionExpiredNotified) return;
+  sessionExpiredNotified = true;
+  await supabase.auth.signOut({ scope: "local" });
+  window.dispatchEvent(new CustomEvent("fleetops-session-expired"));
 }
 
 async function request(path: string, input?: unknown, method = "GET", inputPath = path) {
@@ -418,14 +441,13 @@ async function request(path: string, input?: unknown, method = "GET", inputPath 
   let token = await accessToken();
   let response = await send(token);
   if (response.status === 401 && supabase) {
-    const refreshed = await supabase.auth.refreshSession();
-    if (refreshed.data.session?.access_token) {
-      token = refreshed.data.session.access_token;
+    const refreshedToken = await recoverSession();
+    if (refreshedToken) {
+      sessionExpiredNotified = false;
+      token = refreshedToken;
       response = await send(token);
-    } else {
-      await supabase.auth.signOut({ scope: "local" });
-      window.dispatchEvent(new CustomEvent("fleetops-session-expired"));
     }
+    if (response.status === 401) await expireSession();
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null);

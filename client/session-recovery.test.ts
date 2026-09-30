@@ -37,6 +37,8 @@ describe("Supabase session recovery", () => {
   it("does not retry protected tRPC traffic with a stale token after refresh failure", () => {
     expect(transport).toContain('window.dispatchEvent(new CustomEvent("fleetops-session-expired"))');
     expect(transport).toContain("if (response.status === 401 && supabase)");
+    expect(transport).toContain("sessionRecoveryPromise");
+    expect(transport).toContain("if (response.status === 401) await expireSession()");
   });
 
   it("resets the selected route and protected client caches when a different authenticated user signs in", () => {
