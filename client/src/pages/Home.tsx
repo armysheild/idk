@@ -125,14 +125,16 @@ function HealthRing({ value }: { value: number }) {
   return <div className="health-ring" style={{ "--ring-progress": `${(value / 100) * circumference}px` } as React.CSSProperties}><svg viewBox="0 0 64 64"><circle className="ring-track" cx="32" cy="32" r={radius} /><circle className="ring-value" cx="32" cy="32" r={radius} /></svg><strong>{value}</strong></div>;
 }
 
-export default function Home({ initialSection = "Command center", publicMode = "landing" }: { initialSection?: string; publicMode?: "landing" | "signin" | "signup" }) {
+export default function Home({ initialSection = "Command center", publicMode = "landing", initialSummary }: { initialSection?: string; publicMode?: "landing" | "signin" | "signup"; initialSummary?: unknown }) {
   const { session, loading: authLoading, signOut, signInWithEmail, signUpWithEmail, requestPasswordReset, updatePassword, refreshSession } = useFleetOpsAuth();
   useEffect(() => {
     const onExpired = () => toast.warning("Supabase session expired", { description: "Sign in again to resume live VahanSync data." });
     window.addEventListener("fleetops-session-expired", onExpired);
     return () => window.removeEventListener("fleetops-session-expired", onExpired);
   }, []);
-  const { data: backendSummary, isLoading: summaryLoading, isError: summaryError, error: summaryQueryError, refetch: refetchSummary } = trpc.dashboard.summary.useQuery(undefined, { enabled: Boolean(session), retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false });
+  const summaryQuery = trpc.dashboard.summary.useQuery(undefined, { enabled: Boolean(session) && initialSummary === undefined, retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false });
+  const backendSummary = initialSummary ?? summaryQuery.data;
+  const { isLoading: summaryLoading, isError: summaryError, error: summaryQueryError, refetch: refetchSummary } = summaryQuery;
   const summaryUnauthorized = summaryQueryError?.data?.code === "UNAUTHORIZED" || /unauthorized|organization profile|session expired/i.test(summaryQueryError?.message ?? "");
   const [staleSessionRecoveryAttempted, setStaleSessionRecoveryAttempted] = useState(false);
   useEffect(() => {

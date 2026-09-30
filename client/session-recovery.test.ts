@@ -67,4 +67,9 @@ describe("Supabase session recovery", () => {
     expect(app).toContain("Workspace connection needs attention.");
     expect(app).toContain("<Home publicMode=\"signin\" />");
   });
+
+  it("passes the guard summary into Home instead of issuing a second dashboard request", () => {
+    expect(app).toContain("<Home initialSection={allowedSection} initialSummary={summary.data} />");
+    expect(home).toContain("initialSummary === undefined");
+  });
 });

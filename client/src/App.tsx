@@ -54,7 +54,7 @@ function GuardedWorkspaceRoute({ section, allowedRoles }: { section: string; all
   const allowedSection = summary.data?.role
     ? getAllowedWorkspace(summary.data.role, section)
     : section;
-  return <Home initialSection={allowedSection} />;
+  return <Home initialSection={allowedSection} initialSummary={summary.data} />;
 }
 
 function FleetManagerRoute() { return <GuardedWorkspaceRoute section="Fleet manager workspace" allowedRoles={["FLEET_MANAGER"]} />; }
