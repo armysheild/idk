@@ -132,6 +132,7 @@ function serializeInput(path: string, input: unknown): unknown {
     telematics_device_identifier: value.telematicsDeviceIdentifier || undefined,
   };
   if (path === "vehicles.update") return {
+    registration_number: value.licensePlate,
     vin: value.vin,
     chassis_number: value.chassisNumber,
     engine_number: value.engineNumber,
@@ -329,6 +330,13 @@ function serializeInput(path: string, input: unknown): unknown {
     whatsapp_alerts_enabled: value.whatsappAlertsEnabled ?? false,
   };
   if (path === "notifications.markRead") return { status: "read" };
+  if (path === "notifications.escalate") return {
+    severity: value.severity ?? "CRITICAL",
+    reason: value.reason ?? "Escalated by user",
+  };
+  if (path === "notifications.resolve") return {
+    note: value.note ?? "",
+  };
   if (path === "driver.unsafeDisposition") return {
     vehicle_id: value.vehicleId,
     description: value.notes,
@@ -339,6 +347,10 @@ function serializeInput(path: string, input: unknown): unknown {
     part_id: value.partId,
     quantity: value.quantity,
     reason: value.reason,
+  };
+  if (path === "workOrders.allocatePart") return {
+    part_id: value.partId,
+    quantity: value.quantity,
   };
   if (path === "workOrders.issuePart") return {
     work_order_part_usage_id: value.workOrderPartUsageId,
@@ -388,9 +400,32 @@ function tokenFromStorage() {
 async function accessToken() {
   if (supabase) {
     const { data } = await supabase.auth.getSession();
-    if (data.session?.access_token) return data.session.access_token;
+    if (data.session?.access_token) sessionExpiredNotified = false;
+    return data.session?.access_token ?? undefined;
   }
   return tokenFromStorage() ?? undefined;
+}
+
+let sessionRecoveryPromise: Promise<string | undefined> | null = null;
+let sessionExpiredNotified = false;
+
+async function recoverSession(): Promise<string | undefined> {
+  if (!supabase) return undefined;
+  if (!sessionRecoveryPromise) {
+    sessionRecoveryPromise = supabase.auth.refreshSession()
+      .then(({ data }) => data.session?.access_token)
+      .finally(() => {
+        sessionRecoveryPromise = null;
+      });
+  }
+  return sessionRecoveryPromise;
+}
+
+async function expireSession() {
+  if (!supabase || sessionExpiredNotified) return;
+  sessionExpiredNotified = true;
+  await supabase.auth.signOut({ scope: "local" });
+  window.dispatchEvent(new CustomEvent("fleetops-session-expired"));
 }
 
 async function request(path: string, input?: unknown, method = "GET", inputPath = path) {
@@ -406,14 +441,13 @@ async function request(path: string, input?: unknown, method = "GET", inputPath 
   let token = await accessToken();
   let response = await send(token);
   if (response.status === 401 && supabase) {
-    const refreshed = await supabase.auth.refreshSession();
-    if (refreshed.data.session?.access_token) {
-      token = refreshed.data.session.access_token;
+    const refreshedToken = await recoverSession();
+    if (refreshedToken) {
+      sessionExpiredNotified = false;
+      token = refreshedToken;
       response = await send(token);
-    } else {
-      await supabase.auth.signOut({ scope: "local" });
-      window.dispatchEvent(new CustomEvent("fleetops-session-expired"));
     }
+    if (response.status === 401) await expireSession();
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null);
@@ -537,6 +571,10 @@ function queryPath(path: string, input: unknown) {
     return `/api/v1/notifications${query ? `?${query}` : ""}`;
   }
   if (path === "financials.list") return "/api/v1/expenses";
+  if (path === "inventory.workOrders") return "/api/v1/inventory/work-orders";
+  if (path === "inventory.workOrderParts" && (input as { workOrderId?: string | number } | undefined)?.workOrderId) {
+    return `/api/v1/inventory/work-orders/${(input as { workOrderId: string | number }).workOrderId}/parts`;
+  }
   if (path === "financials.vehicles") return "/api/v1/vehicles";
   if (path === "inventory.list") return "/api/v1/parts";
   if (path === "vendors.list") return "/api/v1/vendors";
@@ -600,6 +638,7 @@ function mutationPath(path: string, input: unknown) {
   if (path === "team.revokeInvitation" && value?.id) return `/api/v1/invitations/${value.id}/revoke`;
   if (path === "team.resendInvitation" && value?.id) return `/api/v1/invitations/${value.id}/resend`;
   if (path === "workOrders.assign" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/assign`;
+  if (path === "workOrders.allocatePart" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/parts`;
   if (path === "workOrders.bulkUpdate") return "/api/v1/work-orders/bulk-update";
   if (path === "workOrders.updateChecklist" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/checklist`;
   if (path === "maintenanceTemplates.applyTemplate" && value?.id) return `/api/v1/maintenance/templates/${value.id}/apply`;
@@ -657,6 +696,7 @@ function mutationPath(path: string, input: unknown) {
 function mutationMethod(path: string) {
   if (path === "documents.access") return "GET";
   if (path === "vehicleIssues.updateStatus") return "PUT";
+  if (path === "vehicles.updateOdometer") return "PATCH";
   if (path === "organizationSettings.update") return "PUT";
   if (path.endsWith("update") || path.endsWith("updateStatus") || path === "profile.update" || path.includes("markRead")) return "PATCH";
   if (path === "documents.archive") return "PATCH";

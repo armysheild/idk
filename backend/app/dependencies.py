@@ -10,6 +10,16 @@ from .security import decode_access_token, decode_supabase_token, decode_token_v
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
+ROLE_ALIASES = {
+    "superadmin": "owner",
+    "super_admin": "owner",
+}
+
+
+def normalize_role(role: str) -> str:
+    normalized = role.strip().lower()
+    return ROLE_ALIASES.get(normalized, normalized)
+
 
 def get_current_user(token: str = Depends(oauth2_scheme), database: Session = Depends(get_db)) -> User:
     credentials_error = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials")
@@ -42,6 +52,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), database: Session = De
                 raise credentials_error
         if user is None:
             raise credentials_error
+        user.role = normalize_role(user.role)
         if database.bind is not None and database.bind.dialect.name == "postgresql":
             database.execute(
                 text("select set_config('app.organization_id', :organization_id, true)"),
@@ -53,7 +64,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), database: Session = De
 
 
 def require_roles(*roles: str):
-    allowed_roles = set(roles)
+    allowed_roles = {normalize_role(role) for role in roles}
 
     def dependency(user: User = Depends(get_current_user)) -> User:
         if user.role not in allowed_roles:

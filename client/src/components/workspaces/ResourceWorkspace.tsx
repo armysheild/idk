@@ -10,6 +10,7 @@ import { AccountantWorkspace } from "@/components/workspaces/AccountantWorkspace
 import { ProcurementWorkspace } from "@/components/workspaces/ProcurementWorkspace";
 import { ComplianceWorkspace } from "@/components/workspaces/ComplianceWorkspace";
 import { BillingWorkspace } from "@/components/workspaces/BillingWorkspace";
+import { statusKey } from "@/lib/status";
 import type { FleetVehicle, InventoryPart, WorkOrderRow, WorkspaceMember } from "@/types/fleet";
 type GenericResourceRow = { id: string; [key: string]: unknown };
 type WorkOrderEditDraft = { id: string; title: string; description: string; priority: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"; assignedMechanicId: string | null };
@@ -75,7 +76,7 @@ export function ResourceWorkspace({ section, organizationName }: { section: stri
   const query = section === "Vehicles" ? vehicles : section === "Work orders" ? orders : section === "Inventory" ? inventory : section === "Notifications" ? notifications : section === "Compliance vault" ? documents : financials;
   const labels: Record<string, string> = { Vehicles: "Fleet register", Components: "Vehicle components", "Work orders": "Maintenance queue", Inventory: "Parts ledger", Vendors: "Vendor directory", "Purchase orders": "Procurement orders", Notifications: "Notification center", "Compliance vault": "Compliance documents", "P&L analytics": "Financial ledger" };
   const allWorkOrderRows = ((orders.data ?? []) as WorkOrderRow[]).filter((row) => Boolean(row?.id));
-  const filteredWorkOrderRows = allWorkOrderRows.filter((row) => (workOrderStatus === "ALL" || row.status === workOrderStatus) && `${row.title} ${row.vehicle?.licensePlate ?? ""} ${row.status}`.toLowerCase().includes(workOrderSearch.trim().toLowerCase())).sort((left, right) => workOrderSort === "priority" ? ["CRITICAL", "HIGH", "MEDIUM", "LOW"].indexOf(String(left.priority)) - ["CRITICAL", "HIGH", "MEDIUM", "LOW"].indexOf(String(right.priority)) : new Date(String(left.scheduledFor ?? "9999-12-31")).getTime() - new Date(String(right.scheduledFor ?? "9999-12-31")).getTime());
+  const filteredWorkOrderRows = allWorkOrderRows.filter((row) => (workOrderStatus === "ALL" || statusKey(row.status) === workOrderStatus) && `${row.title} ${row.vehicle?.licensePlate ?? ""} ${row.status}`.toLowerCase().includes(workOrderSearch.trim().toLowerCase())).sort((left, right) => workOrderSort === "priority" ? ["CRITICAL", "HIGH", "MEDIUM", "LOW"].indexOf(String(left.priority)) - ["CRITICAL", "HIGH", "MEDIUM", "LOW"].indexOf(String(right.priority)) : new Date(String(left.scheduledFor ?? "9999-12-31")).getTime() - new Date(String(right.scheduledFor ?? "9999-12-31")).getTime());
   const workOrderPageSize = 10;
   const workOrderPageCount = Math.max(1, Math.ceil(filteredWorkOrderRows.length / workOrderPageSize));
   const workOrderRows = filteredWorkOrderRows.slice((workOrderPage - 1) * workOrderPageSize, workOrderPage * workOrderPageSize);

@@ -6,6 +6,8 @@ import { trpc } from "@/lib/trpc";
 import type { InventoryPart } from "@/types/fleet";
 
 const money = (value: unknown) => Number(value ?? 0).toLocaleString("en-IN", { style: "currency", currency: "INR" });
+type AllocationOrder = { id: string; title: string; status: string; vehicleId: string | number };
+type AllocationUsage = { id: number; partId: string; quantity: number; issuedQuantity: number };
 
 export function InventoryManagerWorkspace() {
   const utils = trpc.useUtils();
@@ -19,6 +21,12 @@ export function InventoryManagerWorkspace() {
   const [transfer, setTransfer] = useState({ toBinLocation: "", reason: "" });
   const [adjustment, setAdjustment] = useState({ delta: "0", reason: "" });
   const [issue, setIssue] = useState({ quantity: "1", reason: "" });
+  const [allocation, setAllocation] = useState({ workOrderId: "", partId: "", quantity: "1" });
+  const allocationOrders = trpc.inventory.workOrders.useQuery(undefined, { retry: false });
+  const allocationParts = trpc.inventory.workOrderParts.useQuery(
+    { workOrderId: allocation.workOrderId },
+    { enabled: Boolean(allocation.workOrderId), retry: false },
+  );
   const partRows = parts.data ?? [];
   const movementRows = detail.data?.movements ?? [];
   const lowStockCount = partRows.filter((part: InventoryPart) => Number(part.quantityOnHand) <= Number(part.minReorderLevel)).length;
@@ -38,6 +46,17 @@ export function InventoryManagerWorkspace() {
   const importInventory = trpc.inventory.importCsv.useMutation({
     onSuccess: (result) => { toast.success(`Imported ${result.importedCount} inventory parts`); setImportCsv(""); void utils.inventory.list.invalidate(); },
     onError: (error) => toast.error("Inventory import failed", { description: error.message }),
+  });
+  const allocatePart = trpc.workOrders.allocatePart.useMutation({
+    onSuccess: () => {
+      toast.success("Part allocated to work order and deducted from stock");
+      setAllocation((current) => ({ ...current, quantity: "1" }));
+      void utils.inventory.list.invalidate();
+      void utils.inventory.workOrderParts.invalidate({ workOrderId: allocation.workOrderId });
+      void utils.inventory.workOrders.invalidate();
+      void utils.inventory.movements.invalidate();
+    },
+    onError: (error) => toast.error("Work-order allocation failed", { description: error.message }),
   });
   const downloadExport = () => {
     void inventoryExport.refetch().then(({ data }) => {
@@ -68,6 +87,17 @@ export function InventoryManagerWorkspace() {
       <div><span>01 · Inspect a part</span><h2>Open a controlled stock record</h2><p>Available stock, reservations, actions, and immutable movements stay connected to one tenant-scoped SKU.</p></div>
       <div className="replacement-stock-selector-controls"><label>Inventory part<select aria-label="Select inventory part" value={selectedPartId} onChange={(event) => setSelectedPartId(event.target.value)}><option value="">Select a part</option>{partRows.map((part: InventoryPart) => <option key={part.id} value={part.id}>{part.sku} · {part.name}</option>)}</select></label><div><button type="button" className="replacement-secondary" disabled={inventoryExport.isFetching} onClick={downloadExport}><Download size={15} />{inventoryExport.isFetching ? "Preparing…" : "Export CSV"}</button><label className="replacement-secondary"><Upload size={15} />Import CSV<input hidden type="file" accept=".csv,text/csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) void file.text().then(setImportCsv); }} /></label></div></div>
       {importCsv && <aside className="replacement-import-note">Import preview: {importPreview.data?.validCount ?? 0}/{importPreview.data?.rowCount ?? 0} valid rows{importPreview.data?.errors?.length ? ` · ${importPreview.data.errors.length} errors` : ""}<button type="button" className="replacement-secondary" disabled={importInventory.isPending || !importPreview.data || Boolean(importPreview.data.errors.length)} onClick={() => importInventory.mutate({ csv: importCsv })}>{importInventory.isPending ? "Importing…" : "Apply validated import"}</button></aside>}
+    </section>
+
+    <section className="replacement-work-order-allocation">
+      <div><span>02 · Work-order allocation</span><h2>Allocate parts before the mechanic starts</h2><p>Inventory Manager selects an assigned work order, reserves the SKU, and deducts it immediately from on-hand stock.</p></div>
+      <div className="replacement-stock-selector-controls">
+        <label>Work order<select value={allocation.workOrderId} onChange={(event) => setAllocation((current) => ({ ...current, workOrderId: event.target.value }))}><option value="">Select work order</option>{(allocationOrders.data ?? []).map((order: AllocationOrder) => <option key={order.id} value={order.id}>{order.title} · {order.status}</option>)}</select></label>
+        <label>Part<select value={allocation.partId} onChange={(event) => setAllocation((current) => ({ ...current, partId: event.target.value }))}><option value="">Select part</option>{partRows.map((part: InventoryPart) => <option key={part.id} value={part.id}>{part.sku} · {part.name} · {part.quantityOnHand} on hand</option>)}</select></label>
+        <label>Quantity<input type="number" min="1" step="1" value={allocation.quantity} onChange={(event) => setAllocation((current) => ({ ...current, quantity: event.target.value }))} /></label>
+        <button type="button" className="replacement-primary" disabled={!allocation.workOrderId || !allocation.partId || allocatePart.isPending} onClick={() => allocatePart.mutate({ workOrderId: allocation.workOrderId, partId: allocation.partId, quantity: Number(allocation.quantity) })}>{allocatePart.isPending ? "Allocating…" : "Allocate and deduct"}</button>
+      </div>
+      {allocation.workOrderId && <div className="replacement-import-note">Existing allocations: {(allocationParts.data ?? []).map((usage: AllocationUsage) => `${usage.partId} × ${usage.quantity} (${usage.issuedQuantity} issued)`).join(" · ") || "none"}</div>}
     </section>
 
     <State loading={parts.isLoading} error={parts.isError} empty={!parts.isLoading && !parts.isError && !partRows.length}>

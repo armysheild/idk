@@ -46,7 +46,7 @@ describe("role workspace boundaries", () => {
   it("normalizes direct generic workspace URLs before rendering Home", () => {
     const appSource = readFileSync(resolve(process.cwd(), "client/src/App.tsx"), "utf8");
     expect(appSource).toContain("getAllowedWorkspace(summary.data.role, section)");
-    expect(appSource).toContain("<Home initialSection={allowedSection} />");
+    expect(appSource).toContain("<Home initialSection={allowedSection} initialSummary={summary.data} />");
   });
 
   it("keeps Inventory Manager dashboard, parts, vendors, and purchase orders as distinct functional surfaces", () => {
