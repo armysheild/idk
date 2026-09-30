@@ -36,4 +36,10 @@ describe("Inventory Manager part detail UI", () => {
     expect(source).toContain("transferStock.mutate(transfer)");
     expect(source).toContain("Destination bin location");
   });
+
+  it("does not request parts for a work order that left the active queue", () => {
+    expect(detailSource).toContain("const selectedAllocationOrder = (allocationOrders.data ?? []).some(");
+    expect(detailSource).toContain("setAllocation((current) => ({ ...current, workOrderId: \"\", partId: \"\" }))");
+    expect(detailSource).toContain("enabled: Boolean(allocation.workOrderId && selectedAllocationOrder)");
+  });
 });
