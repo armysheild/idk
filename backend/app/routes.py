@@ -27,7 +27,14 @@ from .config import get_settings
 from .database import get_db
 from .dependencies import get_current_user, oauth2_scheme, require_development_mode, require_permission, require_roles
 from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComponentServiceRecord, ComplianceDocument, DocumentAccessLog, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationFeatureFlag, OrganizationIntegration, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
-from .security import create_access_token, decode_supabase_token, hash_password, provision_supabase_user, verify_password
+from .security import (
+    create_access_token,
+    decode_supabase_token,
+    hash_password,
+    provision_supabase_user,
+    sign_in_supabase_user,
+    verify_password,
+)
 from .schemas import (
     ComponentCreate,
     ComponentRead,
@@ -374,12 +381,16 @@ def signup(payload: OrganizationSignup, database: Session = Depends(get_db)) -> 
         changes=json.dumps({"name": organization.name, "slug": organization.slug}),
     ))
     database.commit()
+    access_token = create_access_token(str(user.id), user.token_version)
+    settings = get_settings()
+    if settings.auth_provider == "supabase" and settings.environment.lower() != "development":
+        access_token = sign_in_supabase_user(email, payload.password)
     return OrganizationSignupRead(
         organization_id=organization.id,
         organization_name=organization.name,
         organization_slug=organization.slug,
         user=user,
-        access_token=create_access_token(str(user.id), user.token_version),
+        access_token=access_token,
     )
 
 
@@ -443,6 +454,7 @@ def current_user(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+@router.get("/audit", response_model=list[AuditLogRead])
 @router.get("/audit-log", response_model=list[AuditLogRead])
 def list_audit_log(
     actor_role: str | None = None,
@@ -768,10 +780,14 @@ def accept_invitation(payload: InvitationAccept, database: Session = Depends(get
         changes=json.dumps({"role": member.role}),
     ))
     database.commit()
+    access_token = create_access_token(str(member.id), member.token_version)
+    settings = get_settings()
+    if settings.auth_provider == "supabase" and settings.environment.lower() != "development":
+        access_token = sign_in_supabase_user(member.email, payload.password)
     return InvitationAcceptRead(
         organization_name=organization.name,
         user=member,
-        access_token=create_access_token(str(member.id), member.token_version),
+        access_token=access_token,
     )
 
 
@@ -1187,6 +1203,35 @@ def list_vehicles(
         if vehicle.assigned_driver_id and vehicle.driver:
             vehicle.driver_name = vehicle.driver.full_name
     return vehicles
+
+
+@router.get("/vehicles/{vehicle_id}", response_model=VehicleRead)
+def get_vehicle(
+    vehicle_id: int,
+    user: User = Depends(require_permission("fleet_read")),
+    database: Session = Depends(get_db),
+) -> Vehicle:
+    statement = select(Vehicle).options(selectinload(Vehicle.driver)).where(
+        Vehicle.id == vehicle_id,
+        Vehicle.organization_id == user.organization_id,
+    )
+    if user.role == "driver":
+        statement = statement.where(Vehicle.assigned_driver_id == user.id)
+    elif user.role in ("technician", "mechanic"):
+        statement = statement.where(Vehicle.id.in_(
+            select(WorkOrder.vehicle_id).where(
+                WorkOrder.organization_id == user.organization_id,
+                WorkOrder.assigned_user_id == user.id,
+            )
+        ))
+    elif user.role not in ("owner", "fleet_manager"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+    vehicle = database.scalar(statement)
+    if vehicle is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+    if vehicle.assigned_driver_id and vehicle.driver:
+        vehicle.driver_name = vehicle.driver.full_name
+    return vehicle
 
 
 @router.post("/vehicles", response_model=VehicleRead, status_code=status.HTTP_201_CREATED)
