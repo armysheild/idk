@@ -128,6 +128,16 @@ def test_part_custody_is_distinct_from_vehicle_installation(tmp_path: Path, monk
         )
         assert installed.status_code == 201
         assert installed.json()["status"] == "active"
+        cannot_return_installed = client.post(
+            f"/api/v1/work-orders/{work_order.json()['id']}/return-reserved-part",
+            headers=mechanic_headers,
+            json={"part_id": part.json()["id"], "quantity": 1},
+        )
+        assert cannot_return_installed.status_code == 400
+        assert client.get(
+            f"/api/v1/inventory/parts/{part.json()['id']}/detail",
+            headers=inventory_headers,
+        ).json()["quantity_on_hand"] == 1
         vehicle_history = client.get(
             f"/api/v1/vehicles/{vehicle.json()['id']}/part-installations",
             headers=fleet_headers,

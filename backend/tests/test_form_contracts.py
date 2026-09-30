@@ -7,8 +7,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fastapi.testclient import TestClient
 
-from backend.app.database import Base, engine
+from backend.app.database import Base, SessionLocal, engine
 from backend.app.main import app
+from backend.app.models import ComponentServiceRecord, User
 
 
 def test_vehicle_component_and_owner_integration_fields_persist(tmp_path: Path, monkeypatch):
@@ -77,6 +78,33 @@ def test_vehicle_component_and_owner_integration_fields_persist(tmp_path: Path, 
         assert component.json()["expected_life_days"] == 365
         assert component.json()["next_service_km"] == 22000
 
+        second_vehicle = client.post("/api/v1/vehicles", headers=fleet_headers, json={
+            "registration_number": "DL 02 CONTRACT",
+            "model": "Starbus",
+            "vehicle_type": "Bus",
+            "depot": "Main depot",
+        })
+        assert second_vehicle.status_code == 201
+        with SessionLocal() as database:
+            database.add(ComponentServiceRecord(
+                organization_id=vehicle.json()["organization_id"],
+                component_id=component.json()["id"],
+                vehicle_id=vehicle.json()["id"],
+                odometer_km=12000,
+                performed_by=database.query(User).filter(User.email == "fleet@contract-fleet.example").one().id,
+            ))
+            database.commit()
+        moved = client.patch(f"/api/v1/components/{component.json()['id']}", headers=fleet_headers, json={
+            "vehicle_id": second_vehicle.json()["id"],
+        })
+        assert moved.status_code == 200
+        history = client.get(
+            f"/api/v1/components/{component.json()['id']}/service-history",
+            headers=fleet_headers,
+        )
+        assert history.status_code == 200
+        assert history.json()[0]["vehicle_id"] == second_vehicle.json()["id"]
+
         integrations = client.get("/api/v1/organization/integrations", headers=owner_headers)
         assert integrations.status_code == 200
         assert {item["provider"] for item in integrations.json()} == {
@@ -90,3 +118,33 @@ def test_vehicle_component_and_owner_integration_fields_persist(tmp_path: Path, 
         assert updated.status_code == 200
         assert updated.json()["status"] == "connected"
         assert updated.json()["account_identifier"] == "fleet-42"
+
+
+def test_legacy_owner_cannot_be_deleted(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    with TestClient(app) as client:
+        signup = client.post("/api/v1/auth/signup", json={
+            "organization_name": "Legacy Owner Fleet",
+            "full_name": "Owner",
+            "email": "legacy-owner@fleet.example",
+            "password": "OwnerPassword!123",
+        })
+        owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+        invitation = client.post("/api/v1/invitations", headers=owner_headers, json={
+            "email": "legacy-target@fleet.example",
+            "full_name": "Legacy Owner",
+            "role": "fleet_manager",
+        })
+        accepted = client.post("/api/v1/auth/invitations/accept", json={
+            "token": invitation.json()["invite_token"],
+            "password": "LegacyPassword!123",
+        })
+        target_id = accepted.json()["user"]["id"]
+        with SessionLocal() as database:
+            target = database.get(User, target_id)
+            target.role = "SUPERADMIN"
+            database.commit()
+        deleted = client.delete(f"/api/v1/users/{target_id}", headers=owner_headers)
+        assert deleted.status_code == 403

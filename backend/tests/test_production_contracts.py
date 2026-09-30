@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from backend.app.database import Base, engine
 from backend.app.main import app
 from backend.app import security
+from backend.app import routes
 from backend.app.config import get_settings
 
 
@@ -102,4 +103,37 @@ def test_supabase_session_exchange_returns_provider_token(monkeypatch):
     assert security.sign_in_supabase_user("owner@example.com", "password") == "supabase-access-token"
     assert calls[0]["url"] == "https://example.supabase.co/auth/v1/token?grant_type=password"
     assert calls[0]["json"] == {"email": "owner@example.com", "password": "password"}
+    get_settings.cache_clear()
+
+
+def test_signup_rolls_back_when_supabase_session_exchange_fails(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    monkeypatch.setenv("VAHANA_AUTH_PROVIDER", "supabase")
+    monkeypatch.setenv("VAHANA_ENVIRONMENT", "production")
+    monkeypatch.setenv("VAHANA_SUPABASE_JWT_SECRET", "jwt-secret")
+    monkeypatch.setenv("VAHANA_SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("VAHANA_SUPABASE_ANON_KEY", "anon-key")
+    monkeypatch.setenv("VAHANA_SUPABASE_SERVICE_ROLE_KEY", "service-role")
+    get_settings.cache_clear()
+    deleted: list[str] = []
+    monkeypatch.setattr(routes, "provision_supabase_user", lambda *_args, **_kwargs: "supabase-user-id")
+    monkeypatch.setattr(routes, "sign_in_supabase_user", lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("session failed")))
+    monkeypatch.setattr(routes, "delete_supabase_user", lambda user_id: deleted.append(user_id))
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/auth/signup", json={
+            "organization_name": "Rollback Fleet",
+            "full_name": "Owner",
+            "email": "rollback@example.com",
+            "password": "OwnerPassword!123",
+        })
+
+    assert response.status_code == 503
+    assert deleted == ["supabase-user-id"]
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM users WHERE email = 'rollback@example.com'"
+        ).scalar_one() == 0
     get_settings.cache_clear()

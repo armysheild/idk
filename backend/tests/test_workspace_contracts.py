@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 from backend.app.dependencies import normalize_role
 from backend.app.routes import normalize_audit_role, presentation_role
@@ -33,3 +34,9 @@ def test_legacy_owner_roles_normalize_for_api_and_frontend():
     assert normalize_role(" owner ") == "owner"
     assert presentation_role("SUPERADMIN") == "SUPERADMIN"
     assert presentation_role("fleet_manager") == "FLEET_MANAGER"
+
+
+def test_public_rls_migration_uses_postgres_format_specifiers():
+    migration = Path("backend/migrations/versions/x008_enable_public_rls.py").read_text()
+    assert "%I" in migration
+    assert "%%I" not in migration

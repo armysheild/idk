@@ -31,6 +31,7 @@ from .security import (
     create_access_token,
     decode_supabase_token,
     hash_password,
+    delete_supabase_user,
     provision_supabase_user,
     sign_in_supabase_user,
     verify_password,
@@ -380,11 +381,24 @@ def signup(payload: OrganizationSignup, database: Session = Depends(get_db)) -> 
         request_id=str(uuid4()),
         changes=json.dumps({"name": organization.name, "slug": organization.slug}),
     ))
-    database.commit()
-    access_token = create_access_token(str(user.id), user.token_version)
+    supabase_access_token = None
     settings = get_settings()
     if settings.auth_provider == "supabase" and settings.environment.lower() != "development":
-        access_token = sign_in_supabase_user(email, payload.password)
+        try:
+            supabase_access_token = sign_in_supabase_user(email, payload.password)
+        except ValueError as error:
+            database.rollback()
+            if supabase_user_id:
+                try:
+                    delete_supabase_user(supabase_user_id)
+                except ValueError:
+                    pass
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Supabase Auth could not create a session",
+            ) from error
+    database.commit()
+    access_token = supabase_access_token or create_access_token(str(user.id), user.token_version)
     return OrganizationSignupRead(
         organization_id=organization.id,
         organization_name=organization.name,
@@ -894,7 +908,7 @@ def delete_user(
     member = database.scalar(select(User).where(User.id == user_id, User.organization_id == user.organization_id))
     if member is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if member.id == user.id or member.role == "owner":
+    if member.id == user.id or normalize_role(member.role) == "owner":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner accounts cannot be removed")
     database.delete(member)
     database.add(AuditLog(
@@ -1610,6 +1624,7 @@ def update_component(
     if component is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Component not found")
     changes = payload.model_dump(exclude_unset=True)
+    previous_vehicle_id = component.vehicle_id
     if "vehicle_id" in changes:
         vehicle = database.scalar(select(Vehicle).where(
             Vehicle.id == changes["vehicle_id"],
@@ -1617,6 +1632,13 @@ def update_component(
         ))
         if vehicle is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+        if changes["vehicle_id"] != previous_vehicle_id:
+            service_records = database.scalars(select(ComponentServiceRecord).where(
+                ComponentServiceRecord.component_id == component.id,
+                ComponentServiceRecord.organization_id == user.organization_id,
+            )).all()
+            for service_record in service_records:
+                service_record.vehicle_id = changes["vehicle_id"]
     interval_km = changes.get("service_interval_km", component.service_interval_km)
     threshold_km = changes.get("alert_threshold_km", component.alert_threshold_km)
     if threshold_km is not None and interval_km is not None and threshold_km > interval_km:
@@ -7234,13 +7256,22 @@ def return_reserved_part(
         WorkOrderPartUsage.part_id == part_id,
         WorkOrderPartUsage.organization_id == user.organization_id,
         WorkOrderPartUsage.inventory_transaction_id.is_not(None),
+        WorkOrderPartUsage.issued_quantity > 0,
+    ).order_by(
+        WorkOrderPartUsage.id.desc(),
     ).first()
     
     if not part_usage or part_usage.quantity < quantity:
         raise HTTPException(status_code=400, detail="Part not reserved in this work order")
     
     if part_usage.issued_quantity:
-        if quantity > part_usage.issued_quantity:
+        installed_quantity = database.scalar(select(func.coalesce(func.sum(VehiclePartInstallation.quantity), 0)).where(
+            VehiclePartInstallation.organization_id == user.organization_id,
+            VehiclePartInstallation.work_order_part_usage_id == part_usage.id,
+            VehiclePartInstallation.status == "active",
+        )) or 0
+        returnable_quantity = part_usage.issued_quantity - installed_quantity
+        if quantity > returnable_quantity:
             raise HTTPException(status_code=400, detail="Return quantity exceeds issued quantity")
         part.quantity_on_hand += quantity
         database.add(InventoryTransaction(

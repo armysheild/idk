@@ -33,16 +33,16 @@ def upgrade() -> None:
             LOOP
                 policy_name := 'tenant_isolation_' || tenant_table.table_name;
                 EXECUTE format(
-                    'ALTER TABLE public.%%I ENABLE ROW LEVEL SECURITY',
+                    'ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY',
                     tenant_table.table_name
                 );
                 EXECUTE format(
-                    'DROP POLICY IF EXISTS %%I ON public.%%I',
+                    'DROP POLICY IF EXISTS %I ON public.%I',
                     policy_name,
                     tenant_table.table_name
                 );
                 EXECUTE format(
-                    'CREATE POLICY %%I ON public.%%I FOR ALL TO public USING (organization_id = NULLIF(current_setting(''app.organization_id'', true), '''')::integer) WITH CHECK (organization_id = NULLIF(current_setting(''app.organization_id'', true), '''')::integer)',
+                    'CREATE POLICY %I ON public.%I FOR ALL TO public USING (organization_id = NULLIF(current_setting(''app.organization_id'', true), '''')::integer) WITH CHECK (organization_id = NULLIF(current_setting(''app.organization_id'', true), '''')::integer)',
                     policy_name,
                     tenant_table.table_name
                 );
@@ -82,12 +82,12 @@ def downgrade() -> None:
             LOOP
                 policy_name := 'tenant_isolation_' || tenant_table.table_name;
                 EXECUTE format(
-                    'DROP POLICY IF EXISTS %%I ON public.%%I',
+                    'DROP POLICY IF EXISTS %I ON public.%I',
                     policy_name,
                     tenant_table.table_name
                 );
                 EXECUTE format(
-                    'ALTER TABLE public.%%I DISABLE ROW LEVEL SECURITY',
+                    'ALTER TABLE public.%I DISABLE ROW LEVEL SECURITY',
                     tenant_table.table_name
                 );
             END LOOP;

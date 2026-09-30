@@ -102,3 +102,21 @@ def sign_in_supabase_user(email: str, password: str) -> str:
     if not access_token:
         raise ValueError("Supabase Auth returned no access token")
     return str(access_token)
+
+
+def delete_supabase_user(user_id: str) -> None:
+    settings = get_settings()
+    if settings.auth_provider != "supabase" or settings.environment.lower() == "development":
+        return
+    if not settings.supabase_url or not settings.supabase_service_role_key:
+        raise ValueError("Supabase Auth admin provisioning is not configured")
+    response = httpx.delete(
+        f"{settings.supabase_url.rstrip('/')}/auth/v1/admin/users/{user_id}",
+        headers={
+            "Authorization": f"Bearer {settings.supabase_service_role_key}",
+            "apikey": settings.supabase_service_role_key,
+        },
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        raise ValueError("Supabase Auth could not remove the provisioned user")
