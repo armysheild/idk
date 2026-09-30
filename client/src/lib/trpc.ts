@@ -330,6 +330,13 @@ function serializeInput(path: string, input: unknown): unknown {
     whatsapp_alerts_enabled: value.whatsappAlertsEnabled ?? false,
   };
   if (path === "notifications.markRead") return { status: "read" };
+  if (path === "notifications.escalate") return {
+    severity: value.severity ?? "CRITICAL",
+    reason: value.reason ?? "Escalated by user",
+  };
+  if (path === "notifications.resolve") return {
+    note: value.note ?? "",
+  };
   if (path === "driver.unsafeDisposition") return {
     vehicle_id: value.vehicleId,
     description: value.notes,

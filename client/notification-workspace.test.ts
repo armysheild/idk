@@ -29,4 +29,10 @@ describe("notification workspace actions", () => {
     expect(source).toContain("note.trim().length < 3");
     expect(source).toContain("resolvedAt");
   });
+
+  it("keeps escalation payload fields explicit for the API contract", () => {
+    expect(readFileSync(new URL("./src/lib/trpc.ts", import.meta.url), "utf8")).toContain('path === "notifications.escalate"');
+    expect(readFileSync(new URL("./src/lib/trpc.ts", import.meta.url), "utf8")).toContain('severity: value.severity ?? "CRITICAL"');
+    expect(readFileSync(new URL("./src/lib/trpc.ts", import.meta.url), "utf8")).toContain('reason: value.reason ?? "Escalated by user"');
+  });
 });
