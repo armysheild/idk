@@ -3,6 +3,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { WorkspaceState as State } from "@/components/workspaces/WorkspaceState";
 import { trpc } from "@/lib/trpc";
+import { statusKey } from "@/lib/status";
 import type { InventoryPart, ProcurementOrderRow } from "@/types/fleet";
 
 type VendorRow = {
@@ -113,7 +114,7 @@ export function ProcurementWorkspace() {
   const openCount =
     orders.data?.filter(
       (row: ProcurementOrderRow) =>
-        !["RECEIVED", "CLOSED", "CANCELLED"].includes(String(row.status)),
+        !["RECEIVED", "CLOSED", "CANCELLED"].includes(statusKey(row.status)),
     ).length ?? 0;
   return (
     <main className="replacement-procurement">

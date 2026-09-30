@@ -132,6 +132,7 @@ function serializeInput(path: string, input: unknown): unknown {
     telematics_device_identifier: value.telematicsDeviceIdentifier || undefined,
   };
   if (path === "vehicles.update") return {
+    registration_number: value.licensePlate,
     vin: value.vin,
     chassis_number: value.chassisNumber,
     engine_number: value.engineNumber,
@@ -340,6 +341,10 @@ function serializeInput(path: string, input: unknown): unknown {
     quantity: value.quantity,
     reason: value.reason,
   };
+  if (path === "workOrders.allocatePart") return {
+    part_id: value.partId,
+    quantity: value.quantity,
+  };
   if (path === "workOrders.issuePart") return {
     work_order_part_usage_id: value.workOrderPartUsageId,
     quantity: value.quantity,
@@ -537,6 +542,10 @@ function queryPath(path: string, input: unknown) {
     return `/api/v1/notifications${query ? `?${query}` : ""}`;
   }
   if (path === "financials.list") return "/api/v1/expenses";
+  if (path === "inventory.workOrders") return "/api/v1/inventory/work-orders";
+  if (path === "inventory.workOrderParts" && (input as { workOrderId?: string | number } | undefined)?.workOrderId) {
+    return `/api/v1/inventory/work-orders/${(input as { workOrderId: string | number }).workOrderId}/parts`;
+  }
   if (path === "financials.vehicles") return "/api/v1/vehicles";
   if (path === "inventory.list") return "/api/v1/parts";
   if (path === "vendors.list") return "/api/v1/vendors";
@@ -600,6 +609,7 @@ function mutationPath(path: string, input: unknown) {
   if (path === "team.revokeInvitation" && value?.id) return `/api/v1/invitations/${value.id}/revoke`;
   if (path === "team.resendInvitation" && value?.id) return `/api/v1/invitations/${value.id}/resend`;
   if (path === "workOrders.assign" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/assign`;
+  if (path === "workOrders.allocatePart" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/parts`;
   if (path === "workOrders.bulkUpdate") return "/api/v1/work-orders/bulk-update";
   if (path === "workOrders.updateChecklist" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/checklist`;
   if (path === "maintenanceTemplates.applyTemplate" && value?.id) return `/api/v1/maintenance/templates/${value.id}/apply`;

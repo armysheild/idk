@@ -44,6 +44,14 @@ export function MechanicExecutionWorkspace({
   const notifications = trpc.notifications.list.useQuery(undefined, {
     retry: false,
   });
+  const escalate = trpc.notifications.escalate.useMutation({
+    onSuccess: () => {
+      toast.success("Alert escalated to Fleet Manager");
+      void utils.notifications.list.invalidate();
+    },
+    onError: (error) =>
+      toast.error("Escalation failed", { description: error.message }),
+  });
   const [selectedOrder, setSelectedOrder] = useState<string | null>(null);
   const [laborHours, setLaborHours] = useState("0");
   const [repairNotes, setRepairNotes] = useState("");
@@ -65,6 +73,25 @@ export function MechanicExecutionWorkspace({
   const [installationLot, setInstallationLot] = useState("");
   const [installationOdometer, setInstallationOdometer] = useState("");
   const [checklist, setChecklist] = useState(createChecklist);
+  const workOrderParts = trpc.inventory.workOrderParts.useQuery(
+    { workOrderId: selectedOrder ?? "" },
+    { enabled: Boolean(selectedOrder), retry: false },
+  );
+  useEffect(() => {
+    const issuedPart = workOrderParts.data?.find(
+      (part: { issuedQuantity?: number; quantity: number; id: number; partId: number }) =>
+        Number(part.issuedQuantity ?? 0) > 0,
+    );
+    if (!issuedPart) {
+      setReservationId(null);
+      setReservationUsageId(null);
+      return;
+    }
+    setReservationPartId(String(issuedPart.partId));
+    setReservationQuantity(String(issuedPart.issuedQuantity ?? issuedPart.quantity));
+    setReservationId(`${issuedPart.partId}:${issuedPart.issuedQuantity ?? issuedPart.quantity}`);
+    setReservationUsageId(issuedPart.id);
+  }, [workOrderParts.data]);
   useEffect(() => {
     try {
       const raw = localStorage.getItem("fleetops:mechanic-execution-draft");
@@ -695,7 +722,7 @@ export function MechanicExecutionWorkspace({
           <h2>Service components</h2>
         </header>
         <div>
-          {components.data?.slice(0, 8).map((item: ServiceComponent) => (
+          {components.data?.map((item: ServiceComponent) => (
             <article key={item.id}>
               <div>
                 <strong>{item.name}</strong>
@@ -704,7 +731,7 @@ export function MechanicExecutionWorkspace({
                   {Number(item.expectedLifeKm).toLocaleString("en-IN")} km
                 </p>
               </div>
-              <b>Ready</b>
+              <b>{item.status ?? "Status unavailable"}</b>
             </article>
           )) ?? (
             <div className="replacement-mechanic-empty">
@@ -717,6 +744,30 @@ export function MechanicExecutionWorkspace({
             .length ?? 0}{" "}
           unread recipient-scoped alerts
         </small>
+        <div className="replacement-mechanic-alerts">
+          {(notifications.data ?? [])
+            .filter((item: NotificationRow) => !item.isRead)
+            .slice(0, 5)
+            .map((item: NotificationRow) => (
+              <article key={item.id}>
+                <span>{item.title}</span>
+                <button
+                  type="button"
+                  className="replacement-mechanic-secondary"
+                  disabled={escalate.isPending}
+                  onClick={() =>
+                    escalate.mutate({
+                      notificationId: item.id,
+                      severity: "CRITICAL",
+                      reason: "Escalated from workshop execution",
+                    })
+                  }
+                >
+                  Escalate
+                </button>
+              </article>
+            ))}
+        </div>
       </section>
     </main>
   );

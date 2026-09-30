@@ -10,8 +10,77 @@ os.environ["VAHANA_DATABASE_URL"] = "sqlite:///./test-vahana.db"
 os.environ["VAHANA_SEED_ADMIN_EMAIL"] = "test-admin@example.com"
 os.environ["VAHANA_SEED_ADMIN_PASSWORD"] = "TestPassword!123"
 
-from backend.app.database import Base, engine
+from backend.app.database import Base, SessionLocal, engine
 from backend.app.main import app
+from backend.app.models import WorkOrder
+
+
+def test_owner_dashboard_summary_reports_monitoring_counts(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    with TestClient(app) as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"email": "test-admin@example.com", "password": "TestPassword!123"},
+        )
+        assert login.status_code == 200
+        owner_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        baseline = client.get("/api/v1/dashboard/summary", headers=owner_headers)
+        assert baseline.status_code == 200
+        baseline_payload = baseline.json()
+        fleet_email = f"fleet-{uuid4().hex[:8]}@example.com"
+        created_fleet = client.post(
+            "/api/v1/users",
+            headers=owner_headers,
+            json={
+                "email": fleet_email,
+                "password": "TestPassword!123",
+                "full_name": "Monitoring Fleet Manager",
+                "role": "fleet_manager",
+            },
+        )
+        assert created_fleet.status_code == 201
+        fleet_login = client.post(
+            "/api/v1/auth/login",
+            json={"email": fleet_email, "password": "TestPassword!123"},
+        )
+        assert fleet_login.status_code == 200
+        fleet_headers = {"Authorization": f"Bearer {fleet_login.json()['access_token']}"}
+        vehicle = client.post(
+            "/api/v1/vehicles",
+            headers=fleet_headers,
+            json={
+                "registration_number": f"MON-{uuid4().hex[:6].upper()}",
+                "model": "Monitoring Truck",
+                "vehicle_type": "Truck",
+                "depot": "Monitoring Depot",
+            },
+        )
+        assert vehicle.status_code == 201
+        for title in ("Inspection", "Brake repair"):
+            work_order = client.post(
+                "/api/v1/work-orders",
+                headers=fleet_headers,
+                json={"vehicle_id": vehicle.json()["id"], "title": title},
+            )
+            assert work_order.status_code == 201
+            if title == "Brake repair":
+                database = SessionLocal()
+                try:
+                    persisted_order = database.get(WorkOrder, work_order.json()["id"])
+                    persisted_order.status = "Completed"
+                    database.commit()
+                finally:
+                    database.close()
+
+        summary = client.get("/api/v1/dashboard/summary", headers=owner_headers)
+        assert summary.status_code == 200
+        payload = summary.json()
+        assert payload["fleet_overview"]["total_vehicles"] == baseline_payload["fleet_overview"]["total_vehicles"] + 1
+        assert payload["fleet_overview"]["active_vehicles"] == baseline_payload["fleet_overview"]["active_vehicles"] + 1
+        assert payload["work_orders"]["total"] == baseline_payload["work_orders"]["total"] + 2
+        assert payload["work_orders"]["active"] == baseline_payload["work_orders"]["active"] + 1
 
 
 def test_expenses_and_document_access_are_hardened(tmp_path: Path, monkeypatch):

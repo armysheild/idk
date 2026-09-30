@@ -72,6 +72,21 @@ def test_part_custody_is_distinct_from_vehicle_installation(tmp_path: Path, monk
             json={"mechanic_id": mechanic_id},
         )
         assert assigned.status_code == 200
+        queue = client.get("/api/v1/inventory/work-orders", headers=inventory_headers)
+        assert queue.status_code == 200
+        assert any(item["id"] == work_order.json()["id"] for item in queue.json())
+        allocation = client.post(
+            f"/api/v1/work-orders/{work_order.json()['id']}/parts",
+            headers=inventory_headers,
+            json={"part_id": part.json()["id"], "quantity": 1},
+        )
+        assert allocation.status_code == 201
+        assert allocation.json()["issued_quantity"] == 1
+        allocated_detail = client.get(
+            f"/api/v1/inventory/parts/{part.json()['id']}/detail",
+            headers=inventory_headers,
+        )
+        assert allocated_detail.json()["quantity_on_hand"] == 2
         started = client.post(f"/api/v1/work-orders/{work_order.json()['id']}/start", headers=mechanic_headers)
         assert started.status_code == 200
 
@@ -82,6 +97,12 @@ def test_part_custody_is_distinct_from_vehicle_installation(tmp_path: Path, monk
         )
         assert reserved.status_code == 200
         usage_id = reserved.json()["usage_id"]
+        part_after_reservation = client.get(
+            f"/api/v1/inventory/parts/{part.json()['id']}/detail",
+            headers=inventory_headers,
+        )
+        assert part_after_reservation.status_code == 200
+        assert part_after_reservation.json()["quantity_on_hand"] == 1
         assert client.get(f"/api/v1/work-orders/{work_order.json()['id']}/part-installations", headers=mechanic_headers).json() == []
         issued = client.post(
             f"/api/v1/work-orders/{work_order.json()['id']}/issue-part",
@@ -90,6 +111,11 @@ def test_part_custody_is_distinct_from_vehicle_installation(tmp_path: Path, monk
         )
         assert issued.status_code == 200
         assert issued.json()["issued_to_user_id"] == mechanic_id
+        part_after_issue = client.get(
+            f"/api/v1/inventory/parts/{part.json()['id']}/detail",
+            headers=inventory_headers,
+        )
+        assert part_after_issue.json()["quantity_on_hand"] == 1
 
         installed = client.post(
             f"/api/v1/work-orders/{work_order.json()['id']}/part-installations",

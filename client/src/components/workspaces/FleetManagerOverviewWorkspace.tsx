@@ -13,6 +13,7 @@ import type {
   WorkOrderRow,
 } from "@/types/fleet";
 import { WorkspaceState as State } from "@/components/workspaces/WorkspaceState";
+import { isActiveVehicleStatus, isTerminalWorkOrderStatus } from "@/lib/status";
 
 export function FleetManagerOverviewWorkspace({
   organizationName,
@@ -46,7 +47,7 @@ export function FleetManagerOverviewWorkspace({
     ? maintenancePlanning.data
     : (maintenancePlanning.data?.items ?? []);
   const active =
-    vehicles.data?.filter((item: FleetVehicle) => item.status === "ACTIVE")
+    vehicles.data?.filter((item: FleetVehicle) => isActiveVehicleStatus(item.status))
       .length ?? 0;
   const dueDocs =
     documents.data?.filter(
@@ -133,7 +134,7 @@ export function FleetManagerOverviewWorkspace({
           <span>Open work</span>
           <strong>
             {orders.data?.filter(
-              (item: WorkOrderRow) => item.status !== "COMPLETED",
+              (item: WorkOrderRow) => !isTerminalWorkOrderStatus(item.status),
             ).length ?? 0}
           </strong>
           <small>dispatch queue</small>

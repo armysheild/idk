@@ -80,3 +80,25 @@ def provision_supabase_user(email: str, password: str, full_name: str, metadata:
             raise ValueError("A Supabase Auth user with this email already exists")
         raise ValueError("Supabase Auth rejected the user provisioning request")
     return str(response.json()["id"])
+
+
+def sign_in_supabase_user(email: str, password: str) -> str:
+    settings = get_settings()
+    if not settings.supabase_url or not settings.supabase_anon_key:
+        raise ValueError("Supabase Auth client credentials are not configured")
+    response = httpx.post(
+        f"{settings.supabase_url.rstrip('/')}/auth/v1/token?grant_type=password",
+        headers={
+            "Authorization": f"Bearer {settings.supabase_anon_key}",
+            "apikey": settings.supabase_anon_key,
+            "Content-Type": "application/json",
+        },
+        json={"email": email, "password": password},
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        raise ValueError("Supabase Auth could not create a session")
+    access_token = response.json().get("access_token")
+    if not access_token:
+        raise ValueError("Supabase Auth returned no access token")
+    return str(access_token)

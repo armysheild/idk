@@ -4,6 +4,7 @@ import { trpc } from "@/lib/trpc";
 import { ResourceWorkspace } from "@/components/workspaces/ResourceWorkspace";
 import { formatVehicleIdentity } from "@/lib/vehicleIdentity";
 import type { WorkOrderRow } from "@/types/fleet";
+import { statusKey } from "@/lib/status";
 
 export function WorkOrderReviewWorkspace({ organizationName }: { organizationName?: string }) {
   const utils = trpc.useUtils();
@@ -24,7 +25,11 @@ export function WorkOrderReviewWorkspace({ organizationName }: { organizationNam
     },
     onError: (error) => toast.error("Work order approval failed", { description: error.message }),
   });
-  const reviewOrders = (orders.data ?? []).filter((order: WorkOrderRow) => order.status === "READY_FOR_REVIEW");
+  const reviewOrders = (orders.data ?? []).filter(
+    (order: WorkOrderRow) =>
+      statusKey(order.status) === "READY_FOR_REVIEW" ||
+      order.status === "READY_FOR_REVIEW",
+  );
 
   return <div className="replacement-dispatch">
     <header className="replacement-page-hero"><div><span>03 · Maintenance dispatch</span><h1>Move every repair through a visible handoff<em>.</em></h1><p>Dispatch stays connected to the VIN, mechanic, reserved part, lifecycle baseline, proof, and financial close.</p></div><div className="replacement-hero-stat"><ClipboardCheck size={20} /><strong>{reviewOrders.length}</strong><small>awaiting review</small></div></header>
