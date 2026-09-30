@@ -25,7 +25,12 @@ export function ComponentLifecycleWorkspace() {
   const beginEdit = (component: ServiceComponent) => { setEditingId(component.id); setDraft({ vehicleId: component.vehicleId, inventoryPartId: component.inventoryPartId ? String(component.inventoryPartId) : "", name: component.name, componentType: (component.componentType as ComponentType) || "OTHER", componentSubtype: component.componentSubtype ?? "", brand: component.brand ?? "", partNumber: component.partNumber ?? "", serialNumber: component.serialNumber ?? "", installationDate: String(component.installationDate ?? new Date().toISOString()).slice(0, 10), installationOdometer: String(component.lastServicedOdometer ?? 0), expectedLifeKm: String(component.expectedLifeKm ?? 0), expectedLifeDays: String(component.expectedLifeDays ?? ""), alertThresholdKm: String(component.alertThresholdKm ?? 0), alertThresholdDays: String(component.alertThresholdDays ?? ""), notes: component.notes ?? "" }); window.scrollTo({ top: 0, behavior: "smooth" }); };
   const vehicleRows = (vehicles.data ?? []) as FleetVehicle[];
   const inventoryRows = (inventory.data ?? []) as InventoryPart[];
-  const rows = (components.data ?? []) as ServiceComponent[];
+  const rows = ((components.data ?? []) as ServiceComponent[]).map((component) => ({
+    ...component,
+    id: String(component.id),
+    vehicleId: String(component.vehicleId),
+    inventoryPartId: component.inventoryPartId == null ? component.inventoryPartId : String(component.inventoryPartId),
+  }));
   const selectedVehicle = vehicleRows.find((vehicle) => vehicle.id === draft.vehicleId);
 
   return <div className="replacement-lifecycle">

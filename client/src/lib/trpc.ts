@@ -240,6 +240,7 @@ function serializeInput(path: string, input: unknown): unknown {
       ? value.installationDate.toISOString().slice(0, 10)
       : value.installationDate,
     installed_at_km: value.installedAtKm ?? value.installationOdometer ?? value.lastServicedOdometer ?? 0,
+    last_service_km: value.lastServiceKm ?? value.lastServicedOdometer,
     service_interval_km: value.serviceIntervalKm ?? value.expectedLifeKm,
     expected_life_days: value.expectedLifeDays,
     alert_threshold_km: value.alertThresholdKm,
