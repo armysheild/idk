@@ -39,7 +39,20 @@ def decode_token_version(token: str) -> int:
 def decode_supabase_token(token: str) -> dict[str, Any]:
     settings = get_settings()
     if settings.supabase_jwks_url:
-        signing_key = jwt.PyJWKClient(settings.supabase_jwks_url).get_signing_key_from_jwt(token).key
+        jwks_urls = [settings.supabase_jwks_url]
+        if settings.supabase_url:
+            derived_jwks_url = f"{settings.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
+            if derived_jwks_url not in jwks_urls:
+                jwks_urls.append(derived_jwks_url)
+        signing_key = None
+        for jwks_url in jwks_urls:
+            try:
+                signing_key = jwt.PyJWKClient(jwks_url).get_signing_key_from_jwt(token).key
+                break
+            except Exception:
+                if jwks_url == jwks_urls[-1]:
+                    raise
+        assert signing_key is not None
         payload = jwt.decode(token, signing_key, algorithms=["RS256", "ES256"], audience="authenticated", options={"verify_iss": False})
     elif settings.supabase_jwt_secret:
         payload = jwt.decode(

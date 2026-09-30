@@ -106,6 +106,36 @@ def test_supabase_session_exchange_returns_provider_token(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_supabase_token_verification_falls_back_to_supabase_url_jwks(monkeypatch):
+    monkeypatch.setenv("VAHANA_SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("VAHANA_SUPABASE_JWKS_URL", "https://stale.supabase.co/auth/v1/.well-known/jwks.json")
+    get_settings.cache_clear()
+    calls: list[str] = []
+
+    class Client:
+        def __init__(self, url):
+            calls.append(url)
+
+        def get_signing_key_from_jwt(self, token):
+            if calls[-1].startswith("https://stale"):
+                raise RuntimeError("stale JWKS URL")
+            return type("SigningKey", (), {"key": "signing-key"})()
+
+    monkeypatch.setattr(security.jwt, "PyJWKClient", Client)
+    monkeypatch.setattr(
+        security.jwt,
+        "decode",
+        lambda token, key, **kwargs: {"sub": "supabase-user-id", "aud": "authenticated"},
+    )
+
+    assert security.decode_supabase_token("token")["sub"] == "supabase-user-id"
+    assert calls == [
+        "https://stale.supabase.co/auth/v1/.well-known/jwks.json",
+        "https://project.supabase.co/auth/v1/.well-known/jwks.json",
+    ]
+    get_settings.cache_clear()
+
+
 def test_signup_rolls_back_when_supabase_session_exchange_fails(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     Base.metadata.drop_all(bind=engine)
