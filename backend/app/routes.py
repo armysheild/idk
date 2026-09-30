@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings
 from .database import get_db
-from .dependencies import get_current_user, oauth2_scheme, require_development_mode, require_permission, require_roles
+from .dependencies import get_current_user, normalize_role, oauth2_scheme, require_development_mode, require_permission, require_roles
 from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComponentServiceRecord, ComplianceDocument, DocumentAccessLog, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationFeatureFlag, OrganizationIntegration, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
 from .security import (
     create_access_token,
@@ -455,8 +455,12 @@ def current_user(user: User = Depends(get_current_user)) -> User:
 
 
 def normalize_audit_role(actor_role: str) -> str:
-    role = actor_role.strip().lower()
-    return {"superadmin": "owner", "super_admin": "owner"}.get(role, role)
+    return normalize_role(actor_role)
+
+
+def presentation_role(role: str) -> str:
+    normalized = normalize_role(role)
+    return "SUPERADMIN" if normalized == "owner" else normalized.upper()
 
 
 @router.get("/audit", response_model=list[AuditLogRead])
@@ -6709,7 +6713,7 @@ def get_dashboard_summary(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "organization_id": org.id,
             "organization_name": org.name,
-            "role": user.role.upper(),
+            "role": presentation_role(user.role),
             "org": {"id": org.id, "name": org.name},
             "needs_onboarding": False,
             "fleet_overview": {
@@ -6853,7 +6857,7 @@ def get_dashboard_summary(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "organization_id": org.id,
         "organization_name": org.name,
-        "role": user.role.upper(),
+        "role": presentation_role(user.role),
         "org": {"id": org.id, "name": org.name},
         "needs_onboarding": False,
         "fleet_overview": {

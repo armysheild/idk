@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
-from backend.app.routes import normalize_audit_role
+from backend.app.dependencies import normalize_role
+from backend.app.routes import normalize_audit_role, presentation_role
 from backend.app.schemas import InventoryMovementRead
 
 
@@ -25,3 +26,10 @@ def test_audit_role_filter_normalizes_frontend_values():
     assert normalize_audit_role("SUPERADMIN") == "owner"
     assert normalize_audit_role("FLEET_MANAGER") == "fleet_manager"
     assert normalize_audit_role(" mechanic ") == "mechanic"
+
+
+def test_legacy_owner_roles_normalize_for_api_and_frontend():
+    assert normalize_role("SUPER_ADMIN") == "owner"
+    assert normalize_role(" owner ") == "owner"
+    assert presentation_role("SUPERADMIN") == "SUPERADMIN"
+    assert presentation_role("fleet_manager") == "FLEET_MANAGER"
