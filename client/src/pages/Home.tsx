@@ -134,16 +134,7 @@ export default function Home({ initialSection = "Command center", publicMode = "
   }, []);
   const summaryQuery = trpc.dashboard.summary.useQuery(undefined, { enabled: Boolean(session) && initialSummary === undefined, retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false });
   const backendSummary = initialSummary ?? summaryQuery.data;
-  const { isLoading: summaryLoading, isError: summaryError, error: summaryQueryError, refetch: refetchSummary } = summaryQuery;
-  const summaryUnauthorized = summaryQueryError?.data?.code === "UNAUTHORIZED" || /unauthorized|organization profile|session expired/i.test(summaryQueryError?.message ?? "");
-  const [staleSessionRecoveryAttempted, setStaleSessionRecoveryAttempted] = useState(false);
-  useEffect(() => {
-    if (!session || backendSummary || !summaryError || staleSessionRecoveryAttempted || !summaryUnauthorized) return;
-    setStaleSessionRecoveryAttempted(true);
-    void refreshSession().then((result) => {
-      if (!result.error && result.data.session) void refetchSummary();
-    });
-  }, [backendSummary, refetchSummary, refreshSession, staleSessionRecoveryAttempted, summaryError, summaryUnauthorized, session]);
+  const { isLoading: summaryLoading, isError: summaryError, refetch: refetchSummary } = summaryQuery;
   const metadataNeedsOnboarding = session?.user.user_metadata?.needsOnboarding === true || session?.user.user_metadata?.needsOnboarding === "true";
   const backendRole = String(backendSummary?.role ?? "");
   const organizationName = String(backendSummary?.org?.name ?? session?.user.user_metadata?.orgName ?? "").trim();
@@ -305,7 +296,6 @@ export default function Home({ initialSection = "Command center", publicMode = "
   if (session && isRecoveryFlow) return <PublicAuthSurface view="update" email={authEmail} password={authPassword} fullName={authFullName} recoveryPassword={recoveryPassword} error={authError} submitting={authSubmitting} onEmail={setAuthEmail} onPassword={setAuthPassword} onFullName={setAuthFullName} onRecoveryPassword={setRecoveryPassword} onSubmit={handlePasswordUpdate} />;
   if (session && ((!backendSummary && metadataNeedsOnboarding) || backendSummary?.needsOnboarding)) return <OrganizationOnboarding initialName={String(session.user.user_metadata?.fullName ?? backendSummary?.org?.name ?? "")} initialOrganization={String(session.user.user_metadata?.orgName ?? "")} onComplete={async () => { const { error } = await refreshSession(); if (error) { toast.error("Session refresh failed", { description: error.message }); return; } window.localStorage.setItem("fleetops.openTeam", "1"); await refetchSummary(); }} />;
   if (session && sessionTransition) return <main className="auth-page"><section className="auth-card"><div className="panel-kicker">VahanSync connection</div><h1>Securing your role workspace.</h1><p>We are clearing the previous session context before opening data for this authenticated account.</p><div className="workspace-state"><RefreshCw className="spin" size={18} /> Connecting to the assigned organization…</div></section></main>;
-  if (session && staleSessionRecoveryAttempted && !backendSummary) return <main className="auth-page"><section className="auth-card"><div className="panel-kicker">VahanSync connection</div><h1>Reconfirming your workspace session.</h1><p>The new Supabase session is active, but the organization summary needs one fresh authorization check before operational data opens.</p><div className="workspace-state"><RefreshCw className="spin" size={18} /> Reconnecting to your organization…</div><button className="primary-button" onClick={() => { setStaleSessionRecoveryAttempted(false); void refetchSummary(); }}>Retry workspace load</button></section></main>;
   if (session && !backendSummary && summaryError) return <main className="auth-page"><section className="auth-card"><div className="panel-kicker">VahanSync connection</div><h1>We could not load your workspace.</h1><p>Your Supabase session is active, but the organization summary did not respond. Retry the request without leaving your secure session.</p><button className="primary-button" onClick={() => { void refetchSummary(); }}>Retry workspace load</button></section></main>;
   if (session && !backendSummary && summaryLoading) return <main className="auth-page"><section className="auth-card"><div className="panel-kicker">VahanSync connection</div><h1>Loading your workspace.</h1><p>We are checking your organization and role before opening operational data.</p><div className="workspace-state"><RefreshCw className="spin" size={18} /> Connecting to Supabase…</div></section></main>;
   if (!authLoading && !session && publicMode === "landing") return <LandingPage />;

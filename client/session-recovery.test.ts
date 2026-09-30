@@ -60,10 +60,10 @@ describe("Supabase session recovery", () => {
     expect(submitBlock).not.toContain("window.location.href");
   });
 
-  it("keeps a guarded role route in an explicit recovery state when the first summary query sees a transient fresh-session authorization error", () => {
-    expect(app).toContain("const summaryUnauthorized");
-    expect(app).toContain("await summary.refetch()");
-    expect(app).toContain("recoveringSession");
+  it("leaves refresh and expiry handling to the authenticated transport layer", () => {
+    expect(app).not.toContain("const summaryUnauthorized");
+    expect(app).not.toContain("recoveringSession");
+    expect(app).not.toContain("refreshSession()");
     expect(app).toContain("Workspace connection needs attention.");
     expect(app).toContain("<Home publicMode=\"signin\" />");
   });

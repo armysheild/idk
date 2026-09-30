@@ -17,13 +17,12 @@ describe("dashboard auth query gating", () => {
     expect(home).toContain("refetchOnReconnect: false");
   });
 
-  it("recovers transient first-login authorization errors without logging out the fresh session", () => {
-    expect(home).toContain('summaryQueryError?.data?.code === "UNAUTHORIZED"');
-    expect(home).toContain("staleSessionRecoveryAttempted");
-    expect(home).toContain("void refreshSession().then");
+  it("does not duplicate transport-level session recovery", () => {
+    expect(home).not.toContain('summaryQueryError?.data?.code === "UNAUTHORIZED"');
+    expect(home).not.toContain("staleSessionRecoveryAttempted");
+    expect(home).not.toContain("void refreshSession().then");
     expect(home).toContain("void refetchSummary()");
     expect(home).not.toContain("void signOut()");
-    expect(home).not.toContain("window.location.reload()}>Retry workspace load");
   });
 
   it("completes organization onboarding through SPA refresh", () => {
