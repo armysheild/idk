@@ -454,6 +454,11 @@ def current_user(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def normalize_audit_role(actor_role: str) -> str:
+    role = actor_role.strip().lower()
+    return {"superadmin": "owner", "super_admin": "owner"}.get(role, role)
+
+
 @router.get("/audit", response_model=list[AuditLogRead])
 @router.get("/audit-log", response_model=list[AuditLogRead])
 def list_audit_log(
@@ -467,7 +472,9 @@ def list_audit_log(
 ) -> list[AuditLog]:
     statement = select(AuditLog).where(AuditLog.organization_id == user.organization_id)
     if actor_role:
-        statement = statement.join(User, User.id == AuditLog.actor_user_id).where(User.role == actor_role)
+        statement = statement.join(User, User.id == AuditLog.actor_user_id).where(
+            User.role == normalize_audit_role(actor_role),
+        )
     if entity_type:
         statement = statement.where(AuditLog.entity_type == entity_type)
     if action:

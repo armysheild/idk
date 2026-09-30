@@ -132,6 +132,7 @@ function serializeInput(path: string, input: unknown): unknown {
     telematics_device_identifier: value.telematicsDeviceIdentifier || undefined,
   };
   if (path === "vehicles.update") return {
+    registration_number: value.licensePlate,
     vin: value.vin,
     chassis_number: value.chassisNumber,
     engine_number: value.engineNumber,

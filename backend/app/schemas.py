@@ -717,11 +717,16 @@ class InventoryMovementCreate(InventoryTransactionCreate):
     location_id: int
 
 
-class InventoryMovementRead(InventoryMovementCreate):
+class InventoryMovementRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     organization_id: int
+    part_id: int
+    location_id: int
+    transaction_type: str = Field(pattern="^(receipt|issue|adjustment|transfer)$")
+    quantity: int = Field(ge=0)
+    reference: str | None = None
     created_by: int
     created_at: datetime
 

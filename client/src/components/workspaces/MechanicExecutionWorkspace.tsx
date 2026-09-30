@@ -73,6 +73,25 @@ export function MechanicExecutionWorkspace({
   const [installationLot, setInstallationLot] = useState("");
   const [installationOdometer, setInstallationOdometer] = useState("");
   const [checklist, setChecklist] = useState(createChecklist);
+  const workOrderParts = trpc.inventory.workOrderParts.useQuery(
+    { workOrderId: selectedOrder ?? "" },
+    { enabled: Boolean(selectedOrder), retry: false },
+  );
+  useEffect(() => {
+    const issuedPart = workOrderParts.data?.find(
+      (part: { issuedQuantity?: number; quantity: number; id: number; partId: number }) =>
+        Number(part.issuedQuantity ?? 0) > 0,
+    );
+    if (!issuedPart) {
+      setReservationId(null);
+      setReservationUsageId(null);
+      return;
+    }
+    setReservationPartId(String(issuedPart.partId));
+    setReservationQuantity(String(issuedPart.issuedQuantity ?? issuedPart.quantity));
+    setReservationId(`${issuedPart.partId}:${issuedPart.issuedQuantity ?? issuedPart.quantity}`);
+    setReservationUsageId(issuedPart.id);
+  }, [workOrderParts.data]);
   useEffect(() => {
     try {
       const raw = localStorage.getItem("fleetops:mechanic-execution-draft");
@@ -703,7 +722,7 @@ export function MechanicExecutionWorkspace({
           <h2>Service components</h2>
         </header>
         <div>
-          {components.data?.slice(0, 8).map((item: ServiceComponent) => (
+          {components.data?.map((item: ServiceComponent) => (
             <article key={item.id}>
               <div>
                 <strong>{item.name}</strong>
@@ -712,7 +731,7 @@ export function MechanicExecutionWorkspace({
                   {Number(item.expectedLifeKm).toLocaleString("en-IN")} km
                 </p>
               </div>
-              <b>Ready</b>
+              <b>{item.status ?? "Status unavailable"}</b>
             </article>
           )) ?? (
             <div className="replacement-mechanic-empty">
