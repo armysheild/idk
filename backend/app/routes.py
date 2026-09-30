@@ -1,12 +1,10 @@
-import hashlib
-import hmac
 import base64
 import csv
+import hashlib
+import hmac
 import io
 import json
 import os
-import base64
-import hashlib
 import re
 import secrets
 from html import escape
@@ -19,9 +17,9 @@ from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select, func
+from sqlalchemy import delete, false, select, func
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from .config import get_settings
 from .database import get_db
@@ -198,6 +196,15 @@ WORK_ORDER_REPORT_FIELD_MAPPINGS = {
 }
 
 
+def parse_iso_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def reserve_idempotency_key(request: Request, user: User, database: Session) -> None:
     key = request.headers.get("Idempotency-Key")
     if not key:
@@ -206,6 +213,12 @@ def reserve_idempotency_key(request: Request, user: User, database: Session) -> 
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Idempotency-Key is too long")
     method = request.method.upper()
     path = request.url.path
+    database.execute(
+        delete(IdempotencyRecord).where(
+            IdempotencyRecord.organization_id == user.organization_id,
+            IdempotencyRecord.created_at < utc_now() - timedelta(days=7),
+        )
+    )
     existing = database.scalar(select(IdempotencyRecord).where(
         IdempotencyRecord.organization_id == user.organization_id,
         IdempotencyRecord.user_id == user.id,
@@ -292,8 +305,7 @@ def calculate_monthly_bill(plan: dict, vehicle_count: int) -> dict[str, int]:
 
 
 def organization_slug(name: str, database: Session) -> str:
-    base = "-".join("".join(character.lower() if character.isalnum() else "-" for character in name).split("-"))
-    base = base.strip("-") or "organization"
+    base = re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", name.lower())).strip("-") or "organization"
     slug = base
     suffix = 2
     while database.scalar(select(Organization).where(Organization.slug == slug)) is not None:
@@ -519,7 +531,11 @@ def fleet_operations_summary(
         open_work_orders=sum(order.status not in ("Completed", "Cancelled") for order in work_orders),
         overdue_work_orders=sum(order.status not in ("Completed", "Cancelled") and order.due_date is not None and order.due_date < today for order in work_orders),
         due_components=sum(component.next_service_km is not None and next((vehicle.odometer_km for vehicle in vehicles if vehicle.id == component.vehicle_id), 0) >= component.next_service_km for component in components),
-        compliance_due=sum(document.expires_on <= (date.today() + timedelta(days=30)).isoformat() for document in documents),
+        compliance_due=sum(
+            (expires_on := parse_iso_date(document.expires_on)) is not None
+            and expires_on <= date.today() + timedelta(days=30)
+            for document in documents
+        ),
         low_stock_parts=sum(part.quantity_on_hand <= part.reorder_level for part in parts),
         unassigned_vehicles=sum(vehicle.assigned_driver_id is None for vehicle in vehicles),
     )
@@ -688,7 +704,7 @@ def get_invite_details(
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invitation is invalid or expired")
     organization = database.get(Organization, invitation.organization_id)
     if organization is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invitation belongs to a deleted organization")
     return {
         "email": invitation.email,
         "role": invitation.role,
@@ -775,6 +791,8 @@ def accept_invitation(payload: InvitationAccept, database: Session = Depends(get
     if database.scalar(select(User).where(User.email == invitation.email)) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A user with this email already exists")
     organization = database.get(Organization, invitation.organization_id)
+    if organization is None:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invitation belongs to a deleted organization")
     try:
         supabase_user_id = provision_supabase_user(invitation.email, payload.password, invitation.full_name)
     except ValueError as error:
@@ -1205,7 +1223,6 @@ def list_vehicles(
     limit: int = 20
 ) -> list[Vehicle]:
     # Fixed Bug 5, 11 & 29: Add pagination support with eager loading of driver relationship
-    from sqlalchemy.orm import joinedload
     if limit < 1 or limit > 100:
         limit = 20
     if skip < 0:
@@ -1221,7 +1238,7 @@ def list_vehicles(
             )
         ))
     elif user.role not in ("owner", "fleet_manager"):
-        statement = statement.where(Vehicle.id == -1)
+        statement = statement.where(false())
     vehicles = list(database.scalars(statement.order_by(Vehicle.id.desc()).offset(skip).limit(limit)).all())
     # Populate driver_name from driver relationship for each vehicle
     for vehicle in vehicles:
@@ -1549,7 +1566,7 @@ def list_components(
             )
         ))
     elif user.role not in ("owner", "fleet_manager"):
-        statement = statement.where(VehicleComponent.id == -1)
+        statement = statement.where(false())
     return list(database.scalars(statement.order_by(VehicleComponent.id.desc()).offset(skip).limit(limit)).all())
 
 
@@ -1787,7 +1804,7 @@ def list_work_orders(
     if user.role in ("technician", "mechanic"):
         statement = statement.where(WorkOrder.assigned_user_id == user.id)
     elif user.role not in ("owner", "fleet_manager"):
-        statement = statement.where(WorkOrder.id == -1)
+        statement = statement.where(false())
     return list(database.scalars(statement.order_by(WorkOrder.id.desc()).offset(skip).limit(limit)).all())
 
 
@@ -2242,7 +2259,7 @@ def complete_work_order(
         part = database.scalar(select(Part).where(
             Part.id == part_usage.part_id,
             Part.organization_id == user.organization_id
-        ))
+        ).with_for_update())
         if part and part_usage.quantity > 0:
             if part_usage.inventory_transaction_id is not None:
                 continue
@@ -2667,7 +2684,7 @@ def record_work_order_part(
     part = database.scalar(select(Part).where(
         Part.id == payload.part_id,
         Part.organization_id == user.organization_id,
-    ))
+    ).with_for_update())
     if work_order is None or part is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order or part not found")
     if payload.quantity <= 0:
@@ -3012,7 +3029,10 @@ def create_inventory_movement(
     user: User = Depends(require_permission("inventory")),
     database: Session = Depends(get_db),
 ) -> InventoryMovement:
-    part = database.scalar(select(Part).where(Part.id == payload.part_id, Part.organization_id == user.organization_id))
+    part = database.scalar(select(Part).where(
+        Part.id == payload.part_id,
+        Part.organization_id == user.organization_id,
+    ).with_for_update())
     location = database.scalar(select(StockLocation).where(StockLocation.id == payload.location_id, StockLocation.organization_id == user.organization_id))
     if part is None or location is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part or stock location not found in this organization")
@@ -3054,11 +3074,12 @@ def list_documents(
             select(Vehicle.id).where(Vehicle.assigned_driver_id == user.id)
         ))
     elif user.role not in ("owner", "fleet_manager", "driver"):
-        statement = statement.where(ComplianceDocument.id == -1)
+        statement = statement.where(false())
     documents = list(database.scalars(statement.order_by(ComplianceDocument.expires_on.asc()).offset(skip).limit(limit)).all())
-    today = date.today().isoformat()
+    today = date.today()
     for document in documents:
-        if document.expires_on < today:
+        expires_on = parse_iso_date(document.expires_on)
+        if expires_on is not None and expires_on < today:
             document.status = "Expired"
     return documents
 
@@ -3941,7 +3962,7 @@ def list_expenses(
     skip = max(skip, 0)
     statement = select(Expense).where(Expense.organization_id == user.organization_id)
     if user.role not in ("owner", "accountant"):
-        statement = statement.where(Expense.id == -1)
+        statement = statement.where(false())
     return list(database.scalars(statement.order_by(Expense.incurred_on.desc(), Expense.id.desc()).offset(skip).limit(limit)).all())
 
 
@@ -4128,7 +4149,7 @@ def list_fuel_transactions(user: User = Depends(require_permission("fuel_read"))
             select(Vehicle.id).where(Vehicle.assigned_driver_id == user.id)
         ))
     elif user.role not in {"owner", "fleet_manager", "accountant"}:
-        statement = statement.where(FuelTransaction.id == -1)
+        statement = statement.where(false())
     return list(database.scalars(
         statement.order_by(FuelTransaction.incurred_on.desc(), FuelTransaction.id.desc())
     ).all())
@@ -4995,7 +5016,7 @@ def receive_purchase_order(
     part = database.scalar(select(Part).where(
         Part.id == payload.part_id,
         Part.organization_id == user.organization_id,
-    ))
+    ).with_for_update())
     if part is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part not found in this organization")
     line = database.scalar(select(PurchaseOrderLine).where(
@@ -5737,13 +5758,14 @@ def evaluate_document_expiry(
     ).all())
     
     for doc in documents:
-        if doc.expires_on and doc.expires_on <= horizon.isoformat():
+        expires_on = parse_iso_date(doc.expires_on)
+        if expires_on is not None and expires_on <= horizon:
             expiring_count += 1
             queue_role_notification(
                 database,
                 organization_id=user.organization_id,
                 notification_type="DOCUMENT_EXPIRY",
-                severity="CRITICAL" if date.fromisoformat(doc.expires_on) < date.today() else "HIGH",
+                severity="CRITICAL" if expires_on < date.today() else "HIGH",
                 title=f"Compliance document expiring: {doc.name}",
                 detail=f"Expires on {doc.expires_on}. Required for {doc.vehicle_id or 'organization'}.",
                 entity_type="document",
@@ -7246,7 +7268,10 @@ def return_reserved_part(
     quantity = payload.get("quantity", 1)
     reason = payload.get("reason")
     
-    part = database.get(Part, part_id)
+    part = database.scalar(select(Part).where(
+        Part.id == part_id,
+        Part.organization_id == user.organization_id,
+    ).with_for_update())
     if not part or part.organization_id != user.organization_id:
         raise HTTPException(status_code=404, detail="Part not found")
     
@@ -7872,7 +7897,10 @@ def get_inventory_by_location(
     # Enrich with part details
     result = []
     for part_id, quantity in stock_by_part.items():
-        part = database.get(Part, part_id)
+        part = database.scalar(select(Part).where(
+            Part.id == part_id,
+            Part.organization_id == user.organization_id,
+        ))
         if part:
             result.append({
                 "part_id": part_id,
@@ -10594,7 +10622,10 @@ def get_vendor_pricing_history(
     # Calculate price trends
     price_trends = {}
     for part_id, history in pricing_history.items():
-        part = database.get(Part, part_id)
+        part = database.scalar(select(Part).where(
+            Part.id == part_id,
+            Part.organization_id == user.organization_id,
+        ))
         sorted_history = sorted(history, key=lambda x: x["ordered_at"])
         
         if len(sorted_history) > 1:
@@ -10657,7 +10688,10 @@ def receive_partial_purchase_order(
         variance_reason = item.get("variance_reason")
         location_id = item.get("location_id")
         
-        part = database.get(Part, part_id)
+        part = database.scalar(select(Part).where(
+            Part.id == part_id,
+            Part.organization_id == user.organization_id,
+        ).with_for_update())
         if not part or part.organization_id != user.organization_id:
             continue
         
