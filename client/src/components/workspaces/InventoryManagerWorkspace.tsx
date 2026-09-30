@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertTriangle, ArrowRightLeft, Boxes, Check, ClipboardCheck, Download, PackageMinus, PackageSearch, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { WorkspaceState as State } from "@/components/workspaces/WorkspaceState";
@@ -23,9 +23,17 @@ export function InventoryManagerWorkspace() {
   const [issue, setIssue] = useState({ quantity: "1", reason: "" });
   const [allocation, setAllocation] = useState({ workOrderId: "", partId: "", quantity: "1" });
   const allocationOrders = trpc.inventory.workOrders.useQuery(undefined, { retry: false });
+  const selectedAllocationOrder = (allocationOrders.data ?? []).some(
+    (order: AllocationOrder) => String(order.id) === allocation.workOrderId,
+  );
+  useEffect(() => {
+    if (allocationOrders.data && allocation.workOrderId && !selectedAllocationOrder) {
+      setAllocation((current) => ({ ...current, workOrderId: "", partId: "" }));
+    }
+  }, [allocationOrders.data, allocation.workOrderId, selectedAllocationOrder]);
   const allocationParts = trpc.inventory.workOrderParts.useQuery(
     { workOrderId: allocation.workOrderId },
-    { enabled: Boolean(allocation.workOrderId), retry: false },
+    { enabled: Boolean(allocation.workOrderId && selectedAllocationOrder), retry: false },
   );
   const partRows = parts.data ?? [];
   const movementRows = detail.data?.movements ?? [];
