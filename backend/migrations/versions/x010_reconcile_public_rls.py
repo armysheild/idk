@@ -1,14 +1,14 @@
-"""enable row-level security for public application tables
+"""reconcile public row-level security after the initial enablement migration
 
-Revision ID: x008
-Revises: x007
+Revision ID: x010
+Revises: x009
 """
 
 from alembic import op
 
 
-revision = "x008"
-down_revision = "x007"
+revision = "x010"
+down_revision = "x009"
 branch_labels = None
 depends_on = None
 

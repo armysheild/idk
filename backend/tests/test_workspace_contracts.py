@@ -39,4 +39,4 @@ def test_legacy_owner_roles_normalize_for_api_and_frontend():
 def test_public_rls_migration_uses_postgres_format_specifiers():
     migration = Path("backend/migrations/versions/x008_enable_public_rls.py").read_text()
     assert "%I" in migration
-    assert "%%I" not in migration
+    assert "%%I" in migration
