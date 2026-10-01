@@ -1159,6 +1159,7 @@ class WorkOrderCompleteRequest(BaseModel):
     """Request to complete work on an assigned work order"""
     labor_hours: int | None = Field(default=None, ge=0)
     repair_notes: str | None = None
+    component_id: int | None = Field(default=None, gt=0)
 
 
 class WorkOrderCompleteRead(WorkOrderRead):

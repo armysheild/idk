@@ -168,3 +168,82 @@ def test_part_custody_is_distinct_from_vehicle_installation(tmp_path: Path, monk
         )
         assert removed.status_code == 200, removed.text
         assert removed.json()["status"] == "removed"
+
+
+def test_work_order_completion_resets_component_and_notifies_operations(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    with TestClient(app) as client:
+        signup = client.post("/api/v1/auth/signup", json={
+            "organization_name": "Completion Fleet",
+            "full_name": "Owner",
+            "email": f"owner-{uuid4().hex[:8]}@completion.example",
+            "password": "OwnerPassword!123",
+        })
+        assert signup.status_code == 201
+        owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+        mechanic_headers = _invite(client, owner_headers, f"mechanic-{uuid4().hex[:8]}@completion.example", "mechanic")
+        mechanic_id = client.get("/api/v1/auth/me", headers=mechanic_headers).json()["id"]
+        fleet_headers = _invite(client, owner_headers, f"fleet-{uuid4().hex[:8]}@completion.example", "fleet_manager")
+
+        vehicle = client.post("/api/v1/vehicles", headers=fleet_headers, json={
+            "registration_number": f"CM-{uuid4().hex[:6].upper()}",
+            "model": "Completion Truck",
+            "vehicle_type": "Truck",
+            "depot": "Completion depot",
+            "odometer_km": 12000,
+        })
+        assert vehicle.status_code == 201
+        component = client.post("/api/v1/components", headers=fleet_headers, json={
+            "vehicle_id": vehicle.json()["id"],
+            "name": "Brake service",
+            "component_type": "Brake",
+            "installed_at_km": 10000,
+            "service_interval_km": 10000,
+            "alert_threshold_km": 8000,
+        })
+        assert component.status_code == 201
+        work_order = client.post("/api/v1/work-orders", headers=fleet_headers, json={
+            "vehicle_id": vehicle.json()["id"],
+            "title": "Cooling system inspection",
+            "workstream": "physical_repair",
+            "assigned_user_id": mechanic_id,
+        })
+        assert work_order.status_code == 201
+        order_id = work_order.json()["id"]
+        assert client.post(f"/api/v1/work-orders/{order_id}/start", headers=mechanic_headers).status_code == 200
+        completed = client.post(
+            f"/api/v1/work-orders/{order_id}/complete",
+            headers=mechanic_headers,
+            json={"component_id": component.json()["id"]},
+        )
+        assert completed.status_code == 200
+        assert completed.json()["status"] == "Ready for review"
+
+        refreshed = client.get("/api/v1/components", headers=fleet_headers).json()
+        updated = next(item for item in refreshed if item["id"] == component.json()["id"])
+        assert updated["last_service_km"] == 12000
+        assert updated["next_service_km"] == 22000
+        assert updated["next_alert_km"] == 20000
+        history = client.get(
+            f"/api/v1/components/{component.json()['id']}/service-history",
+            headers=fleet_headers,
+        )
+        assert history.status_code == 200
+        assert history.json()[0]["odometer_km"] == 12000
+
+        fleet_notifications = client.get("/api/v1/notifications", headers=fleet_headers)
+        assert fleet_notifications.status_code == 200
+        assert any(
+            item["notification_type"] == "work_order_completed"
+            and item["entity_id"] == str(order_id)
+            for item in fleet_notifications.json()
+        )
+        owner_notifications = client.get("/api/v1/notifications", headers=owner_headers)
+        assert owner_notifications.status_code == 200
+        assert any(
+            item["notification_type"] == "work_order_completed"
+            and item["entity_id"] == str(order_id)
+            for item in owner_notifications.json()
+        )

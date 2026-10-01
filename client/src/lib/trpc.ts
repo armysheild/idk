@@ -168,6 +168,7 @@ function serializeInput(path: string, input: unknown): unknown {
     due_date: value.dueDate,
     labor_hours: value.laborHours,
     repair_notes: value.repairNotes,
+    component_id: value.componentId,
     items: value.items,
   };
   if (path === "driver.createInspection") return {
