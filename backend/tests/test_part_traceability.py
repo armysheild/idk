@@ -247,3 +247,60 @@ def test_work_order_completion_resets_component_and_notifies_operations(tmp_path
             and item["entity_id"] == str(order_id)
             for item in owner_notifications.json()
         )
+
+
+def test_component_update_persists_lifecycle_notes(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    with TestClient(app) as client:
+        signup = client.post("/api/v1/auth/signup", json={
+            "organization_name": "Component Edit Fleet",
+            "full_name": "Owner",
+            "email": f"owner-{uuid4().hex[:8]}@component-edit.example",
+            "password": "OwnerPassword!123",
+        })
+        assert signup.status_code == 201
+        owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+        fleet_headers = _invite(client, owner_headers, f"fleet-{uuid4().hex[:8]}@component-edit.example", "fleet_manager")
+
+        vehicle = client.post("/api/v1/vehicles", headers=fleet_headers, json={
+            "registration_number": f"CE-{uuid4().hex[:6].upper()}",
+            "model": "Component Edit Truck",
+            "vehicle_type": "Truck",
+            "depot": "Component edit depot",
+            "odometer_km": 60000,
+        })
+        assert vehicle.status_code == 201
+        component = client.post("/api/v1/components", headers=fleet_headers, json={
+            "vehicle_id": vehicle.json()["id"],
+            "name": "Brake inspection",
+            "component_type": "Brake",
+            "installed_at_km": 60000,
+            "service_interval_km": 60000,
+            "alert_threshold_km": 40000,
+            "notes": "Original lifecycle baseline",
+        })
+        assert component.status_code == 201
+
+        updated = client.patch(
+            f"/api/v1/components/{component.json()['id']}",
+            headers=fleet_headers,
+            json={
+                "vehicle_id": vehicle.json()["id"],
+                "name": "Brake inspection",
+                "component_type": "Brake",
+                "installed_at_km": 60000,
+                "last_service_km": 60000,
+                "service_interval_km": 60000,
+                "alert_threshold_km": 40000,
+                "notes": "Updated lifecycle baseline",
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["notes"] == "Updated lifecycle baseline"
+
+        refreshed = client.get("/api/v1/components", headers=fleet_headers)
+        assert refreshed.status_code == 200
+        saved = next(item for item in refreshed.json() if item["id"] == component.json()["id"])
+        assert saved["notes"] == "Updated lifecycle baseline"
