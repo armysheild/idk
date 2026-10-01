@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./src/components/RoleWorkspaces.tsx", import.meta.url), "utf8");
 const detailSource = readFileSync(new URL("./src/components/workspaces/InventoryManagerWorkspace.tsx", import.meta.url), "utf8");
+const transportSource = readFileSync(new URL("./src/lib/trpc.ts", import.meta.url), "utf8");
 
 describe("Inventory Manager part detail UI", () => {
   it("renders a tenant-scoped detail surface with reserved and available balances", () => {
@@ -41,5 +42,13 @@ describe("Inventory Manager part detail UI", () => {
     expect(detailSource).toContain("const selectedAllocationOrder = (allocationOrders.data ?? []).some(");
     expect(detailSource).toContain("setAllocation((current) => ({ ...current, workOrderId: \"\", partId: \"\" }))");
     expect(detailSource).toContain("enabled: Boolean(allocation.workOrderId && selectedAllocationOrder)");
+  });
+
+  it("serializes work-order allocation fields before the generic work-order payload", () => {
+    const allocation = transportSource.indexOf('if (path === "workOrders.allocatePart") return');
+    const genericWorkOrder = transportSource.indexOf('if (path.startsWith("workOrders.")) return');
+    expect(allocation).toBeGreaterThanOrEqual(0);
+    expect(genericWorkOrder).toBeGreaterThan(allocation);
+    expect(transportSource).toContain("part_id: value.partId");
   });
 });

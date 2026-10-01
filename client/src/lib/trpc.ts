@@ -153,6 +153,10 @@ function serializeInput(path: string, input: unknown): unknown {
     quantity: value.quantity,
     installed_odometer_km: value.installedOdometerKm,
   };
+  if (path === "workOrders.allocatePart") return {
+    part_id: value.partId,
+    quantity: value.quantity,
+  };
   if (path.startsWith("workOrders.")) return {
     vehicle_id: value.vehicleId,
     title: value.title,
@@ -348,10 +352,6 @@ function serializeInput(path: string, input: unknown): unknown {
     part_id: value.partId,
     quantity: value.quantity,
     reason: value.reason,
-  };
-  if (path === "workOrders.allocatePart") return {
-    part_id: value.partId,
-    quantity: value.quantity,
   };
   if (path === "workOrders.issuePart") return {
     work_order_part_usage_id: value.workOrderPartUsageId,
