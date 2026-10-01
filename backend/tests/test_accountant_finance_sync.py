@@ -154,7 +154,25 @@ def test_work_order_status_update_creates_maintenance_ledger_record(tmp_path: Pa
             database.get(WorkOrder, order_id).labor_hours = 2
             database.commit()
 
+        checklist = client.put(
+            f"/api/v1/work-orders/{order_id}/checklist",
+            headers=mechanic_headers,
+            json={"items": [{"title": "Inspect repair", "completed": False}]},
+        )
+        assert checklist.status_code == 200
         assert client.post(f"/api/v1/work-orders/{order_id}/start", headers=mechanic_headers).status_code == 200
+        updated = client.patch(
+            f"/api/v1/work-orders/{order_id}",
+            headers=mechanic_headers,
+            json={"status": "Ready for review"},
+        )
+        assert updated.status_code == 409
+        checklist = client.put(
+            f"/api/v1/work-orders/{order_id}/checklist",
+            headers=mechanic_headers,
+            json={"items": [{"title": "Inspect repair", "completed": True}]},
+        )
+        assert checklist.status_code == 200
         updated = client.patch(
             f"/api/v1/work-orders/{order_id}",
             headers=mechanic_headers,
