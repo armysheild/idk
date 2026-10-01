@@ -9,4 +9,8 @@ describe("authenticated tRPC transport", () => {
     expect(source).toContain("Authorization: `Bearer ${token}`");
     expect(source).toContain("refreshSession");
   });
+
+  it("preserves valid new-account sessions while dashboard onboarding is unresolved", () => {
+    expect(source).toContain('inputPath !== "dashboard.summary"');
+  });
 });

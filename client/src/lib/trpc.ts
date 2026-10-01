@@ -450,7 +450,7 @@ async function request(path: string, input?: unknown, method = "GET", inputPath 
       token = refreshedToken;
       response = await send(token);
     }
-    if (response.status === 401) await expireSession();
+    if (response.status === 401 && inputPath !== "dashboard.summary") await expireSession();
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null);

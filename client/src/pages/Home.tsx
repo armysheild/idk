@@ -134,6 +134,7 @@ export default function Home({ initialSection = "Command center", publicMode = "
   }, []);
   const sessionUserId = session?.user.id ?? "";
   const priorSessionUserId = useRef(sessionUserId);
+  const metadataNeedsOnboarding = session?.user.user_metadata?.needsOnboarding === true || session?.user.user_metadata?.needsOnboarding === "true";
   const summaryQuery = trpc.dashboard.summary.useQuery(undefined, {
     enabled: Boolean(session) && initialSummary === undefined,
     retry: false,
@@ -144,7 +145,7 @@ export default function Home({ initialSection = "Command center", publicMode = "
   const backendSummary = sessionChanged
     ? undefined
     : initialSummary ?? summaryQuery.data;
-  const { isLoading: summaryLoading, isError: summaryError, refetch: refetchSummary } = summaryQuery;
+  const { isLoading: summaryLoading, isError: summaryError, error: summaryQueryError, refetch: refetchSummary } = summaryQuery;
   const backendRole = String(backendSummary?.role ?? "");
   const organizationName = String(backendSummary?.org?.name ?? session?.user.user_metadata?.orgName ?? "").trim();
   const organizationLabel = organizationName || "Loading organization…";
@@ -306,7 +307,7 @@ export default function Home({ initialSection = "Command center", publicMode = "
   const operatorInitials = operatorName.slice(0, 2).toUpperCase();
 
   if (session && isRecoveryFlow) return <PublicAuthSurface view="update" email={authEmail} password={authPassword} fullName={authFullName} recoveryPassword={recoveryPassword} error={authError} submitting={authSubmitting} onEmail={setAuthEmail} onPassword={setAuthPassword} onFullName={setAuthFullName} onRecoveryPassword={setRecoveryPassword} onSubmit={handlePasswordUpdate} />;
-  if (session && backendSummary?.needsOnboarding) return <OrganizationOnboarding initialName={String(session.user.user_metadata?.fullName ?? backendSummary?.org?.name ?? "")} initialOrganization={String(session.user.user_metadata?.orgName ?? "")} onComplete={async () => { const { error } = await refreshSession(); if (error) { toast.error("Session refresh failed", { description: error.message }); return; } window.localStorage.setItem(onboardingCompletionKey(session.user.id), "1"); window.localStorage.setItem("fleetops.openTeam", "1"); await refetchSummary(); }} />;
+  if (session && (backendSummary?.needsOnboarding || (metadataNeedsOnboarding && summaryQueryError?.data?.code === "UNAUTHORIZED"))) return <OrganizationOnboarding initialName={String(session.user.user_metadata?.fullName ?? backendSummary?.org?.name ?? "")} initialOrganization={String(session.user.user_metadata?.orgName ?? "")} onComplete={async () => { const { error } = await refreshSession(); if (error) { toast.error("Session refresh failed", { description: error.message }); return; } window.localStorage.setItem(onboardingCompletionKey(session.user.id), "1"); window.localStorage.setItem("fleetops.openTeam", "1"); await refetchSummary(); }} />;
   if (session && sessionTransition) return <main className="auth-page"><section className="auth-card"><div className="panel-kicker">VahanSync connection</div><h1>Securing your role workspace.</h1><p>We are clearing the previous session context before opening data for this authenticated account.</p><div className="workspace-state"><RefreshCw className="spin" size={18} /> Connecting to the assigned organization…</div></section></main>;
   if (session && !backendSummary && summaryError) return <main className="auth-page"><section className="auth-card"><div className="panel-kicker">VahanSync connection</div><h1>We could not load your workspace.</h1><p>Your Supabase session is active, but the organization summary did not respond. Retry the request without leaving your secure session.</p><button className="primary-button" onClick={() => { void refetchSummary(); }}>Retry workspace load</button></section></main>;
   if (session && !backendSummary && summaryLoading) return <main className="auth-page"><section className="auth-card"><div className="panel-kicker">VahanSync connection</div><h1>Loading your workspace.</h1><p>We are checking your organization and role before opening operational data.</p><div className="workspace-state"><RefreshCw className="spin" size={18} /> Connecting to Supabase…</div></section></main>;
