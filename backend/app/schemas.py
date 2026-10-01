@@ -741,12 +741,21 @@ class DocumentCreate(BaseModel):
     status: str = "Valid"
 
 
+class DocumentVehicleRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    registration_number: str
+    vin: str | None = None
+
+
 class DocumentRead(DocumentCreate):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     organization_id: int
     created_at: datetime
+    vehicle: DocumentVehicleRead | None = None
 
 
 class DocumentAssetRead(BaseModel):
