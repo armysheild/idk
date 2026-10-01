@@ -2107,10 +2107,24 @@ def update_work_order(
         elif changes["status"] == "Archived":
             work_order.archived_at = transitioned_at
     if previous_status != "Ready for review" and changes.get("status") == "Ready for review":
+        checklist = database.scalars(select(WorkOrderChecklistItem).where(
+            WorkOrderChecklistItem.organization_id == user.organization_id,
+            WorkOrderChecklistItem.work_order_id == work_order.id,
+        )).all()
+        if checklist and any(not item.completed for item in checklist):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Complete every checklist item before completing the work order",
+            )
         part_usages = database.scalars(select(WorkOrderPartUsage).where(
             WorkOrderPartUsage.work_order_id == work_order.id,
             WorkOrderPartUsage.organization_id == user.organization_id,
         )).all()
+        if any(part_usage.inventory_transaction_id is None for part_usage in part_usages):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Issue every reserved part before completing the work order",
+            )
         organization = database.get(Organization, user.organization_id)
         parts_cost_paise = sum(
             part_usage.quantity * part_usage.unit_cost_paise
