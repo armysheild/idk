@@ -80,13 +80,12 @@ const navItems = [
   { label: "P&L analytics", icon: TrendingUp },
   { label: "Billing", icon: IndianRupee },
   { label: "Team", icon: Users },
-  { label: "Profile", icon: UserRound },
 ];
 
 const navGroups = [
   { label: "Command", items: ["Command center", "Fleet manager workspace", "Inventory manager workspace", "Mechanic workspace", "Technician workspace", "Driver portal", "Accountant ledger"] },
   { label: "Operations", items: ["Vehicles", "Components", "Work orders", "Telematics", "Inventory", "Vendors", "Purchase orders", "Compliance vault"] },
-  { label: "Control", items: ["Notifications", "P&L analytics", "Billing", "Team", "Profile"] },
+  { label: "Control", items: ["Notifications", "P&L analytics", "Billing", "Team"] },
 ];
 
 const roleDescriptor: Record<string, string> = {
@@ -292,7 +291,12 @@ export default function Home({ initialSection = "Command center", publicMode = "
       ...(backendRole === "SUPERADMIN" ? (liveFinancials ?? []).filter((record: any) => `${record.category} ${record.vendor ?? ""} ${record.invoiceNumber ?? ""} ${record.amount}`.toLowerCase().includes(term)).map((record: any) => ({ type: "Financial record", id: record.id, title: `${record.type} · ${record.category}`, detail: `₹${Number(record.amount).toLocaleString("en-IN")} · ${record.invoiceNumber ?? "No invoice"}` })) : []),
     ].slice(0, 8);
   }, [persistedVehicles, persistedOrders, liveInventory, liveFinancials, backendRole, query]);
-  const vehicleCount = Number(backendSummary?.fleetOverview?.totalVehicles ?? liveVehicles?.length ?? 0);
+  const vehicleCount = Number(
+    backendSummary?.org?.vehicleCount ??
+      backendSummary?.fleetOverview?.totalVehicles ??
+      liveVehicles?.length ??
+      0,
+  );
   const activeVehicleCount = Number(backendSummary?.fleetOverview?.activeVehicles ?? liveVehicles?.filter((vehicle: any) => vehicle.status === "ACTIVE").length ?? 0);
   const activeWorkOrderCount = Number(backendSummary?.workOrders?.active ?? 0);
   const totalWorkOrderCount = Number(backendSummary?.workOrders?.total ?? persistedOrders.length);

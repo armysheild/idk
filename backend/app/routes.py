@@ -6866,6 +6866,9 @@ def get_dashboard_summary(
         raise HTTPException(status_code=404, detail="Organization not found")
 
     if user.role not in {"owner", "fleet_manager"}:
+        organization_vehicle_count = database.scalar(
+            select(func.count(Vehicle.id)).where(Vehicle.organization_id == org.id)
+        ) or 0
         assigned_vehicle_ids = select(Vehicle.id).where(
             Vehicle.organization_id == org.id,
             Vehicle.assigned_driver_id == user.id,
@@ -6911,7 +6914,11 @@ def get_dashboard_summary(
             "organization_id": org.id,
             "organization_name": org.name,
             "role": presentation_role(user.role),
-            "org": {"id": org.id, "name": org.name},
+            "org": {
+                "id": org.id,
+                "name": org.name,
+                "vehicle_count": organization_vehicle_count,
+            },
             "needs_onboarding": False,
             "fleet_overview": {
                 "total_vehicles": scoped_vehicle_count,
@@ -7055,7 +7062,11 @@ def get_dashboard_summary(
         "organization_id": org.id,
         "organization_name": org.name,
         "role": presentation_role(user.role),
-        "org": {"id": org.id, "name": org.name},
+        "org": {
+            "id": org.id,
+            "name": org.name,
+            "vehicle_count": vehicle_count,
+        },
         "needs_onboarding": False,
         "fleet_overview": {
             "total_vehicles": vehicle_count,
