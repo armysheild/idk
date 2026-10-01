@@ -131,6 +131,7 @@ from .schemas import (
     VendorRead,
     VendorUpdate,
     WorkOrderCreate,
+    WorkOrderCompleteRequest,
     WorkOrderChecklistItemRead,
     WorkOrderChecklistUpdate,
     WorkOrderEvidenceRead,
@@ -2263,10 +2264,72 @@ def start_work_order(
     return work_order
 
 
+def reset_component_lifecycle_for_work_order(
+    work_order: WorkOrder,
+    user: User,
+    vehicle: Vehicle,
+    database: Session,
+    component_id: int | None = None,
+) -> VehicleComponent | None:
+    components = list(database.scalars(select(VehicleComponent).where(
+        VehicleComponent.organization_id == user.organization_id,
+        VehicleComponent.vehicle_id == work_order.vehicle_id,
+        VehicleComponent.status != "Removed",
+    )).all())
+    if component_id is not None:
+        components = [component for component in components if component.id == component_id]
+        if len(components) != 1:
+            return None
+        matching = components
+    else:
+        matching = []
+    if not components:
+        return None
+    if component_id is None:
+        search_text = f"{work_order.title} {work_order.description or ''}".casefold()
+        matching = [component for component in components if component.name.casefold() in search_text]
+    if component_id is None and len(matching) != 1:
+        part_ids = set(database.scalars(select(WorkOrderPartUsage.part_id).where(
+            WorkOrderPartUsage.organization_id == user.organization_id,
+            WorkOrderPartUsage.work_order_id == work_order.id,
+        )).all())
+        matching = [
+            component for component in components
+            if component.inventory_part_id is not None and component.inventory_part_id in part_ids
+        ]
+    if len(matching) != 1:
+        return None
+    component = matching[0]
+    service_odometer = vehicle.odometer_km
+    component.last_service_km = service_odometer
+    component.next_service_km = (
+        service_odometer + component.service_interval_km
+        if component.service_interval_km is not None
+        else None
+    )
+    component.next_alert_km = (
+        service_odometer + component.alert_threshold_km
+        if component.alert_threshold_km is not None
+        else component.next_service_km
+    )
+    component.status = "Healthy"
+    database.add(ComponentServiceRecord(
+        organization_id=user.organization_id,
+        component_id=component.id,
+        vehicle_id=vehicle.id,
+        odometer_km=service_odometer,
+        service_type="service",
+        notes=f"Completed through work order #{work_order.id}",
+        performed_by=user.id,
+    ))
+    return component
+
+
 @router.post("/work-orders/{work_order_id}/complete", response_model=WorkOrderRead)
 def complete_work_order(
     work_order_id: int,
     request: Request,
+    payload: WorkOrderCompleteRequest | None = None,
     user: User = Depends(require_roles("mechanic", "technician")),
     database: Session = Depends(get_db),
 ) -> WorkOrder:
@@ -2294,6 +2357,18 @@ def complete_work_order(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Complete every checklist item before completing the work order")
     work_order.status = "Ready for review"
     work_order.completed_at = utc_now()
+    vehicle = database.scalar(select(Vehicle).where(
+        Vehicle.id == work_order.vehicle_id,
+        Vehicle.organization_id == user.organization_id,
+    ))
+    if vehicle is not None:
+        reset_component_lifecycle_for_work_order(
+            work_order,
+            user,
+            vehicle,
+            database,
+            payload.component_id if payload is not None else None,
+        )
     
     # Deduct reserved parts when the repair is completed.
     part_usages = database.scalars(select(WorkOrderPartUsage).where(
@@ -2339,6 +2414,21 @@ def complete_work_order(
         entity_id=str(work_order.id),
         request_id=request.headers.get("x-request-id", str(uuid4())),
     ))
+    queue_role_notification(
+        database,
+        organization_id=user.organization_id,
+        notification_type="work_order_completed",
+        severity="info",
+        title=f"Work order ready for review: {work_order.title}",
+        detail=(
+            f"Work order #{work_order.id} for {vehicle.registration_number if vehicle is not None else 'vehicle'} "
+            "was submitted by the assigned workshop user and is ready for review."
+        ),
+        entity_type="work_order",
+        entity_id=str(work_order.id),
+        roles={"owner", "fleet_manager"},
+        dedupe_key=f"work_order_completed:{work_order.id}",
+    )
     database.commit()
     database.refresh(work_order)
     return work_order

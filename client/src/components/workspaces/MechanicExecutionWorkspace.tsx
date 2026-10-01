@@ -55,6 +55,7 @@ export function MechanicExecutionWorkspace({
   const [selectedOrder, setSelectedOrder] = useState<string | null>(null);
   const [laborHours, setLaborHours] = useState("0");
   const [repairNotes, setRepairNotes] = useState("");
+  const [componentId, setComponentId] = useState("");
   const [draftHydrated, setDraftHydrated] = useState(false);
   const [draftStatus, setDraftStatus] = useState<"saved" | "offline">("saved");
   const [evidence, setEvidence] = useState<
@@ -100,6 +101,7 @@ export function MechanicExecutionWorkspace({
         setSelectedOrder(draft.selectedOrder ?? null);
         setLaborHours(draft.laborHours ?? "0");
         setRepairNotes(draft.repairNotes ?? "");
+        setComponentId(draft.componentId ?? "");
         setEvidence(draft.evidence ?? []);
         setChecklist(
           Array.isArray(draft.checklist) && draft.checklist.length
@@ -142,6 +144,7 @@ export function MechanicExecutionWorkspace({
         selectedOrder,
         laborHours,
         repairNotes,
+        componentId,
         evidence,
         checklist,
       }),
@@ -152,6 +155,7 @@ export function MechanicExecutionWorkspace({
     selectedOrder,
     laborHours,
     repairNotes,
+    componentId,
     evidence,
     checklist,
   ]);
@@ -220,6 +224,7 @@ export function MechanicExecutionWorkspace({
       setSelectedOrder(null);
       setLaborHours("0");
       setRepairNotes("");
+      setComponentId("");
       setEvidence([]);
       setChecklist(createChecklist());
       localStorage.removeItem("fleetops:mechanic-execution-draft");
@@ -250,6 +255,7 @@ export function MechanicExecutionWorkspace({
         expectedUpdatedAt: selected.updatedAt,
         laborHours: Number(laborHours),
         repairNotes,
+        componentId: componentId ? Number(componentId) : undefined,
         evidence,
       });
     } catch {
@@ -527,6 +533,22 @@ export function MechanicExecutionWorkspace({
                   onChange={(event) => setRepairNotes(event.target.value)}
                   placeholder={roleCopy.notesPlaceholder}
                 />
+              </label>
+              <label>
+                Serviced component
+                <select
+                  value={componentId}
+                  onChange={(event) => setComponentId(event.target.value)}
+                >
+                  <option value="">Use unambiguous work-order match</option>
+                  {(components.data ?? [])
+                    .filter((item: ServiceComponent) => item.vehicleId === selected.vehicleId)
+                    .map((item: ServiceComponent) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                </select>
               </label>
               <small className="workspace-draft-status">
                 {draftStatus === "offline"
