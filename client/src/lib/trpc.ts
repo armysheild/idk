@@ -110,6 +110,7 @@ function purchaseOrderStatus(value: unknown): string {
 function serializeInput(path: string, input: unknown): unknown {
   if (!input || typeof input !== "object" || Array.isArray(input)) return input;
   const value = input as Record<string, unknown>;
+  if (path === "workOrders.approve") return {};
   const priority = typeof value.priority === "string"
     ? value.priority.charAt(0) + value.priority.slice(1).toLowerCase()
     : value.priority;
@@ -640,6 +641,7 @@ function mutationPath(path: string, input: unknown) {
   if (path === "team.revokeInvitation" && value?.id) return `/api/v1/invitations/${value.id}/revoke`;
   if (path === "team.resendInvitation" && value?.id) return `/api/v1/invitations/${value.id}/resend`;
   if (path === "workOrders.assign" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/assign`;
+  if (path === "workOrders.approve" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/approve`;
   if (path === "workOrders.allocatePart" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/parts`;
   if (path === "workOrders.bulkUpdate") return "/api/v1/work-orders/bulk-update";
   if (path === "workOrders.updateChecklist" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/checklist`;
@@ -674,7 +676,9 @@ function mutationPath(path: string, input: unknown) {
   if (path.includes("documents.archive") && value?.documentId) return `/api/v1/documents/${value.documentId}`;
   if (path.includes("startWork") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/start`;
   if (path.includes("complete") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/complete`;
-  if (path.includes("approve") && value?.id) return `/api/v1/work-orders/${value.id}/approve`;
+  if (path.includes("approve") && (value?.id ?? value?.workOrderId)) {
+    return `/api/v1/work-orders/${value.id ?? value.workOrderId}/approve`;
+  }
   if (path.includes("assignVehicle") && value?.vehicleId) return `/api/v1/vehicles/${value.vehicleId}/assign-driver`;
   if (path.includes("markRead") && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}`;
   if (path.includes("resolve") && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}/resolve`;

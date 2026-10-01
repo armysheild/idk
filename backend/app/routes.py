@@ -2438,7 +2438,7 @@ def complete_work_order(
 def approve_work_order(
     work_order_id: int,
     request: Request,
-    user: User = Depends(require_roles("owner")),
+    user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> WorkOrder:
     reserve_idempotency_key(request, user, database)
