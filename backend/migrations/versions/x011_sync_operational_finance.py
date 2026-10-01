@@ -107,7 +107,7 @@ def upgrade() -> None:
         existing.add(source_key)
 
     for work_order in bind.execute(sa.select(work_orders)).mappings():
-        if work_order.status not in {"Ready for review", "Completed", "Closed"}:
+        if work_order.status not in {"Ready for review", "Completed", "Closed", "Archived"}:
             continue
         source_key = f"work_order:{work_order.id}"
         if source_key in existing:

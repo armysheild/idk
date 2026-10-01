@@ -2107,6 +2107,11 @@ def update_work_order(
         elif changes["status"] == "Archived":
             work_order.archived_at = transitioned_at
     if previous_status != "Ready for review" and changes.get("status") == "Ready for review":
+        if previous_status != "In progress":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Only in-progress work orders can be submitted for review",
+            )
         checklist = database.scalars(select(WorkOrderChecklistItem).where(
             WorkOrderChecklistItem.organization_id == user.organization_id,
             WorkOrderChecklistItem.work_order_id == work_order.id,
@@ -2125,27 +2130,7 @@ def update_work_order(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Issue every reserved part before completing the work order",
             )
-        organization = database.get(Organization, user.organization_id)
-        parts_cost_paise = sum(
-            part_usage.quantity * part_usage.unit_cost_paise
-            for part_usage in part_usages
-        )
-        labor_cost_paise = (
-            (work_order.labor_hours or 0)
-            * (organization.labor_rate_per_hour if organization else 0)
-            * 100
-        )
-        _ensure_operational_expense(
-            database,
-            organization_id=user.organization_id,
-            vehicle_id=work_order.vehicle_id,
-            category="MAINTENANCE",
-            description=f"Work order #{work_order.id}: {work_order.title}",
-            amount_paise=parts_cost_paise + labor_cost_paise,
-            incurred_on=(work_order.completed_at or utc_now()).date().isoformat(),
-            created_by=user.id,
-            source_key=f"work_order:{work_order.id}",
-        )
+        _sync_work_order_expense(database, work_order, user)
     database.add(AuditLog(
         organization_id=user.organization_id,
         actor_user_id=user.id,
@@ -2452,25 +2437,7 @@ def complete_work_order(
         if payload is not None and payload.labor_hours is not None
         else work_order.labor_hours
     )
-    organization = database.get(Organization, user.organization_id)
-    parts_cost_paise = sum(
-        part_usage.quantity * part_usage.unit_cost_paise
-        for part_usage in part_usages
-    )
-    labor_cost_paise = (
-        (work_order.labor_hours or 0) * (organization.labor_rate_per_hour if organization else 0) * 100
-    )
-    _ensure_operational_expense(
-        database,
-        organization_id=user.organization_id,
-        vehicle_id=work_order.vehicle_id,
-        category="MAINTENANCE",
-        description=f"Work order #{work_order.id}: {work_order.title}",
-        amount_paise=parts_cost_paise + labor_cost_paise,
-        incurred_on=(work_order.completed_at or utc_now()).date().isoformat(),
-        created_by=user.id,
-        source_key=f"work_order:{work_order.id}",
-    )
+    _sync_work_order_expense(database, work_order, user)
     
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -2931,6 +2898,8 @@ def record_work_order_part(
         request_id=request.headers.get("x-request-id", str(uuid4())),
         changes=json.dumps({"part_id": part.id, "quantity": payload.quantity}),
     ))
+    if work_order.status in {"Ready for review", "Completed", "Closed"}:
+        _sync_work_order_expense(database, work_order, user)
     database.commit()
     database.refresh(usage)
     return usage
@@ -4206,13 +4175,50 @@ def _ensure_operational_expense(
             created_by=created_by,
         )
         database.add(expense)
-    elif expense.status != "Rejected":
+    elif expense.status == "Rejected":
+        expense.vehicle_id = vehicle_id
+        expense.amount_paise = amount_paise
+        expense.incurred_on = incurred_on
+        expense.vendor = vendor
+        expense.description = description
+        expense.status = "Pending"
+        expense.approved_by = None
+        expense.approved_at = None
+    else:
         expense.vehicle_id = vehicle_id
         expense.amount_paise = amount_paise
         expense.incurred_on = incurred_on
         expense.vendor = vendor
         expense.description = description
     return expense
+
+
+def _sync_work_order_expense(database: Session, work_order: WorkOrder, user: User) -> Expense | None:
+    part_usages = database.scalars(select(WorkOrderPartUsage).where(
+        WorkOrderPartUsage.work_order_id == work_order.id,
+        WorkOrderPartUsage.organization_id == user.organization_id,
+    )).all()
+    organization = database.get(Organization, user.organization_id)
+    parts_cost_paise = sum(
+        part_usage.quantity * part_usage.unit_cost_paise
+        for part_usage in part_usages
+    )
+    labor_cost_paise = (
+        (work_order.labor_hours or 0)
+        * (organization.labor_rate_per_hour if organization else 0)
+        * 100
+    )
+    return _ensure_operational_expense(
+        database,
+        organization_id=user.organization_id,
+        vehicle_id=work_order.vehicle_id,
+        category="MAINTENANCE",
+        description=f"Work order #{work_order.id}: {work_order.title}",
+        amount_paise=parts_cost_paise + labor_cost_paise,
+        incurred_on=(work_order.completed_at or utc_now()).date().isoformat(),
+        created_by=user.id,
+        source_key=f"work_order:{work_order.id}",
+    )
 
 
 @router.post("/expenses", response_model=ExpenseRead, status_code=status.HTTP_201_CREATED)
@@ -4223,6 +4229,11 @@ def create_expense(
     database: Session = Depends(get_db),
 ) -> Expense:
     reserve_idempotency_key(request, user, database)
+    if payload.cost_center and payload.cost_center.startswith(("fuel_transaction:", "work_order:")):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Operational ledger source markers are reserved for system-generated expenses",
+        )
     if payload.vehicle_id is not None:
         vehicle = database.scalar(select(Vehicle).where(Vehicle.id == payload.vehicle_id, Vehicle.organization_id == user.organization_id))
         if vehicle is None:
@@ -4367,6 +4378,8 @@ def finance_summary(user: User = Depends(require_permission("finance_read")), da
     totals: dict[str, dict[str, int]] = {}
     expenses = database.scalars(select(Expense).where(Expense.organization_id == user.organization_id)).all()
     for expense in expenses:
+        if expense.status == "Rejected":
+            continue
         period = expense.incurred_on[:7]
         bucket = totals.setdefault(period, {"expense": 0, "fuel": 0, "toll": 0, "gst": 0})
         if not (expense.category.upper() == "FUEL" and (expense.cost_center or "").startswith("fuel_transaction:")):
@@ -7603,6 +7616,9 @@ def return_reserved_part(
         database.delete(part_usage)
     else:
         database.add(part_usage)
+
+    if work_order.status in {"Ready for review", "Completed", "Closed"}:
+        _sync_work_order_expense(database, work_order, user)
     
     database.commit()
     

@@ -101,6 +101,16 @@ def test_fuel_logs_create_accountant_ledger_records(tmp_path: Path, monkeypatch)
         assert metrics.json()["rows"][0]["revenue"] == 100
         assert metrics.json()["rows"][0]["profit"] == -4100
 
+        reserved_marker = client.post("/api/v1/expenses", headers=accountant_headers, json={
+            "vehicle_id": vehicle.json()["id"],
+            "category": "OTHER_EXPENSE",
+            "description": "Attempted source marker",
+            "amount_paise": 100,
+            "incurred_on": "2026-10-01",
+            "cost_center": "work_order:999999",
+        })
+        assert reserved_marker.status_code == 422
+
         reconciliation = client.get("/api/v1/financials/reconciliation", headers=accountant_headers)
         assert reconciliation.status_code == 200
         assert reconciliation.json()["mismatches"] == []
@@ -154,6 +164,12 @@ def test_work_order_status_update_creates_maintenance_ledger_record(tmp_path: Pa
             database.get(WorkOrder, order_id).labor_hours = 2
             database.commit()
 
+        unstarted = client.patch(
+            f"/api/v1/work-orders/{order_id}",
+            headers=mechanic_headers,
+            json={"status": "Ready for review"},
+        )
+        assert unstarted.status_code == 409
         checklist = client.put(
             f"/api/v1/work-orders/{order_id}/checklist",
             headers=mechanic_headers,
