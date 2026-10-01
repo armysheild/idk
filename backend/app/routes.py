@@ -10766,6 +10766,8 @@ def get_vendor_pricing_history(
                 pricing_history[part.id].append({
                     "purchase_order_id": po.id,
                     "order_number": po.order_number,
+                    "sku": part.sku,
+                    "part_name": part.name,
                     "unit_cost_paise": line.unit_cost_paise,
                     "unit_cost": line.unit_cost_paise / 100.0,
                     "quantity": line.quantity,
@@ -10800,11 +10802,42 @@ def get_vendor_pricing_history(
                 "price_change_percent": round(price_change_pct, 2),
             }
     
+    rows = [
+        {
+            "id": f"{po_id}-{part_id}",
+            "part": {
+                "name": entry["part_name"],
+                "sku": entry["sku"],
+            },
+            "part_id": part_id,
+            "purchase_order_id": po_id,
+            "unit_cost": entry["unit_cost"],
+            "quantity": entry["quantity"],
+        }
+        for part_id, history in pricing_history.items()
+        for entry in history
+        for po_id in [entry["purchase_order_id"]]
+    ]
+    all_history = [entry for history in pricing_history.values() for entry in history]
     return {
         "vendor_id": vendor_id,
         "vendor_name": vendor.name,
+        "vendor": {"name": vendor.name},
         "total_parts": len(pricing_history),
         "total_purchase_orders": len(po_list),
+        "average_unit_cost": (
+            sum(entry["unit_cost"] for entry in all_history) / len(all_history)
+            if all_history else None
+        ),
+        "supplied_parts": [
+            {"sku": sku, "name": trend["part_name"]}
+            for sku, trend in price_trends.items()
+        ],
+        "purchase_history": [
+            {"id": po.id, "order_number": po.order_number}
+            for po in po_list
+        ],
+        "rows": rows,
         "price_trends": price_trends,
         "full_history": pricing_history,
     }

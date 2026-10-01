@@ -307,7 +307,9 @@ export function ProcurementWorkspace() {
               <span>Vendor intelligence</span>
               <h2>
                 Pricing history ·{" "}
-                {pricingHistory.data?.vendor.name ?? "Selected vendor"}
+                {pricingHistory.data?.vendor?.name ??
+                  pricingHistory.data?.vendorName ??
+                  "Selected vendor"}
               </h2>
             </div>
             <b>
