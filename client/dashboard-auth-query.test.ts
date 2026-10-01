@@ -19,6 +19,13 @@ describe("dashboard auth query gating", () => {
     expect(home).toContain("refetchOnReconnect: false");
   });
 
+  it("resolves onboarding from the persisted organization summary", () => {
+    expect(home).toContain("enabled: Boolean(session) && initialSummary === undefined");
+    expect(home).toContain("if (session && backendSummary?.needsOnboarding)");
+    expect(home).not.toContain("metadataNeedsOnboarding");
+    expect(home).not.toContain("hasCompletedOnboarding");
+  });
+
   it("does not duplicate transport-level session recovery", () => {
     expect(home).not.toContain('summaryQueryError?.data?.code === "UNAUTHORIZED"');
     expect(home).not.toContain("staleSessionRecoveryAttempted");
