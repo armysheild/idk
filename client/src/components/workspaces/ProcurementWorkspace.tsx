@@ -346,7 +346,7 @@ export function ProcurementWorkspace() {
                       <strong>{row.part?.name ?? "Inventory part"}</strong>
                       <span>
                         {row.part?.sku ?? row.partId} · PO-
-                        {row.purchaseOrderId.slice(0, 8).toUpperCase()}
+                        {String(row.purchaseOrderId).slice(0, 8).toUpperCase()}
                       </span>
                     </div>
                     <b>
