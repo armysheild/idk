@@ -17,6 +17,9 @@ describe("Mechanic execution contract", () => {
     expect(workspace).toContain("workOrders.startWork");
     expect(workspace).toContain("fleetops:mechanic-execution-draft");
     expect(workspace).toContain("Execution draft saved locally");
+    expect(workspace).toContain('["OPEN", "ASSIGNED", "SCHEDULED"].includes');
+    expect(workspace).toContain("orders.refetch()");
+    expect(workspace).toContain("utils.dashboard.summary.invalidate()");
   });
 
   it("submits the active mechanic handoff only after checklist persistence", () => {

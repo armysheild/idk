@@ -17,6 +17,9 @@ describe("Driver vehicle issue workflow", () => {
     expect(driverUi).toContain("Reported vehicle issues");
     expect(driverUi).toContain("fleetops:driver-issue-draft");
     expect(driverUi).toContain("Draft saved locally");
+    expect(driverUi).toContain("utils.vehicles.odometerHistory.invalidate()");
+    expect(driverUi).toContain("utils.dashboard.summary.invalidate()");
+    expect(driverUi).toContain("vehicles.refetch()");
   });
 
   it("shows Fleet Manager response state in the Driver issue timeline", () => {

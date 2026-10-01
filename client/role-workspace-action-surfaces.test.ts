@@ -22,6 +22,9 @@ describe("role workspace action-surface audit", () => {
     expect(router).toContain('section === "Billing" ? <BillingWorkspace');
     expect(executive).toContain("trpc.dashboard.summary.useQuery");
     expect(executive).toContain("trpc.audit.list.useQuery");
+    expect(executive).toContain("trpc.workOrders.list.useQuery");
+    expect(executive).toContain("assignedMechanic?.fullName");
+    expect(source("client/src/hooks/useFleetOpsRealtime.ts")).toContain("organization_id=eq.");
   });
 
   it("keeps Fleet Manager fleet signals, vehicle register, components, and work-order dispatch reachable", () => {
