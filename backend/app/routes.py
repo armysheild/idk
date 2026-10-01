@@ -4136,6 +4136,7 @@ def list_expenses(
 ) -> list[Expense]:
     limit = min(max(limit, 1), 100)
     skip = max(skip, 0)
+    _ensure_historical_operational_expenses(database, user)
     statement = select(Expense).where(Expense.organization_id == user.organization_id)
     if user.role not in ("owner", "accountant"):
         statement = statement.where(false())
@@ -4154,6 +4155,7 @@ def _ensure_operational_expense(
     created_by: int | None,
     source_key: str,
     vendor: str | None = None,
+    created_at: datetime | None = None,
 ) -> Expense | None:
     if amount_paise <= 0:
         return None
@@ -4174,6 +4176,8 @@ def _ensure_operational_expense(
             status="Pending",
             created_by=created_by,
         )
+        if created_at is not None:
+            expense.created_at = created_at
         database.add(expense)
     elif expense.status == "Rejected" and expense.amount_paise == 0:
         expense.vehicle_id = vehicle_id
@@ -4230,7 +4234,43 @@ def _sync_work_order_expense(database: Session, work_order: WorkOrder, user: Use
         incurred_on=(work_order.completed_at or utc_now()).date().isoformat(),
         created_by=user.id,
         source_key=f"work_order:{work_order.id}",
+        created_at=work_order.completed_at or work_order.created_at,
     )
+
+
+def _ensure_historical_operational_expenses(database: Session, user: User) -> None:
+    fuel_transactions = database.scalars(
+        select(FuelTransaction).where(
+            FuelTransaction.organization_id == user.organization_id,
+        )
+    ).all()
+    for fuel in fuel_transactions:
+        _ensure_operational_expense(
+            database,
+            organization_id=user.organization_id,
+            vehicle_id=fuel.vehicle_id,
+            category="FUEL",
+            description=f"Fuel log #{fuel.id}",
+            amount_paise=fuel.total_amount_paise,
+            incurred_on=fuel.incurred_on,
+            created_by=fuel.created_by,
+            source_key=f"fuel_transaction:{fuel.id}",
+            vendor=fuel.station,
+            created_at=fuel.created_at,
+        )
+
+    work_orders = database.scalars(
+        select(WorkOrder).where(
+            WorkOrder.organization_id == user.organization_id,
+            WorkOrder.status.in_(("Ready for review", "Completed", "Closed", "Archived")),
+        )
+    ).all()
+    for work_order in work_orders:
+        if work_order.status == "Archived" and work_order.started_at is None:
+            continue
+        _sync_work_order_expense(database, work_order, user)
+
+    database.commit()
 
 
 @router.post("/expenses", response_model=ExpenseRead, status_code=status.HTTP_201_CREATED)
@@ -9773,6 +9813,7 @@ def get_financial_metrics(
     end_date: Optional[str] = None,
 ) -> dict:
     """Get comprehensive financial metrics and KPIs"""
+    _ensure_historical_operational_expenses(database, user)
     if not end_date:
         end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     
@@ -9955,6 +9996,7 @@ def get_financial_reconciliation(
     database: Session = Depends(get_db),
 ) -> dict:
     """Get financial reconciliation summary"""
+    _ensure_historical_operational_expenses(database, user)
     # Get pending expenses
     pending_expenses = database.query(Expense).filter(
         Expense.organization_id == user.organization_id,
