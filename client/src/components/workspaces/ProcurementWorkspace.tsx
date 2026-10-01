@@ -307,7 +307,9 @@ export function ProcurementWorkspace() {
               <span>Vendor intelligence</span>
               <h2>
                 Pricing history ·{" "}
-                {pricingHistory.data?.vendor.name ?? "Selected vendor"}
+                {pricingHistory.data?.vendor?.name ??
+                  pricingHistory.data?.vendorName ??
+                  "Selected vendor"}
               </h2>
             </div>
             <b>
@@ -344,7 +346,7 @@ export function ProcurementWorkspace() {
                       <strong>{row.part?.name ?? "Inventory part"}</strong>
                       <span>
                         {row.part?.sku ?? row.partId} · PO-
-                        {row.purchaseOrderId.slice(0, 8).toUpperCase()}
+                        {String(row.purchaseOrderId).slice(0, 8).toUpperCase()}
                       </span>
                     </div>
                     <b>
