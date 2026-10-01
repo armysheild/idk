@@ -1,4 +1,5 @@
 /* VahanSync application shell: role-aware navigation and operational command canvas. */
+import { useEffect } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { PWAInstallPrompt } from "@/components/PWAInstallPrompt";
@@ -32,10 +33,13 @@ function CreateOrganizationRoute() {
 }
 
 function GuardedWorkspaceRoute({ section, allowedRoles }: { section: string; allowedRoles: string[] }) {
-  const { session, loading } = useFleetOpsAuth();
+  const { session, loading, signOut } = useFleetOpsAuth();
   const metadataNeedsOnboarding = session?.user.user_metadata?.needsOnboarding === true || session?.user.user_metadata?.needsOnboarding === "true";
   const onboardingComplete = session ? hasCompletedOnboarding(session.user.id) : false;
-  const summary = trpc.dashboard.summary.useQuery(undefined, { enabled: Boolean(session) && (!metadataNeedsOnboarding || onboardingComplete), retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false });
+  const summary = trpc.dashboard.summary.useQuery(undefined, { enabled: Boolean(session) && (!metadataNeedsOnboarding || onboardingComplete), retry: 2, refetchOnWindowFocus: false, refetchOnReconnect: false });
+  useEffect(() => {
+    if (summary.error?.data?.code === "UNAUTHORIZED") void signOut();
+  }, [signOut, summary.error]);
 
   if (!session && !loading) return <Home publicMode="signin" />;
   if (session && metadataNeedsOnboarding && !onboardingComplete) return <Home publicMode="signup" />;

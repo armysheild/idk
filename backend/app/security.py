@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import time
 from typing import Any
 
 import httpx
@@ -8,6 +9,24 @@ from pwdlib import PasswordHash
 from .config import get_settings
 
 password_hash = PasswordHash.recommended()
+
+
+def _supabase_request(method: str, url: str, *, retries: int = 2, **kwargs: object) -> httpx.Response:
+    request = httpx.post if method == "POST" else httpx.delete
+    for attempt in range(retries + 1):
+        try:
+            response = request(url, **kwargs)
+        except httpx.TransportError:
+            if attempt == retries:
+                raise
+            time.sleep(0.25 * (2**attempt))
+            continue
+        if response.status_code not in {408, 429} and response.status_code < 500:
+            return response
+        if attempt == retries:
+            return response
+        time.sleep(0.25 * (2**attempt))
+    raise RuntimeError("Supabase request failed without a response")
 
 
 def hash_password(password: str) -> str:
@@ -99,7 +118,8 @@ def sign_in_supabase_user(email: str, password: str) -> str:
     settings = get_settings()
     if not settings.supabase_url or not settings.supabase_anon_key:
         raise ValueError("Supabase Auth client credentials are not configured")
-    response = httpx.post(
+    response = _supabase_request(
+        "POST",
         f"{settings.supabase_url.rstrip('/')}/auth/v1/token?grant_type=password",
         headers={
             "Authorization": f"Bearer {settings.supabase_anon_key}",
@@ -123,7 +143,8 @@ def delete_supabase_user(user_id: str) -> None:
         return
     if not settings.supabase_url or not settings.supabase_service_role_key:
         raise ValueError("Supabase Auth admin provisioning is not configured")
-    response = httpx.delete(
+    response = _supabase_request(
+        "DELETE",
         f"{settings.supabase_url.rstrip('/')}/auth/v1/admin/users/{user_id}",
         headers={
             "Authorization": f"Bearer {settings.supabase_service_role_key}",

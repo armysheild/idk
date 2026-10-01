@@ -9,7 +9,9 @@ describe("dashboard auth query gating", () => {
   it("bounds guarded route summary refetches", () => {
     expect(app).toContain("refetchOnWindowFocus: false");
     expect(app).toContain("refetchOnReconnect: false");
-    expect(app).toContain("retry: false");
+    expect(app).toContain("retry: 2");
+    expect(app).toContain('summary.error?.data?.code === "UNAUTHORIZED"');
+    expect(app).toContain("void signOut()");
   });
 
   it("bounds Home summary refetches", () => {
