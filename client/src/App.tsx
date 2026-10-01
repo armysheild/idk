@@ -11,6 +11,7 @@ import JoinOrganization from "./pages/JoinOrganization";
 import { AboutPage, PricingPage, SecurityPage } from "./pages/MarketingPages";
 import { useFleetOpsAuth } from "./hooks/useFleetOpsAuth";
 import { trpc } from "./lib/trpc";
+import { hasCompletedOnboarding } from "./lib/onboarding";
 import { getAllowedWorkspace } from "./workspaceAccess";
 import { Route, Switch, useRoute } from "wouter";
 
@@ -33,12 +34,15 @@ function CreateOrganizationRoute() {
 
 function GuardedWorkspaceRoute({ section, allowedRoles }: { section: string; allowedRoles: string[] }) {
   const { session, loading, signOut } = useFleetOpsAuth();
-  const summary = trpc.dashboard.summary.useQuery(undefined, { enabled: Boolean(session), retry: 2, refetchOnWindowFocus: false, refetchOnReconnect: false });
+  const metadataNeedsOnboarding = session?.user.user_metadata?.needsOnboarding === true || session?.user.user_metadata?.needsOnboarding === "true";
+  const onboardingComplete = session ? hasCompletedOnboarding(session.user.id) : false;
+  const summary = trpc.dashboard.summary.useQuery(undefined, { enabled: Boolean(session) && (!metadataNeedsOnboarding || onboardingComplete), retry: 2, refetchOnWindowFocus: false, refetchOnReconnect: false });
   useEffect(() => {
     if (summary.error?.data?.code === "UNAUTHORIZED") void signOut();
   }, [signOut, summary.error]);
 
   if (!session && !loading) return <Home publicMode="signin" />;
+  if (session && metadataNeedsOnboarding && !onboardingComplete) return <Home publicMode="signup" />;
   if (loading || (session && summary.isLoading)) return <div className="auth-page"><div className="auth-card"><h1>Loading workspace access…</h1><p>Confirming your current role session before opening operational data.</p></div></div>;
   if (session && summary.isError) return <div className="auth-page"><div className="auth-card"><h1>Workspace connection needs attention.</h1><p>We could not load your assigned workspace. Please sign in again to resume live data.</p><button className="primary-button" onClick={() => void summary.refetch()}>Retry workspace load</button></div></div>;
   if (session && summary.data?.role && !allowedRoles.includes(summary.data.role)) return <div className="auth-page"><div className="auth-card"><h1>Workspace access restricted.</h1><p>Your VahanSync role does not have access to the {section} workspace.</p><a className="primary-button" href="/">Return to command center</a></div></div>;

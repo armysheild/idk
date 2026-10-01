@@ -8,6 +8,7 @@ const transport = fs.readFileSync(path.join(root, "client/src/lib/trpc.ts"), "ut
 const home = fs.readFileSync(path.join(root, "client/src/pages/Home.tsx"), "utf8");
 const invitationJoin = fs.readFileSync(path.join(root, "client/src/pages/JoinOrganization.tsx"), "utf8");
 const app = fs.readFileSync(path.join(root, "client/src/App.tsx"), "utf8");
+const onboarding = fs.readFileSync(path.join(root, "client/src/lib/onboarding.ts"), "utf8");
 
 describe("Supabase session recovery", () => {
   it("clears local auth state when the initial session or refresh is invalid", () => {
@@ -71,5 +72,25 @@ describe("Supabase session recovery", () => {
   it("passes the guard summary into Home instead of issuing a second dashboard request", () => {
     expect(app).toContain("<Home initialSection={allowedSection} initialSummary={summary.data} />");
     expect(home).toContain("initialSummary === undefined");
+  });
+
+  it("does not probe the dashboard before a new Supabase user completes onboarding", () => {
+    expect(home).toContain("const metadataNeedsOnboarding = session?.user.user_metadata?.needsOnboarding");
+    expect(home).toContain("enabled: Boolean(session) && (!metadataNeedsOnboarding || onboardingComplete) && initialSummary === undefined");
+    expect(home).toContain('window.localStorage.setItem(onboardingCompletionKey(session.user.id), "1")');
+    expect(home).toContain("Boolean(session && backendSummary && !backendSummary.needsOnboarding)");
+  });
+
+  it("routes direct workspace links into onboarding before the workspace guard queries summary", () => {
+    expect(app).toContain('import { hasCompletedOnboarding } from "./lib/onboarding";');
+    expect(app).toContain("enabled: Boolean(session) && (!metadataNeedsOnboarding || onboardingComplete)");
+    expect(app).toContain('if (session && metadataNeedsOnboarding && !onboardingComplete) return <Home publicMode="signup" />;');
+  });
+
+  it("keys onboarding completion to the authenticated Supabase user", () => {
+    expect(onboarding).toContain("vahana:onboarding-complete:${userId}");
+    expect(onboarding).toContain('window.localStorage.getItem(onboardingCompletionKey(userId)) === "1"');
+    expect(home).toContain("const sessionChanged = priorSessionUserId.current !== sessionUserId");
+    expect(home).toContain("const backendSummary = sessionChanged || (metadataNeedsOnboarding && !onboardingComplete)");
   });
 });

@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
+import { hasCompletedOnboarding, onboardingCompletionKey } from "@/lib/onboarding";
 import { describeAuthError } from "@/lib/authErrors";
 import { formatVehicleIdentity } from "@/lib/vehicleIdentity";
 import { useFleetOpsAuth } from "@/hooks/useFleetOpsAuth";
@@ -132,15 +133,26 @@ export default function Home({ initialSection = "Command center", publicMode = "
     window.addEventListener("fleetops-session-expired", onExpired);
     return () => window.removeEventListener("fleetops-session-expired", onExpired);
   }, []);
-  const summaryQuery = trpc.dashboard.summary.useQuery(undefined, { enabled: Boolean(session) && initialSummary === undefined, retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false });
-  const backendSummary = initialSummary ?? summaryQuery.data;
-  const { isLoading: summaryLoading, isError: summaryError, refetch: refetchSummary } = summaryQuery;
+  const sessionUserId = session?.user.id ?? "";
+  const priorSessionUserId = useRef(sessionUserId);
   const metadataNeedsOnboarding = session?.user.user_metadata?.needsOnboarding === true || session?.user.user_metadata?.needsOnboarding === "true";
+  const onboardingComplete = session ? hasCompletedOnboarding(session.user.id) : false;
+  const summaryQuery = trpc.dashboard.summary.useQuery(undefined, {
+    enabled: Boolean(session) && (!metadataNeedsOnboarding || onboardingComplete) && initialSummary === undefined,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const sessionChanged = priorSessionUserId.current !== sessionUserId;
+  const backendSummary = sessionChanged || (metadataNeedsOnboarding && !onboardingComplete)
+    ? undefined
+    : initialSummary ?? summaryQuery.data;
+  const { isLoading: summaryLoading, isError: summaryError, refetch: refetchSummary } = summaryQuery;
   const backendRole = String(backendSummary?.role ?? "");
   const organizationName = String(backendSummary?.org?.name ?? session?.user.user_metadata?.orgName ?? "").trim();
   const organizationLabel = organizationName || "Loading organization…";
   const organizationInitials = organizationName ? organizationName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() : "—";
-  const operationalEnabled = Boolean(session && backendSummary && !metadataNeedsOnboarding && !backendSummary.needsOnboarding);
+  const operationalEnabled = Boolean(session && backendSummary && !backendSummary.needsOnboarding);
   const canReadVehicles = ["SUPERADMIN", "FLEET_MANAGER"].includes(backendRole);
   const canReadWorkOrders = ["SUPERADMIN", "FLEET_MANAGER", "MECHANIC", "TECHNICIAN"].includes(backendRole);
   const canReadInventory = ["SUPERADMIN", "INVENTORY_MANAGER"].includes(backendRole);
@@ -159,8 +171,6 @@ export default function Home({ initialSection = "Command center", publicMode = "
   const persistedVehicles = useMemo(() => liveVehicles?.map((vehicle: any) => ({ id: vehicle.id, identity: formatVehicleIdentity(vehicle), name: `${vehicle.make} ${vehicle.model} · ${vehicle.year}`, health: vehicle.status === "ACTIVE" ? 100 : 0, status: vehicle.status === "ACTIVE" ? "On route" : "At depot", odo: `${Number(vehicle.latestOdometerReading ?? vehicle.currentOdometer).toLocaleString("en-IN")} km`, service: vehicle.nextServiceAt ? `Next service ${new Date(vehicle.nextServiceAt).toLocaleDateString("en-IN")}` : "No service date recorded", tone: vehicle.status === "ACTIVE" ? "good" : "warn" })) ?? [], [liveVehicles]);
   const persistedOrders = useMemo(() => liveOrders?.filter((order: any) => order?.id).map((order: any) => ({ id: String(order.id).slice(0, 8).toUpperCase(), sourceId: order.id, title: order.title ?? "Untitled work order", vehicle: formatVehicleIdentity(order.vehicle), owner: order.assignedMechanic?.fullName ?? "Unassigned", priority: order.priority ? order.priority[0] + order.priority.slice(1).toLowerCase() : "Unspecified", due: order.status === "Completed" ? "Completed" : order.dueDate ? new Date(order.dueDate).toLocaleDateString("en-IN") : "No due date", status: order.status === "Completed" ? "Completed" : order.status ?? "OPEN" })) ?? [], [liveOrders]);
   const [activeNav, setActiveNav] = useState(initialSection);
-  const sessionUserId = session?.user.id ?? "";
-  const priorSessionUserId = useRef(sessionUserId);
   const [sessionTransition, setSessionTransition] = useState(false);
   const currentRole = backendRole || "SUPERADMIN";
   const [role, setRole] = useState(roles[0]);
@@ -294,7 +304,7 @@ export default function Home({ initialSection = "Command center", publicMode = "
   const operatorInitials = operatorName.slice(0, 2).toUpperCase();
 
   if (session && isRecoveryFlow) return <PublicAuthSurface view="update" email={authEmail} password={authPassword} fullName={authFullName} recoveryPassword={recoveryPassword} error={authError} submitting={authSubmitting} onEmail={setAuthEmail} onPassword={setAuthPassword} onFullName={setAuthFullName} onRecoveryPassword={setRecoveryPassword} onSubmit={handlePasswordUpdate} />;
-  if (session && ((!backendSummary && metadataNeedsOnboarding) || backendSummary?.needsOnboarding)) return <OrganizationOnboarding initialName={String(session.user.user_metadata?.fullName ?? backendSummary?.org?.name ?? "")} initialOrganization={String(session.user.user_metadata?.orgName ?? "")} onComplete={async () => { const { error } = await refreshSession(); if (error) { toast.error("Session refresh failed", { description: error.message }); return; } window.localStorage.setItem("fleetops.openTeam", "1"); await refetchSummary(); }} />;
+  if (session && ((!backendSummary && metadataNeedsOnboarding && !onboardingComplete) || backendSummary?.needsOnboarding)) return <OrganizationOnboarding initialName={String(session.user.user_metadata?.fullName ?? backendSummary?.org?.name ?? "")} initialOrganization={String(session.user.user_metadata?.orgName ?? "")} onComplete={async () => { const { error } = await refreshSession(); if (error) { toast.error("Session refresh failed", { description: error.message }); return; } window.localStorage.setItem(onboardingCompletionKey(session.user.id), "1"); window.localStorage.setItem("fleetops.openTeam", "1"); await refetchSummary(); }} />;
   if (session && sessionTransition) return <main className="auth-page"><section className="auth-card"><div className="panel-kicker">VahanSync connection</div><h1>Securing your role workspace.</h1><p>We are clearing the previous session context before opening data for this authenticated account.</p><div className="workspace-state"><RefreshCw className="spin" size={18} /> Connecting to the assigned organization…</div></section></main>;
   if (session && !backendSummary && summaryError) return <main className="auth-page"><section className="auth-card"><div className="panel-kicker">VahanSync connection</div><h1>We could not load your workspace.</h1><p>Your Supabase session is active, but the organization summary did not respond. Retry the request without leaving your secure session.</p><button className="primary-button" onClick={() => { void refetchSummary(); }}>Retry workspace load</button></section></main>;
   if (session && !backendSummary && summaryLoading) return <main className="auth-page"><section className="auth-card"><div className="panel-kicker">VahanSync connection</div><h1>Loading your workspace.</h1><p>We are checking your organization and role before opening operational data.</p><div className="workspace-state"><RefreshCw className="spin" size={18} /> Connecting to Supabase…</div></section></main>;
