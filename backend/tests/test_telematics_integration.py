@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fastapi.testclient import TestClient
 
+from backend.app.config import get_settings
 from backend.app.database import Base, engine
 from backend.app.main import app
 
@@ -29,6 +30,8 @@ def _invite(client: TestClient, owner_headers: dict[str, str], email: str, role:
 
 def test_provider_credentials_are_private_and_devices_share_provider_config(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VAHANA_TELEMATICS_CREDENTIAL_KEY", "test-telemetics-key")
+    get_settings.cache_clear()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     with TestClient(app) as client:
@@ -90,6 +93,8 @@ def test_provider_credentials_are_private_and_devices_share_provider_config(tmp_
 
 def test_vehicle_creation_can_assign_driver_and_attached_device(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VAHANA_TELEMATICS_CREDENTIAL_KEY", "test-telemetics-key")
+    get_settings.cache_clear()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     with TestClient(app) as client:

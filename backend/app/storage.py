@@ -10,6 +10,14 @@ from .config import get_settings
 
 def save_upload(upload: UploadFile, namespace: str | None = None) -> tuple[str, int, str]:
     settings = get_settings()
+    content_length = upload.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_size = int(content_length)
+        except ValueError:
+            declared_size = None
+        if declared_size is not None and declared_size > settings.max_upload_bytes:
+            raise ValueError("Uploaded file exceeds the maximum allowed size")
     object_key = f"{namespace.strip('/') + '/' if namespace else ''}documents/{uuid4().hex}"
     digest = sha256()
     size = 0

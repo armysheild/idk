@@ -16,7 +16,9 @@ ROLE_ALIASES = {
 }
 
 
-def normalize_role(role: str) -> str:
+def normalize_role(role: object) -> str:
+    if not isinstance(role, str):
+        return ""
     normalized = role.strip().lower()
     return ROLE_ALIASES.get(normalized, normalized)
 
