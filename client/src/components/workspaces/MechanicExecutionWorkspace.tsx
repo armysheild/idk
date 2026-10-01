@@ -156,9 +156,14 @@ export function MechanicExecutionWorkspace({
     checklist,
   ]);
   const start = trpc.workOrders.startWork.useMutation({
-    onSuccess: () => {
+    onSuccess: async () => {
       toast.success("Work started");
-      void utils.workOrders.list.invalidate();
+      await Promise.all([
+        utils.workOrders.list.invalidate(),
+        utils.dashboard.summary.invalidate(),
+        utils.notifications.list.invalidate(),
+        orders.refetch(),
+      ]);
     },
     onError: (error) =>
       toast.error("Could not start work", { description: error.message }),
@@ -324,7 +329,7 @@ export function MechanicExecutionWorkspace({
       <b className="is-alert">Cancelled</b>
     ) : (
       <aside>
-        {statusOf(item) === "OPEN" && (
+        {["OPEN", "ASSIGNED", "SCHEDULED"].includes(statusOf(item)) && (
           <button
             className="replacement-mechanic-secondary"
             disabled={start.isPending}
