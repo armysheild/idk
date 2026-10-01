@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from backend.app.database import Base, SessionLocal, engine
 from backend.app.main import app
-from backend.app.models import Organization, WorkOrder
+from backend.app.models import Expense, Organization, WorkOrder
 
 
 def _invite(client: TestClient, owner_headers: dict[str, str], email: str, role: str) -> dict[str, str]:
@@ -202,3 +202,62 @@ def test_work_order_status_update_creates_maintenance_ledger_record(tmp_path: Pa
             if item["cost_center"] == f"work_order:{order_id}"
         )
         assert maintenance_expense["amount_paise"] == 100000
+
+
+def test_financial_reads_backfill_operational_records_created_before_migration(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    with TestClient(app) as client:
+        signup = client.post("/api/v1/auth/signup", json={
+            "organization_name": "Historical Finance Fleet",
+            "full_name": "Owner",
+            "email": f"owner-{uuid4().hex[:8]}@historical-finance.example",
+            "password": "OwnerPassword!123",
+        })
+        assert signup.status_code == 201
+        owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+        accountant_headers = _invite(
+            client,
+            owner_headers,
+            f"accountant-{uuid4().hex[:8]}@historical-finance.example",
+            "accountant",
+        )
+        fleet_headers = _invite(
+            client,
+            owner_headers,
+            f"fleet-{uuid4().hex[:8]}@historical-finance.example",
+            "fleet_manager",
+        )
+        vehicle = client.post("/api/v1/vehicles", headers=fleet_headers, json={
+            "registration_number": f"HF-{uuid4().hex[:6].upper()}",
+            "model": "Historical Finance Truck",
+            "vehicle_type": "Truck",
+            "depot": "Historical finance depot",
+        })
+        assert vehicle.status_code == 201
+        fuel = client.post("/api/v1/fuel-transactions", headers=fleet_headers, json={
+            "vehicle_id": vehicle.json()["id"],
+            "station": "Indian Oil",
+            "fuel_type": "Diesel",
+            "litres_milli": 10000,
+            "price_per_litre_paise": 10000,
+            "odometer_km": 100050,
+            "incurred_on": "2026-10-01",
+        })
+        assert fuel.status_code == 201
+
+        with SessionLocal() as database:
+            database.query(Expense).filter(
+                Expense.organization_id == signup.json()["user"]["organization_id"],
+            ).delete()
+            database.commit()
+
+        records = client.get("/api/v1/expenses", headers=accountant_headers)
+        assert records.status_code == 200
+        assert len([item for item in records.json() if item["category"] == "FUEL"]) == 1
+
+        reconciliation = client.get("/api/v1/financials/reconciliation", headers=accountant_headers)
+        assert reconciliation.status_code == 200
+        assert reconciliation.json()["mismatches"] == []
