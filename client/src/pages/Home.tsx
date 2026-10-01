@@ -132,15 +132,20 @@ export default function Home({ initialSection = "Command center", publicMode = "
     window.addEventListener("fleetops-session-expired", onExpired);
     return () => window.removeEventListener("fleetops-session-expired", onExpired);
   }, []);
-  const summaryQuery = trpc.dashboard.summary.useQuery(undefined, { enabled: Boolean(session) && initialSummary === undefined, retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false });
+  const metadataNeedsOnboarding = session?.user.user_metadata?.needsOnboarding === true || session?.user.user_metadata?.needsOnboarding === "true";
+  const summaryQuery = trpc.dashboard.summary.useQuery(undefined, {
+    enabled: Boolean(session) && !metadataNeedsOnboarding && initialSummary === undefined,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
   const backendSummary = initialSummary ?? summaryQuery.data;
   const { isLoading: summaryLoading, isError: summaryError, refetch: refetchSummary } = summaryQuery;
-  const metadataNeedsOnboarding = session?.user.user_metadata?.needsOnboarding === true || session?.user.user_metadata?.needsOnboarding === "true";
   const backendRole = String(backendSummary?.role ?? "");
   const organizationName = String(backendSummary?.org?.name ?? session?.user.user_metadata?.orgName ?? "").trim();
   const organizationLabel = organizationName || "Loading organization…";
   const organizationInitials = organizationName ? organizationName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() : "—";
-  const operationalEnabled = Boolean(session && backendSummary && !metadataNeedsOnboarding && !backendSummary.needsOnboarding);
+  const operationalEnabled = Boolean(session && backendSummary && !backendSummary.needsOnboarding);
   const canReadVehicles = ["SUPERADMIN", "FLEET_MANAGER"].includes(backendRole);
   const canReadWorkOrders = ["SUPERADMIN", "FLEET_MANAGER", "MECHANIC", "TECHNICIAN"].includes(backendRole);
   const canReadInventory = ["SUPERADMIN", "INVENTORY_MANAGER"].includes(backendRole);

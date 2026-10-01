@@ -72,4 +72,11 @@ describe("Supabase session recovery", () => {
     expect(app).toContain("<Home initialSection={allowedSection} initialSummary={summary.data} />");
     expect(home).toContain("initialSummary === undefined");
   });
+
+  it("does not probe the dashboard before a new Supabase user completes onboarding", () => {
+    expect(home).toContain("const metadataNeedsOnboarding = session?.user.user_metadata?.needsOnboarding");
+    expect(home).toContain("enabled: Boolean(session) && !metadataNeedsOnboarding && initialSummary === undefined");
+    expect(home).not.toContain("enabled: Boolean(session) && initialSummary === undefined");
+    expect(home).toContain("Boolean(session && backendSummary && !backendSummary.needsOnboarding)");
+  });
 });
