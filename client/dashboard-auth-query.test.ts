@@ -12,6 +12,7 @@ describe("dashboard auth query gating", () => {
     expect(app).toContain("retry: 2");
     expect(app).toContain('summary.error?.data?.code === "UNAUTHORIZED"');
     expect(app).toContain("void signOut()");
+    expect(app).toContain('summary.error?.data?.code === "UNAUTHORIZED" && !metadataNeedsOnboarding');
   });
 
   it("bounds Home summary refetches", () => {
@@ -21,13 +22,11 @@ describe("dashboard auth query gating", () => {
 
   it("resolves onboarding from the persisted organization summary", () => {
     expect(home).toContain("enabled: Boolean(session) && initialSummary === undefined");
-    expect(home).toContain("if (session && backendSummary?.needsOnboarding)");
-    expect(home).not.toContain("metadataNeedsOnboarding");
+    expect(home).toContain("backendSummary?.needsOnboarding || (metadataNeedsOnboarding && summaryQueryError?.data?.code === \"UNAUTHORIZED\")");
     expect(home).not.toContain("hasCompletedOnboarding");
   });
 
   it("does not duplicate transport-level session recovery", () => {
-    expect(home).not.toContain('summaryQueryError?.data?.code === "UNAUTHORIZED"');
     expect(home).not.toContain("staleSessionRecoveryAttempted");
     expect(home).not.toContain("void refreshSession().then");
     expect(home).toContain("void refetchSummary()");
