@@ -4749,7 +4749,10 @@ def cron_sync_telematics(
                         notification_type="document_expiry",
                         severity="CRITICAL" if expires_on < today else "HIGH",
                         title=f"Compliance document expiring: {document.name}",
-                        detail=f"Expires on {document.expires_on}.",
+                        detail=(
+                            f"Expires on {document.expires_on}. "
+                            f"Vehicle: {document.vehicle.registration_number if document.vehicle is not None else 'organization record'}."
+                        ),
                         entity_type="compliance_document",
                         entity_id=str(document.id),
                         roles={"owner", "fleet_manager"},
@@ -5914,7 +5917,10 @@ def evaluate_document_expiry(
                 notification_type="DOCUMENT_EXPIRY",
                 severity="CRITICAL" if expires_on < date.today() else "HIGH",
                 title=f"Compliance document expiring: {doc.name}",
-                detail=f"Expires on {doc.expires_on}. Required for {doc.vehicle_id or 'organization'}.",
+                detail=(
+                    f"Expires on {doc.expires_on}. "
+                    f"Vehicle: {doc.vehicle.registration_number if doc.vehicle is not None else 'organization record'}."
+                ),
                 entity_type="document",
                 entity_id=str(doc.id),
                 roles={"owner", "fleet_manager"},

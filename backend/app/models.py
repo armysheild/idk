@@ -443,6 +443,7 @@ class ComplianceDocument(Base):
     file_key: Mapped[Optional[str]] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(30), default="Valid", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    vehicle: Mapped[Optional["Vehicle"]] = relationship(foreign_keys=[vehicle_id])
 
 
 class DocumentAsset(Base):
