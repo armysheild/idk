@@ -7,6 +7,8 @@ import json
 import os
 import re
 import secrets
+import threading
+import time
 from html import escape
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -18,7 +20,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, false, select, func
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from .config import get_settings
@@ -151,6 +153,29 @@ from .schemas import (
 from .storage import download_object, resolve_object, save_upload
 
 router = APIRouter(prefix="/api/v1")
+
+_AUTH_RATE_LIMIT = 10
+_AUTH_RATE_WINDOW_SECONDS = 60.0
+_auth_attempts: dict[str, list[float]] = {}
+_auth_attempts_lock = threading.Lock()
+
+
+def enforce_auth_rate_limit(request: Request, endpoint: str) -> None:
+    if get_settings().environment.lower() == "development":
+        return
+    client_host = request.client.host if request.client is not None else "unknown"
+    key = f"{endpoint}:{client_host}"
+    now = time.monotonic()
+    with _auth_attempts_lock:
+        attempts = [timestamp for timestamp in _auth_attempts.get(key, []) if now - timestamp < _AUTH_RATE_WINDOW_SECONDS]
+        if len(attempts) >= _AUTH_RATE_LIMIT:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many authentication attempts. Try again shortly.",
+                headers={"Retry-After": str(int(_AUTH_RATE_WINDOW_SECONDS))},
+            )
+        attempts.append(now)
+        _auth_attempts[key] = attempts
 
 
 def odometer_reading_is_flagged(
@@ -353,7 +378,8 @@ def trial_end_date() -> str:
 
 
 @router.post("/auth/signup", response_model=OrganizationSignupRead, status_code=status.HTTP_201_CREATED)
-def signup(payload: OrganizationSignup, database: Session = Depends(get_db)) -> OrganizationSignupRead:
+def signup(payload: OrganizationSignup, request: Request, database: Session = Depends(get_db)) -> OrganizationSignupRead:
+    enforce_auth_rate_limit(request, "signup")
     email = payload.email.lower()
     if database.scalar(select(User).where(User.email == email)) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A user with this email already exists")
@@ -421,7 +447,8 @@ def signup(payload: OrganizationSignup, database: Session = Depends(get_db)) -> 
 
 
 @router.post("/auth/signup-account", response_model=AccountSignupRead, status_code=status.HTTP_201_CREATED)
-def signup_account(payload: AccountSignup, database: Session = Depends(get_db)) -> AccountSignupRead:
+def signup_account(payload: AccountSignup, request: Request, database: Session = Depends(get_db)) -> AccountSignupRead:
+    enforce_auth_rate_limit(request, "signup-account")
     email = payload.email.lower()
     if database.scalar(select(User).where(User.email == email)) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A user with this email already exists")
@@ -442,7 +469,8 @@ def signup_account(payload: AccountSignup, database: Session = Depends(get_db)) 
 
 
 @router.post("/auth/login", response_model=Token)
-def login(payload: LoginRequest, database: Session = Depends(get_db)) -> Token:
+def login(payload: LoginRequest, request: Request, database: Session = Depends(get_db)) -> Token:
+    enforce_auth_rate_limit(request, "login")
     settings = get_settings()
     if settings.auth_provider == "supabase" and settings.environment.lower() != "development":
         raise HTTPException(
@@ -561,8 +589,6 @@ def fleet_analytics(
             and any(term in expense.category.lower() for term in ("maintenance", "repair", "service"))
             and expense.status != "Rejected"
         )
-        maintenance_cost += sum(item.total_amount_paise for item in fuel if item.vehicle_id == vehicle.id)
-        maintenance_cost += sum(item.amount_paise for item in tolls if item.vehicle_id == vehicle.id and item.status != "Rejected")
         downtime_days = 0
         for order in work_orders:
             if order.vehicle_id != vehicle.id or order.status in {"Completed", "Closed", "Archived", "Cancelled"}:
@@ -782,7 +808,8 @@ def resend_invitation(
 
 
 @router.post("/auth/invitations/accept", response_model=InvitationAcceptRead)
-def accept_invitation(payload: InvitationAccept, database: Session = Depends(get_db)) -> InvitationAcceptRead:
+def accept_invitation(payload: InvitationAccept, request: Request, database: Session = Depends(get_db)) -> InvitationAcceptRead:
+    enforce_auth_rate_limit(request, "invitation-accept")
     invitation = database.scalar(select(OrganizationInvitation).where(
         OrganizationInvitation.token_hash == invitation_token_hash(payload.token)
     ).with_for_update())
@@ -928,6 +955,18 @@ def delete_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     if member.id == user.id or normalize_role(member.role) == "owner":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner accounts cannot be removed")
+    assignments = database.scalars(select(VehicleAssignment).where(
+        VehicleAssignment.organization_id == user.organization_id,
+        VehicleAssignment.driver_id == member.id,
+        VehicleAssignment.active.is_(True),
+    )).all()
+    for assignment in assignments:
+        assignment.active = False
+        assignment.ended_at = utc_now()
+        vehicle = database.get(Vehicle, assignment.vehicle_id)
+        if vehicle is not None and vehicle.assigned_driver_id == member.id:
+            vehicle.assigned_driver_id = None
+            vehicle.driver_name = None
     database.delete(member)
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -1068,14 +1107,20 @@ async def razorpay_webhook(request: Request, database: Session = Depends(get_db)
         organization.subscription_status = "active"
     elif event_name in {"subscription.halted", "subscription.cancelled", "subscription.completed"}:
         organization.subscription_status = event_name.split(".", 1)[1]
-    database.add(AuditLog(
-        organization_id=organization.id,
-        action=f"razorpay.{event_name}",
-        entity_type="subscription",
-        entity_id=subscription_id,
-        request_id=request.headers.get("x-request-id", str(uuid4())),
-        changes=json.dumps({"event": event_name}),
-    ))
+    actor = database.scalar(select(User).where(
+        User.organization_id == organization.id,
+        User.role == "owner",
+    ).order_by(User.id.asc()))
+    if actor is not None:
+        database.add(AuditLog(
+            organization_id=organization.id,
+            actor_user_id=actor.id,
+            action=f"razorpay.{event_name}",
+            entity_type="subscription",
+            entity_id=subscription_id,
+            request_id=request.headers.get("x-request-id", str(uuid4())),
+            changes=json.dumps({"event": event_name}),
+        ))
     database.commit()
 
 
@@ -3327,6 +3372,21 @@ def download_document_file(
     )
     if asset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document file not found")
+    try:
+        if get_settings().storage_backend == "local":
+            path = resolve_object(asset.object_key)
+            if not path.is_file():
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document file not found")
+            response: Response = FileResponse(path, media_type=asset.content_type, filename=asset.file_name)
+        else:
+            content = download_object(asset.object_key)
+            response = Response(
+                content=content,
+                media_type=asset.content_type,
+                headers={"Content-Disposition": f'attachment; filename="{asset.file_name}"'},
+            )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     database.add(DocumentAccessLog(
         organization_id=user.organization_id,
         document_id=document.id,
@@ -3335,20 +3395,7 @@ def download_document_file(
         access_type="download",
     ))
     database.commit()
-    try:
-        if get_settings().storage_backend == "local":
-            path = resolve_object(asset.object_key)
-            if not path.is_file():
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document file not found")
-            return FileResponse(path, media_type=asset.content_type, filename=asset.file_name)
-        content = download_object(asset.object_key)
-    except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-    return Response(
-        content=content,
-        media_type=asset.content_type,
-        headers={"Content-Disposition": f'attachment; filename="{asset.file_name}"'},
-    )
+    return response
 
 
 @router.get("/documents/{document_id}/access-history", response_model=list[DocumentAccessLogRead])
@@ -3839,7 +3886,11 @@ def list_notifications(
     user: User = Depends(get_current_user),
     database: Session = Depends(get_db),
 ) -> list[OperationalNotification]:
-    sync_notifications(user, database)
+    try:
+        sync_notifications(user, database)
+    except SQLAlchemyError as error:
+        database.rollback()
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Notification synchronization failed") from error
     statement = select(OperationalNotification).join(
         NotificationDelivery,
         NotificationDelivery.notification_id == OperationalNotification.id,
@@ -4240,7 +4291,9 @@ def list_telematics_devices(user: User = Depends(require_permission("fleet")), d
 def integration_credential(integration: TelematicsIntegration) -> str | None:
     settings = get_settings()
     if integration.credential_ciphertext:
-        key_material = settings.telematics_credential_key or settings.jwt_secret
+        key_material = settings.telematics_credential_key
+        if not key_material:
+            return None
         key = base64.urlsafe_b64encode(hashlib.sha256(key_material.encode()).digest())
         try:
             return Fernet(key).decrypt(integration.credential_ciphertext.encode()).decode()
@@ -4432,7 +4485,9 @@ def create_telematics_integration(
     values["provider"] = provider
     integration = TelematicsIntegration(organization_id=user.organization_id, **values)
     if payload.api_token:
-        key_material = get_settings().telematics_credential_key or get_settings().jwt_secret
+        key_material = get_settings().telematics_credential_key
+        if not key_material:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Telematics credential encryption is not configured")
         key = base64.urlsafe_b64encode(hashlib.sha256(key_material.encode()).digest())
         integration.credential_ciphertext = Fernet(key).encrypt(payload.api_token.encode()).decode()
     database.add(integration)
@@ -4479,7 +4534,9 @@ def update_telematics_integration(
     integration.active = payload.active
     integration.sync_interval_minutes = payload.sync_interval_minutes
     if payload.api_token:
-        key_material = get_settings().telematics_credential_key or get_settings().jwt_secret
+        key_material = get_settings().telematics_credential_key
+        if not key_material:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Telematics credential encryption is not configured")
         key = base64.urlsafe_b64encode(hashlib.sha256(key_material.encode()).digest())
         integration.credential_ciphertext = Fernet(key).encrypt(payload.api_token.encode()).decode()
     database.add(AuditLog(

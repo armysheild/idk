@@ -2,16 +2,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import os
 import sys
+from types import SimpleNamespace
 
 os.environ["VAHANA_DATABASE_URL"] = "sqlite:///./test-bug-hardening.db"
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import httpx
-from fastapi import Request
+from fastapi import HTTPException, Request
 from backend.app.database import Base, SessionLocal, engine
 from backend.app.dependencies import normalize_role
 from backend.app.models import IdempotencyRecord, Organization, User
-from backend.app.routes import parse_iso_date, reserve_idempotency_key
+from backend.app.routes import enforce_auth_rate_limit, parse_iso_date, reserve_idempotency_key
 from backend.app.security import _supabase_request
 
 
@@ -86,3 +87,23 @@ def test_supabase_request_retries_transient_responses(monkeypatch):
 
     assert response.status_code == 200
     assert len(calls) == 3
+
+
+def test_auth_rate_limit_rejects_excessive_attempts(monkeypatch):
+    monkeypatch.setattr("backend.app.routes.get_settings", lambda: SimpleNamespace(environment="production"))
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/v1/auth/login",
+        "headers": [],
+        "client": ("198.51.100.10", 1234),
+    }
+    request = Request(scope)
+    for _ in range(10):
+        enforce_auth_rate_limit(request, "test-login")
+    try:
+        enforce_auth_rate_limit(request, "test-login")
+    except HTTPException as error:
+        assert error.status_code == 429
+    else:
+        raise AssertionError("Expected the authentication rate limit to reject the next attempt")

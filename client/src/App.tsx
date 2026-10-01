@@ -1,4 +1,5 @@
 /* VahanSync application shell: role-aware navigation and operational command canvas. */
+import { useEffect } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { PWAInstallPrompt } from "@/components/PWAInstallPrompt";
@@ -31,8 +32,11 @@ function CreateOrganizationRoute() {
 }
 
 function GuardedWorkspaceRoute({ section, allowedRoles }: { section: string; allowedRoles: string[] }) {
-  const { session, loading } = useFleetOpsAuth();
-  const summary = trpc.dashboard.summary.useQuery(undefined, { enabled: Boolean(session), retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false });
+  const { session, loading, signOut } = useFleetOpsAuth();
+  const summary = trpc.dashboard.summary.useQuery(undefined, { enabled: Boolean(session), retry: 2, refetchOnWindowFocus: false, refetchOnReconnect: false });
+  useEffect(() => {
+    if (summary.error?.data?.code === "UNAUTHORIZED") void signOut();
+  }, [signOut, summary.error]);
 
   if (!session && !loading) return <Home publicMode="signin" />;
   if (loading || (session && summary.isLoading)) return <div className="auth-page"><div className="auth-card"><h1>Loading workspace access…</h1><p>Confirming your current role session before opening operational data.</p></div></div>;
