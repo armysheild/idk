@@ -46,6 +46,7 @@ def upgrade() -> None:
         sa.Column("title", sa.String),
         sa.Column("status", sa.String),
         sa.Column("labor_hours", sa.Integer),
+        sa.Column("started_at", sa.DateTime),
         sa.Column("completed_at", sa.DateTime),
         sa.Column("created_at", sa.DateTime),
         sa.Column("created_by", sa.Integer),
@@ -108,6 +109,8 @@ def upgrade() -> None:
 
     for work_order in bind.execute(sa.select(work_orders)).mappings():
         if work_order.status not in {"Ready for review", "Completed", "Closed", "Archived"}:
+            continue
+        if work_order.status == "Archived" and work_order.started_at is None:
             continue
         source_key = f"work_order:{work_order.id}"
         if source_key in existing:

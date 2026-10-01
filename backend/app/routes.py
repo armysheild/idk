@@ -4175,7 +4175,7 @@ def _ensure_operational_expense(
             created_by=created_by,
         )
         database.add(expense)
-    elif expense.status == "Rejected":
+    elif expense.status == "Rejected" and expense.amount_paise == 0:
         expense.vehicle_id = vehicle_id
         expense.amount_paise = amount_paise
         expense.incurred_on = incurred_on
@@ -4184,7 +4184,7 @@ def _ensure_operational_expense(
         expense.status = "Pending"
         expense.approved_by = None
         expense.approved_at = None
-    else:
+    elif expense.status != "Rejected":
         expense.vehicle_id = vehicle_id
         expense.amount_paise = amount_paise
         expense.incurred_on = incurred_on
@@ -4208,13 +4208,25 @@ def _sync_work_order_expense(database: Session, work_order: WorkOrder, user: Use
         * (organization.labor_rate_per_hour if organization else 0)
         * 100
     )
+    amount_paise = parts_cost_paise + labor_cost_paise
+    if amount_paise <= 0:
+        expense = database.scalar(select(Expense).where(
+            Expense.organization_id == user.organization_id,
+            Expense.cost_center == f"work_order:{work_order.id}",
+        ))
+        if expense is not None and expense.status != "Rejected":
+            expense.amount_paise = 0
+            expense.status = "Rejected"
+            expense.approved_by = None
+            expense.approved_at = None
+        return expense
     return _ensure_operational_expense(
         database,
         organization_id=user.organization_id,
         vehicle_id=work_order.vehicle_id,
         category="MAINTENANCE",
         description=f"Work order #{work_order.id}: {work_order.title}",
-        amount_paise=parts_cost_paise + labor_cost_paise,
+        amount_paise=amount_paise,
         incurred_on=(work_order.completed_at or utc_now()).date().isoformat(),
         created_by=user.id,
         source_key=f"work_order:{work_order.id}",
