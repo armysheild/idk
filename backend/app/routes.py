@@ -2046,6 +2046,7 @@ def update_work_order(
     work_order = database.scalar(statement)
     if work_order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
+    previous_status = work_order.status
     changes = payload.model_dump(exclude_unset=True)
     if user.role not in ("fleet_manager", "technician", "mechanic"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only fleet or workshop roles can update work orders")
@@ -2105,6 +2106,46 @@ def update_work_order(
             work_order.completed_at = transitioned_at
         elif changes["status"] == "Archived":
             work_order.archived_at = transitioned_at
+    if previous_status != "Ready for review" and changes.get("status") == "Ready for review":
+        checklist = database.scalars(select(WorkOrderChecklistItem).where(
+            WorkOrderChecklistItem.organization_id == user.organization_id,
+            WorkOrderChecklistItem.work_order_id == work_order.id,
+        )).all()
+        if checklist and any(not item.completed for item in checklist):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Complete every checklist item before completing the work order",
+            )
+        part_usages = database.scalars(select(WorkOrderPartUsage).where(
+            WorkOrderPartUsage.work_order_id == work_order.id,
+            WorkOrderPartUsage.organization_id == user.organization_id,
+        )).all()
+        if any(part_usage.inventory_transaction_id is None for part_usage in part_usages):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Issue every reserved part before completing the work order",
+            )
+        organization = database.get(Organization, user.organization_id)
+        parts_cost_paise = sum(
+            part_usage.quantity * part_usage.unit_cost_paise
+            for part_usage in part_usages
+        )
+        labor_cost_paise = (
+            (work_order.labor_hours or 0)
+            * (organization.labor_rate_per_hour if organization else 0)
+            * 100
+        )
+        _ensure_operational_expense(
+            database,
+            organization_id=user.organization_id,
+            vehicle_id=work_order.vehicle_id,
+            category="MAINTENANCE",
+            description=f"Work order #{work_order.id}: {work_order.title}",
+            amount_paise=parts_cost_paise + labor_cost_paise,
+            incurred_on=(work_order.completed_at or utc_now()).date().isoformat(),
+            created_by=user.id,
+            source_key=f"work_order:{work_order.id}",
+        )
     database.add(AuditLog(
         organization_id=user.organization_id,
         actor_user_id=user.id,
@@ -2405,6 +2446,31 @@ def complete_work_order(
             )).all()
             for installation in installations:
                 installation.inventory_transaction_id = transaction.id
+
+    work_order.labor_hours = (
+        payload.labor_hours
+        if payload is not None and payload.labor_hours is not None
+        else work_order.labor_hours
+    )
+    organization = database.get(Organization, user.organization_id)
+    parts_cost_paise = sum(
+        part_usage.quantity * part_usage.unit_cost_paise
+        for part_usage in part_usages
+    )
+    labor_cost_paise = (
+        (work_order.labor_hours or 0) * (organization.labor_rate_per_hour if organization else 0) * 100
+    )
+    _ensure_operational_expense(
+        database,
+        organization_id=user.organization_id,
+        vehicle_id=work_order.vehicle_id,
+        category="MAINTENANCE",
+        description=f"Work order #{work_order.id}: {work_order.title}",
+        amount_paise=parts_cost_paise + labor_cost_paise,
+        incurred_on=(work_order.completed_at or utc_now()).date().isoformat(),
+        created_by=user.id,
+        source_key=f"work_order:{work_order.id}",
+    )
     
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -4107,6 +4173,48 @@ def list_expenses(
     return list(database.scalars(statement.order_by(Expense.incurred_on.desc(), Expense.id.desc()).offset(skip).limit(limit)).all())
 
 
+def _ensure_operational_expense(
+    database: Session,
+    *,
+    organization_id: int,
+    vehicle_id: int | None,
+    category: str,
+    description: str,
+    amount_paise: int,
+    incurred_on: str,
+    created_by: int | None,
+    source_key: str,
+    vendor: str | None = None,
+) -> Expense | None:
+    if amount_paise <= 0:
+        return None
+    expense = database.scalar(select(Expense).where(
+        Expense.organization_id == organization_id,
+        Expense.cost_center == source_key,
+    ))
+    if expense is None:
+        expense = Expense(
+            organization_id=organization_id,
+            vehicle_id=vehicle_id,
+            category=category,
+            description=description,
+            amount_paise=amount_paise,
+            incurred_on=incurred_on,
+            vendor=vendor,
+            cost_center=source_key,
+            status="Pending",
+            created_by=created_by,
+        )
+        database.add(expense)
+    elif expense.status != "Rejected":
+        expense.vehicle_id = vehicle_id
+        expense.amount_paise = amount_paise
+        expense.incurred_on = incurred_on
+        expense.vendor = vendor
+        expense.description = description
+    return expense
+
+
 @router.post("/expenses", response_model=ExpenseRead, status_code=status.HTTP_201_CREATED)
 def create_expense(
     payload: ExpenseCreate,
@@ -4261,7 +4369,8 @@ def finance_summary(user: User = Depends(require_permission("finance_read")), da
     for expense in expenses:
         period = expense.incurred_on[:7]
         bucket = totals.setdefault(period, {"expense": 0, "fuel": 0, "toll": 0, "gst": 0})
-        bucket["expense"] += expense.amount_paise
+        if not (expense.category.upper() == "FUEL" and (expense.cost_center or "").startswith("fuel_transaction:")):
+            bucket["expense"] += expense.amount_paise
         bucket["gst"] += expense.gst_amount_paise
     fuels = database.scalars(select(FuelTransaction).where(FuelTransaction.organization_id == user.organization_id)).all()
     for fuel in fuels:
@@ -4319,6 +4428,18 @@ def create_fuel_transaction(
     )
     database.add(fuel)
     database.flush()
+    _ensure_operational_expense(
+        database,
+        organization_id=user.organization_id,
+        vehicle_id=fuel.vehicle_id,
+        category="FUEL",
+        description=f"Fuel log #{fuel.id}",
+        amount_paise=fuel.total_amount_paise,
+        incurred_on=fuel.incurred_on,
+        created_by=user.id,
+        source_key=f"fuel_transaction:{fuel.id}",
+        vendor=fuel.station,
+    )
     database.add(AuditLog(
         organization_id=user.organization_id,
         actor_user_id=user.id,
@@ -9539,7 +9660,7 @@ def get_fuel_efficiency_report(
     
     try:
         start_dt = datetime.fromisoformat(start_date)
-        end_dt = datetime.fromisoformat(end_date)
+        end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format")
     
@@ -9621,7 +9742,7 @@ def get_financial_metrics(
     
     try:
         start_dt = datetime.fromisoformat(start_date)
-        end_dt = datetime.fromisoformat(end_date)
+        end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format")
     
@@ -9631,8 +9752,19 @@ def get_financial_metrics(
         Expense.created_at >= start_dt,
         Expense.created_at <= end_dt,
     ).all()
-    
-    total_expenses_paise = sum(e.amount_paise for e in expenses)
+    posted_expenses = [expense for expense in expenses if expense.status != "Rejected"]
+    revenue_entries = [
+        expense
+        for expense in posted_expenses
+        if expense.category.upper().endswith("_REVENUE")
+    ]
+    ledger_expenses = [
+        expense
+        for expense in posted_expenses
+        if not expense.category.upper().endswith("_REVENUE")
+    ]
+    total_revenue_paise = sum(expense.amount_paise for expense in revenue_entries)
+    total_expenses_paise = sum(expense.amount_paise for expense in ledger_expenses)
     
     # Fuel costs
     fuel_txs = database.query(FuelTransaction).filter(
@@ -9653,7 +9785,11 @@ def get_financial_metrics(
     total_toll_cost_paise = sum(t.amount_paise for t in toll_txs)
     
     # Maintenance costs (from expenses with category)
-    maintenance_costs = sum(e.amount_paise for e in expenses if e.category in ["Maintenance", "Repair"])
+    maintenance_costs = sum(
+        expense.amount_paise
+        for expense in ledger_expenses
+        if expense.category.upper() in {"MAINTENANCE", "REPAIR"}
+    )
     
     # Parts costs
     parts_used = database.query(WorkOrderPartUsage).filter(
@@ -9665,7 +9801,7 @@ def get_financial_metrics(
     total_parts_cost_paise = sum(pu.quantity * pu.unit_cost_paise for pu in parts_used)
     
     # Calculate totals
-    total_operational_cost = total_fuel_cost_paise + total_toll_cost_paise + total_expenses_paise
+    total_operational_cost = total_toll_cost_paise + total_expenses_paise
     
     # Revenue by vehicle
     vehicles = database.query(Vehicle).filter(
@@ -9677,12 +9813,28 @@ def get_financial_metrics(
     
     # Breakdown by category
     expense_categories = {}
-    for expense in expenses:
+    for expense in ledger_expenses:
         cat = expense.category or "Other"
         if cat not in expense_categories:
             expense_categories[cat] = 0
         expense_categories[cat] += expense.amount_paise
-    
+
+    ledger_total_paise = sum(expense.amount_paise for expense in ledger_expenses) + total_toll_cost_paise
+    vehicle_ledger_totals = {
+        vehicle.id: 0
+        for vehicle in vehicles
+    }
+    for expense in ledger_expenses:
+        if expense.vehicle_id in vehicle_ledger_totals:
+            vehicle_ledger_totals[expense.vehicle_id] += expense.amount_paise
+    for toll in toll_txs:
+        if toll.vehicle_id in vehicle_ledger_totals:
+            vehicle_ledger_totals[toll.vehicle_id] += toll.amount_paise
+    current_odometer = {
+        vehicle.id: max(vehicle.odometer_km, 1)
+        for vehicle in vehicles
+    }
+
     return {
         "report_period": {
             "start_date": start_date,
@@ -9709,10 +9861,50 @@ def get_financial_metrics(
         "by_category": {
             cat: val / 100.0 for cat, val in expense_categories.items()
         },
+        "totals": {
+            "revenue": total_revenue_paise / 100.0,
+            "expenses": ledger_total_paise / 100.0,
+            "profit": (total_revenue_paise - ledger_total_paise) / 100.0,
+            "cpk": (
+                ledger_total_paise
+                / max(sum(current_odometer.values()), 1)
+                / 100.0
+            ),
+        },
+        "expenseBreakdown": [
+            {"category": category, "amount": amount / 100.0}
+            for category, amount in sorted(
+                expense_categories.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        ],
+        "rows": [
+            {
+                "vehicleId": str(vehicle.id),
+                "vehicle": vehicle.registration_number,
+                "revenue": sum(
+                    expense.amount_paise
+                    for expense in revenue_entries
+                    if expense.vehicle_id == vehicle.id
+                ) / 100.0,
+                "expenses": vehicle_ledger_totals[vehicle.id] / 100.0,
+                "profit": (
+                    sum(
+                        expense.amount_paise
+                        for expense in revenue_entries
+                        if expense.vehicle_id == vehicle.id
+                    )
+                    - vehicle_ledger_totals[vehicle.id]
+                ) / 100.0,
+                "cpk": vehicle_ledger_totals[vehicle.id] / current_odometer[vehicle.id] / 100.0,
+            }
+            for vehicle in vehicles
+        ],
         "transaction_counts": {
             "fuel_transactions": len(fuel_txs),
             "toll_transactions": len(toll_txs),
-            "expenses": len(expenses),
+            "expenses": len(ledger_expenses),
             "parts_used": len(parts_used),
         },
     }
@@ -9772,6 +9964,7 @@ def get_financial_reconciliation(
         ).filter(
             Expense.organization_id == user.organization_id,
             func.upper(Expense.category) == "FUEL",
+            Expense.status != "Rejected",
             Expense.vehicle_id.is_not(None),
         ).group_by(Expense.vehicle_id).all()
     }

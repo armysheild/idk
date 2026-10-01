@@ -8,8 +8,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fastapi.testclient import TestClient
 
-from backend.app.database import Base, engine
+from backend.app.database import Base, SessionLocal, engine
 from backend.app.main import app
+from backend.app.models import Organization
 
 
 def _invite(client: TestClient, owner_headers: dict[str, str], email: str, role: str) -> dict[str, str]:
@@ -183,6 +184,10 @@ def test_work_order_completion_resets_component_and_notifies_operations(tmp_path
         })
         assert signup.status_code == 201
         owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+        with SessionLocal() as database:
+            organization = database.get(Organization, signup.json()["user"]["organization_id"])
+            organization.labor_rate_per_hour = 500
+            database.commit()
         mechanic_headers = _invite(client, owner_headers, f"mechanic-{uuid4().hex[:8]}@completion.example", "mechanic")
         mechanic_id = client.get("/api/v1/auth/me", headers=mechanic_headers).json()["id"]
         fleet_headers = _invite(client, owner_headers, f"fleet-{uuid4().hex[:8]}@completion.example", "fleet_manager")
@@ -216,10 +221,19 @@ def test_work_order_completion_resets_component_and_notifies_operations(tmp_path
         completed = client.post(
             f"/api/v1/work-orders/{order_id}/complete",
             headers=mechanic_headers,
-            json={"component_id": component.json()["id"]},
+            json={"component_id": component.json()["id"], "labor_hours": 2},
         )
         assert completed.status_code == 200
         assert completed.json()["status"] == "Ready for review"
+        accountant_expenses = client.get("/api/v1/expenses", headers=owner_headers)
+        assert accountant_expenses.status_code == 200
+        maintenance_expense = next(
+            item
+            for item in accountant_expenses.json()
+            if item["cost_center"] == f"work_order:{order_id}"
+        )
+        assert maintenance_expense["category"] == "MAINTENANCE"
+        assert maintenance_expense["status"] == "Pending"
 
         refreshed = client.get("/api/v1/components", headers=fleet_headers).json()
         updated = next(item for item in refreshed if item["id"] == component.json()["id"])
