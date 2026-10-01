@@ -35,6 +35,7 @@ def upgrade() -> None:
         sa.Column("total_amount_paise", sa.Integer),
         sa.Column("incurred_on", sa.String),
         sa.Column("created_by", sa.Integer),
+        sa.Column("created_at", sa.DateTime),
     )
     work_orders = sa.Table(
         "work_orders",
@@ -100,7 +101,7 @@ def upgrade() -> None:
                 cost_center=source_key,
                 status="Pending",
                 created_by=fuel.created_by,
-                created_at=datetime.now(timezone.utc),
+                created_at=fuel.created_at or datetime.now(timezone.utc),
             )
         )
         existing.add(source_key)
