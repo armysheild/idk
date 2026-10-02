@@ -24,6 +24,10 @@
       "destination": "/api?path=/health"
     },
     {
+      "source": "/ready",
+      "destination": "/api?path=/ready"
+    },
+    {
       "source": "/api/:path*",
       "destination": "/api?path=/:path*"
     },

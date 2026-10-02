@@ -3,7 +3,9 @@ from datetime import datetime
 
 from datetime import datetime
 from typing import Any, Generic, TypeVar
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+
+from .telematics import validate_provider_url
 
 
 T = TypeVar('T')
@@ -633,6 +635,10 @@ class ExpenseReversal(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+class ExpenseReconciliation(BaseModel):
+    reconciliation_ref: str = Field(min_length=3, max_length=160)
+
+
 class MaintenancePlanCreate(BaseModel):
     vehicle_id: int
     name: str = Field(min_length=2, max_length=200)
@@ -824,6 +830,9 @@ class ExpenseRead(ExpenseCreate):
     created_by: int | None
     approved_by: int | None
     approved_at: datetime | None
+    amount_paise: int = Field(ge=0)
+    reconciled_at: datetime | None
+    reconciliation_ref: str | None
     created_at: datetime
 
 
@@ -956,6 +965,11 @@ class TelematicsIntegrationCreate(BaseModel):
     api_token: str | None = Field(default=None, min_length=1, max_length=500)
     active: bool = True
     sync_interval_minutes: int = Field(default=1440, ge=15, le=10080)
+
+    @model_validator(mode="after")
+    def validate_destination(self) -> "TelematicsIntegrationCreate":
+        validate_provider_url(self.base_url, self.sync_path)
+        return self
 
 
 class TelematicsIntegrationRead(BaseModel):
@@ -1096,18 +1110,24 @@ class PurchaseOrderReceiptCreate(BaseModel):
     backordered_quantity: int = Field(default=0, ge=0)
     variance_reason: str | None = None
     unit_cost_paise: int = Field(gt=0)
-    invoice_number: str | None = None
-    location_id: int | None = None
+    invoice_number: str = Field(min_length=1, max_length=120)
+    location_id: int
 
 
 class PurchaseOrderReceiptRead(PurchaseOrderReceiptCreate):
     model_config = ConfigDict(from_attributes=True)
 
+    invoice_number: str | None = None
+    location_id: int | None = None
     id: int
     organization_id: int
     purchase_order_id: int
     received_by: int
     received_at: datetime
+
+
+class PurchaseOrderPartialReceiptCreate(BaseModel):
+    items: list[PurchaseOrderReceiptCreate] = Field(min_length=1)
 
 
 class DocumentUpdate(BaseModel):
