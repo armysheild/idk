@@ -239,6 +239,7 @@ class WorkOrder(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     labor_hours: Mapped[Optional[int]] = mapped_column(Integer)
+    labor_rate_paise: Mapped[Optional[int]] = mapped_column(Integer)
     repair_notes: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
@@ -351,6 +352,8 @@ class MaintenancePlan(Base):
     organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
     vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    template_id: Mapped[Optional[int]] = mapped_column(ForeignKey("maintenance_templates.id"))
+    tasks: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     interval_km: Mapped[Optional[int]] = mapped_column(Integer)
     interval_days: Mapped[Optional[int]] = mapped_column(Integer)
     next_due_km: Mapped[Optional[int]] = mapped_column(Integer)
@@ -590,6 +593,8 @@ class Expense(Base):
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
     approved_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    reconciled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    reconciliation_ref: Mapped[Optional[str]] = mapped_column(String(160))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 

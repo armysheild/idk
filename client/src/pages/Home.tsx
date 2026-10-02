@@ -345,7 +345,8 @@ export default function Home({ initialSection = "Command center", publicMode = "
     <CommandDeck
       operatorName={operatorName}
       activeVehicles={activeVehicleCount}
-      vehicleCount={vehicleCount}
+      vehicleCount={Number(backendSummary?.fleetOverview?.totalVehicles ?? vehicleCount)}
+      activeWorkOrders={activeWorkOrderCount}
       unreadCount={unreadNotificationCount}
       lowStockCount={lowStockCount}
       expenseTotal={formatInr(expenseTotal)}

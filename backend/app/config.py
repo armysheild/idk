@@ -1,6 +1,7 @@
 from functools import lru_cache
 import pytz
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,8 +45,13 @@ class Settings(BaseSettings):
     whatsapp_sender_id: str | None = None
     whatsapp_template_id: str | None = None
     telematics_default_timeout_seconds: int = 30
-    telematics_cron_secret: str | None = None
+    telematics_cron_secret: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("CRON_SECRET", "VAHANA_TELEMATICS_CRON_SECRET"),
+    )
     telematics_credential_key: str | None = None
+    telematics_provider_hosts: dict[str, list[str]] = {}
+    telematics_credentials: dict[str, dict[str, str]] = {}
     razorpay_key_id: str | None = None
     razorpay_key_secret: str | None = None
     razorpay_webhook_secret: str | None = None

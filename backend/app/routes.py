@@ -11,22 +11,22 @@ import threading
 import time
 from html import escape
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 from uuid import uuid4
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, ConfigDict
-from sqlalchemy import delete, false, select, func
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import delete, false, select, func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from .config import get_settings
 from .database import get_db
 from .dependencies import get_current_user, normalize_role, oauth2_scheme, require_development_mode, require_permission, require_roles
-from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComponentServiceRecord, ComplianceDocument, DocumentAccessLog, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationFeatureFlag, OrganizationIntegration, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
+from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComponentServiceRecord, ComplianceDocument, DocumentAccessLog, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, MaintenanceTemplate, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationFeatureFlag, OrganizationIntegration, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
 from .security import (
     create_access_token,
     decode_supabase_token,
@@ -87,6 +87,7 @@ from .schemas import (
     PartCreate,
     PartRead,
     PurchaseOrderCreate,
+    PurchaseOrderPartialReceiptCreate,
     PurchaseOrderReceiptCreate,
     PurchaseOrderReceiptRead,
     PurchaseOrderRead,
@@ -152,6 +153,9 @@ from .schemas import (
     AuditEventRead,
 )
 from .storage import download_object, resolve_object, save_upload
+from .telematics import approved_provider_url
+from .finance import capture_labor_rate, expense_statement, period_distance
+from .schemas import ExpenseReconciliation
 
 router = APIRouter(prefix="/api/v1")
 
@@ -1322,6 +1326,53 @@ def get_vehicle(
     return vehicle
 
 
+def set_vehicle_driver_assignment(
+    vehicle: Vehicle,
+    driver: User | None,
+    database: Session,
+) -> tuple[VehicleAssignment | None, int, bool]:
+    conditions = [VehicleAssignment.vehicle_id == vehicle.id]
+    if driver is not None:
+        conditions.append(VehicleAssignment.driver_id == driver.id)
+        previous_vehicles = database.scalars(select(Vehicle).where(
+            Vehicle.organization_id == vehicle.organization_id,
+            Vehicle.assigned_driver_id == driver.id,
+            Vehicle.id != vehicle.id,
+        ).order_by(Vehicle.id).with_for_update()).all()
+        for previous_vehicle in previous_vehicles:
+            previous_vehicle.assigned_driver_id = None
+            previous_vehicle.driver_name = None
+    assignments = database.scalars(select(VehicleAssignment).where(
+        VehicleAssignment.organization_id == vehicle.organization_id,
+        VehicleAssignment.active.is_(True),
+        or_(*conditions),
+    ).order_by(VehicleAssignment.id).with_for_update()).all()
+    current = None
+    closed_count = 0
+    for assignment in assignments:
+        if (
+            current is None and driver is not None
+            and assignment.vehicle_id == vehicle.id and assignment.driver_id == driver.id
+        ):
+            current = assignment
+        else:
+            assignment.active = False
+            assignment.ended_at = utc_now()
+            closed_count += 1
+    changed = closed_count > 0 or vehicle.assigned_driver_id != (driver.id if driver else None)
+    vehicle.assigned_driver_id = driver.id if driver else None
+    vehicle.driver_name = driver.full_name if driver else None
+    if driver is not None and current is None:
+        current = VehicleAssignment(
+            organization_id=vehicle.organization_id,
+            vehicle_id=vehicle.id,
+            driver_id=driver.id,
+        )
+        database.add(current)
+        changed = True
+    return current, closed_count, changed
+
+
 @router.post("/vehicles", response_model=VehicleRead, status_code=status.HTTP_201_CREATED)
 def create_vehicle(
     payload: VehicleCreate,
@@ -1333,12 +1384,13 @@ def create_vehicle(
     existing = database.scalar(select(Vehicle).where(Vehicle.organization_id == user.organization_id, Vehicle.registration_number == registration_number))
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A vehicle with this registration number already exists")
+    driver = None
     if payload.assigned_driver_id is not None:
         driver = database.scalar(select(User).where(
             User.id == payload.assigned_driver_id,
             User.organization_id == user.organization_id,
             User.role == "driver",
-        ))
+        ).with_for_update())
         if driver is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Assigned user must be a driver in this organization")
         driver_name = driver.full_name
@@ -1385,12 +1437,8 @@ def create_vehicle(
     )
     database.add(vehicle)
     database.flush()
-    if vehicle.assigned_driver_id is not None:
-        database.add(VehicleAssignment(
-            organization_id=user.organization_id,
-            vehicle_id=vehicle.id,
-            driver_id=vehicle.assigned_driver_id,
-        ))
+    if driver is not None:
+        set_vehicle_driver_assignment(vehicle, driver, database)
     if vehicle.odometer_km:
         database.add(OdometerLog(
             organization_id=user.organization_id,
@@ -1461,40 +1509,27 @@ def update_vehicle(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Odometer reading cannot be lower than the current vehicle reading",
         )
+    driver = None
     if "assigned_driver_id" in changes and changes["assigned_driver_id"] is not None:
         driver = database.scalar(select(User).where(
             User.id == changes["assigned_driver_id"],
             User.organization_id == user.organization_id,
             User.role == "driver",
-        ))
+        ).with_for_update())
         if driver is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Assigned user must be a driver in this organization")
         changes["driver_name"] = driver.full_name
     elif changes.get("assigned_driver_id") is None and "assigned_driver_id" in changes:
         changes["driver_name"] = None
-    previous_driver_id = vehicle.assigned_driver_id
     previous_odometer = vehicle.odometer_km
+    if "assigned_driver_id" in changes:
+        set_vehicle_driver_assignment(vehicle, driver, database)
     for key, value in changes.items():
         if key in {"vin", "chassis_number", "engine_number"} and value:
             value = value.strip().upper()
         elif isinstance(value, str) and key in {"make", "model", "depot", "assigned_route", "maintenance_template"}:
             value = value.strip()
         setattr(vehicle, key, value)
-    if "assigned_driver_id" in changes and changes["assigned_driver_id"] != previous_driver_id:
-        active_assignment = database.scalar(select(VehicleAssignment).where(
-            VehicleAssignment.organization_id == user.organization_id,
-            VehicleAssignment.vehicle_id == vehicle.id,
-            VehicleAssignment.active.is_(True),
-        ))
-        if active_assignment is not None:
-            active_assignment.active = False
-            active_assignment.ended_at = utc_now()
-        if changes["assigned_driver_id"] is not None:
-            database.add(VehicleAssignment(
-                organization_id=user.organization_id,
-                vehicle_id=vehicle.id,
-                driver_id=changes["assigned_driver_id"],
-            ))
     if "odometer_km" in changes:
         odometer_flagged = odometer_reading_is_flagged(
             database,
@@ -2102,6 +2137,7 @@ def update_work_order(
         transitioned_at = utc_now()
         if changes["status"] == "In progress" and work_order.started_at is None:
             work_order.started_at = transitioned_at
+            capture_labor_rate(database, work_order)
         elif changes["status"] == "Ready for review" and work_order.completed_at is None:
             work_order.completed_at = transitioned_at
         elif changes["status"] == "Archived":
@@ -2277,6 +2313,7 @@ def start_work_order(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only open or assigned work orders can be started")
     work_order.status = "In progress"
     work_order.started_at = utc_now()
+    capture_labor_rate(database, work_order)
     database.add(AuditLog(
         organization_id=user.organization_id,
         actor_user_id=user.id,
@@ -4133,14 +4170,54 @@ def list_expenses(
     limit: int = 20,
     user: User = Depends(require_permission("finance_read")),
     database: Session = Depends(get_db),
+    vehicle_id: int | None = None,
+    transaction_type: Literal["REVENUE", "EXPENSE"] | None = None,
+    category: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> list[Expense]:
     limit = min(max(limit, 1), 100)
     skip = max(skip, 0)
     _ensure_historical_operational_expenses(database, user)
-    statement = select(Expense).where(Expense.organization_id == user.organization_id)
+    statement = expense_statement(user.organization_id, vehicle_id, transaction_type, category, start_date, end_date)
     if user.role not in ("owner", "accountant"):
         statement = statement.where(false())
     return list(database.scalars(statement.order_by(Expense.incurred_on.desc(), Expense.id.desc()).offset(skip).limit(limit)).all())
+
+
+@router.get("/financials/ledger")
+def paged_financial_ledger(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    vehicle_id: int | None = None,
+    transaction_type: Literal["REVENUE", "EXPENSE"] | None = None,
+    category: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    user: User = Depends(require_roles("owner", "accountant")),
+    database: Session = Depends(get_db),
+) -> dict:
+    _ensure_historical_operational_expenses(database, user)
+    statement = expense_statement(user.organization_id, vehicle_id, transaction_type, category, start_date, end_date)
+    total = database.scalar(select(func.count()).select_from(statement.subquery())) or 0
+    items = database.scalars(statement.order_by(Expense.incurred_on.desc(), Expense.id.desc()).offset(skip).limit(limit)).all()
+    return {"items": [ExpenseRead.model_validate(item) for item in items], "total": total, "skip": skip, "limit": limit}
+
+
+@router.get("/financials/vehicles")
+def financial_vehicle_choices(
+    user: User = Depends(require_roles("owner", "accountant")),
+    database: Session = Depends(get_db),
+) -> list[dict]:
+    vehicles = database.scalars(select(Vehicle).where(Vehicle.organization_id == user.organization_id).order_by(Vehicle.registration_number)).all()
+    return [{
+        "id": str(vehicle.id),
+        "vin": vehicle.vin or "",
+        "licensePlate": vehicle.registration_number,
+        "make": vehicle.make or "",
+        "model": vehicle.model,
+        "currentOdometer": vehicle.odometer_km,
+    } for vehicle in vehicles]
 
 
 def _ensure_operational_expense(
@@ -4188,7 +4265,7 @@ def _ensure_operational_expense(
         expense.status = "Pending"
         expense.approved_by = None
         expense.approved_at = None
-    elif expense.status != "Rejected":
+    elif expense.status == "Pending":
         expense.vehicle_id = vehicle_id
         expense.amount_paise = amount_paise
         expense.incurred_on = incurred_on
@@ -4198,19 +4275,24 @@ def _ensure_operational_expense(
 
 
 def _sync_work_order_expense(database: Session, work_order: WorkOrder, user: User) -> Expense | None:
+    existing = database.scalar(select(Expense).where(
+        Expense.organization_id == user.organization_id,
+        Expense.cost_center == f"work_order:{work_order.id}",
+    ))
+    if existing is not None and existing.status == "Approved":
+        return existing
     part_usages = database.scalars(select(WorkOrderPartUsage).where(
         WorkOrderPartUsage.work_order_id == work_order.id,
         WorkOrderPartUsage.organization_id == user.organization_id,
     )).all()
-    organization = database.get(Organization, user.organization_id)
+    capture_labor_rate(database, work_order)
     parts_cost_paise = sum(
         part_usage.quantity * part_usage.unit_cost_paise
         for part_usage in part_usages
     )
     labor_cost_paise = (
         (work_order.labor_hours or 0)
-        * (organization.labor_rate_per_hour if organization else 0)
-        * 100
+        * work_order.labor_rate_paise
     )
     amount_paise = parts_cost_paise + labor_cost_paise
     if amount_paise <= 0:
@@ -4239,12 +4321,18 @@ def _sync_work_order_expense(database: Session, work_order: WorkOrder, user: Use
 
 
 def _ensure_historical_operational_expenses(database: Session, user: User) -> None:
+    existing_sources = set(database.scalars(select(Expense.cost_center).where(
+        Expense.organization_id == user.organization_id,
+        Expense.cost_center.is_not(None),
+    )).all())
     fuel_transactions = database.scalars(
         select(FuelTransaction).where(
             FuelTransaction.organization_id == user.organization_id,
         )
     ).all()
     for fuel in fuel_transactions:
+        if f"fuel_transaction:{fuel.id}" in existing_sources:
+            continue
         _ensure_operational_expense(
             database,
             organization_id=user.organization_id,
@@ -4266,6 +4354,8 @@ def _ensure_historical_operational_expenses(database: Session, user: User) -> No
         )
     ).all()
     for work_order in work_orders:
+        if f"work_order:{work_order.id}" in existing_sources:
+            continue
         if work_order.status == "Archived" and work_order.started_at is None:
             continue
         _sync_work_order_expense(database, work_order, user)
@@ -4361,6 +4451,7 @@ def update_expense_status(
 def reconcile_expense(
     expense_id: int,
     request: Request,
+    payload: ExpenseReconciliation | None = None,
     user: User = Depends(require_roles("accountant")),
     database: Session = Depends(get_db),
 ) -> Expense:
@@ -4372,13 +4463,21 @@ def reconcile_expense(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
     if expense.status == "Rejected":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Rejected expenses cannot be reconciled")
-    if expense.status != "Pending":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only pending expenses can be reconciled")
+    if expense.status not in {"Pending", "Approved"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only pending or approved expenses can be reconciled")
     if expense.created_by == user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Users cannot approve their own expenses")
-    expense.status = "Approved"
-    expense.approved_by = user.id
-    expense.approved_at = utc_now()
+    reference = payload.reconciliation_ref if payload else None
+    if expense.reconciled_at is not None:
+        if expense.reconciliation_ref != reference:
+            raise HTTPException(status_code=409, detail="Expense is already reconciled with another reference")
+        return expense
+    if expense.status == "Pending":
+        expense.status = "Approved"
+        expense.approved_by = user.id
+        expense.approved_at = utc_now()
+    expense.reconciled_at = utc_now()
+    expense.reconciliation_ref = reference
     database.add(AuditLog(
         organization_id=user.organization_id,
         actor_user_id=user.id,
@@ -4386,6 +4485,7 @@ def reconcile_expense(
         entity_type="expense",
         entity_id=str(expense.id),
         request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps({"reconciliation_ref": reference}),
     ))
     database.commit()
     database.refresh(expense)
@@ -4577,8 +4677,7 @@ def integration_credential(integration: TelematicsIntegration) -> str | None:
             return None
     if not integration.credential_ref:
         return None
-    env_name = f"VAHANA_TELEMATICS_TOKEN_{integration.credential_ref.upper().replace('-', '_')}"
-    return os.getenv(env_name) or os.getenv(integration.credential_ref)
+    return settings.telematics_credentials.get(str(integration.organization_id), {}).get(integration.credential_ref)
 
 
 def normalize_external_reading(item: dict) -> dict:
@@ -4605,10 +4704,14 @@ def sync_telematics_integration(integration: TelematicsIntegration, database: Se
         database.commit()
         return {"integration_id": integration.id, "status": "missing_credentials", "readings": 0, "vehicles_updated": 0}
     try:
+        provider_url = approved_provider_url(
+            integration.provider, integration.base_url, integration.sync_path, get_settings(),
+        )
         response = httpx.get(
-            f"{integration.base_url.rstrip('/')}/{integration.sync_path.lstrip('/')}",
+            provider_url,
             headers={"Authorization": f"Bearer {token}", "X-Provider": integration.provider},
             timeout=get_settings().telematics_default_timeout_seconds,
+            follow_redirects=False,
         )
         response.raise_for_status()
         payload = response.json()
@@ -4619,20 +4722,26 @@ def sync_telematics_integration(integration: TelematicsIntegration, database: Se
         updated = 0
         for raw_item in readings:
             if not isinstance(raw_item, dict):
-                continue
+                raise ValueError("Each provider reading must be an object")
             item = normalize_external_reading(raw_item)
             identifier = item["device_identifier"]
             recorded_at = item["recorded_at"]
             if not identifier or not recorded_at:
-                continue
+                raise ValueError("Provider reading requires a device identifier and timestamp")
             device = database.scalar(select(TelematicsDevice).where(
                 TelematicsDevice.organization_id == integration.organization_id,
+                TelematicsDevice.provider == integration.provider,
                 TelematicsDevice.device_identifier == str(identifier),
                 TelematicsDevice.active.is_(True),
             ))
             if device is None:
                 continue
-            recorded_datetime = datetime.fromisoformat(str(recorded_at).replace("Z", "+00:00"))
+            validated = TelemetryReadingCreate.model_validate({
+                key: value for key, value in item.items() if key != "device_identifier"
+            })
+            recorded_datetime = validated.recorded_at
+            if recorded_datetime.tzinfo is None:
+                recorded_datetime = recorded_datetime.replace(tzinfo=timezone.utc)
             exists = database.scalar(select(TelemetryReading).where(
                 TelemetryReading.device_id == device.id,
                 TelemetryReading.recorded_at == recorded_datetime,
@@ -4647,24 +4756,30 @@ def sync_telematics_integration(integration: TelematicsIntegration, database: Se
                 vehicle_id=device.vehicle_id,
                 device_id=device.id,
                 recorded_at=recorded_datetime,
-                odometer_km=item["odometer_km"],
-                latitude_e6=item["latitude_e6"],
-                longitude_e6=item["longitude_e6"],
-                speed_kph=item["speed_kph"],
-                fuel_level_percent=item["fuel_level_percent"],
-                engine_on=item["engine_on"],
+                **validated.model_dump(exclude={"recorded_at"}),
             )
             database.add(reading)
-            if item["odometer_km"] is not None and item["odometer_km"] > vehicle.odometer_km:
-                vehicle.odometer_km = item["odometer_km"]
+            if validated.odometer_km is not None:
+                database.add(OdometerLog(
+                    organization_id=integration.organization_id,
+                    vehicle_id=device.vehicle_id,
+                    reading_km=validated.odometer_km,
+                    source="telematics",
+                    is_flagged=validated.odometer_km < vehicle.odometer_km,
+                    created_at=recorded_datetime,
+                ))
+            if validated.odometer_km is not None and validated.odometer_km > vehicle.odometer_km:
+                vehicle.odometer_km = validated.odometer_km
                 updated += 1
             device.last_seen_at = recorded_datetime
             created += 1
+            database.flush()
         integration.last_synced_at = utc_now()
         integration.last_sync_status = "success"
         database.commit()
         return {"integration_id": integration.id, "status": "success", "readings": created, "vehicles_updated": updated}
     except (httpx.HTTPError, ValueError, TypeError, KeyError):
+        database.rollback()
         integration.last_synced_at = utc_now()
         integration.last_sync_status = "failed"
         database.commit()
@@ -4882,6 +4997,7 @@ def sync_due_telematics(
     return results
 
 
+@router.get("/telematics/cron-sync")
 @router.post("/telematics/cron-sync")
 def cron_sync_telematics(
     request: Request,
@@ -4961,7 +5077,7 @@ def cron_sync_telematics(
                     WorkOrder.status.not_in(("Completed", "Cancelled", "Archived")),
                 ))
                 if existing_work_order is None and vehicle is not None:
-                    database.add(WorkOrder(
+                    work_order = WorkOrder(
                         organization_id=organization.id,
                         vehicle_id=vehicle.id,
                         maintenance_plan_id=plan.id,
@@ -4972,7 +5088,18 @@ def cron_sync_telematics(
                         priority="High",
                         status="Open",
                         due_date=plan.next_due_on,
-                    ))
+                    )
+                    database.add(work_order)
+                    database.flush()
+                    database.add_all([
+                        WorkOrderChecklistItem(
+                            organization_id=organization.id,
+                            work_order_id=work_order.id,
+                            title=task,
+                            sort_order=index,
+                        )
+                        for index, task in enumerate(json.loads(plan.tasks))
+                    ])
                     maintenance_work_orders += 1
                 queue_role_notification(
                     database,
@@ -5110,7 +5237,7 @@ def ingest_telemetry(
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
     previous_odometer = vehicle.odometer_km
-    if payload.odometer_km > vehicle.odometer_km:
+    if payload.odometer_km is not None and payload.odometer_km > vehicle.odometer_km:
         vehicle.odometer_km = payload.odometer_km
         evaluate_component_thresholds(user, vehicle, database)
     if payload.odometer_km is not None:
@@ -5119,6 +5246,7 @@ def ingest_telemetry(
             vehicle_id=device.vehicle_id,
             reading_km=payload.odometer_km,
             source="telematics",
+            created_at=payload.recorded_at,
             is_flagged=odometer_reading_is_flagged(
                 database,
                 user.organization_id,
@@ -5244,6 +5372,8 @@ def create_purchase_order(
     if vendor is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Active vendor not found in this organization")
     part_ids = [line.part_id for line in payload.lines]
+    if len(set(part_ids)) != len(part_ids):
+        raise HTTPException(status_code=422, detail="A part can appear only once in a purchase order")
     parts = list(database.scalars(select(Part).where(Part.id.in_(part_ids), Part.organization_id == user.organization_id)).all())
     parts_by_id = {part.id: part for part in parts}
     if len(parts_by_id) != len(set(part_ids)):
@@ -5334,6 +5464,118 @@ def list_purchase_order_receipts(
     ).order_by(PurchaseOrderReceipt.id.desc())).all())
 
 
+def apply_purchase_order_receipts(
+    order: PurchaseOrder,
+    payloads: list[PurchaseOrderReceiptCreate],
+    user: User,
+    database: Session,
+) -> list[PurchaseOrderReceipt]:
+    if order.status not in {"Submitted", "Approved", "Partially received"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only submitted, approved, or partially received purchase orders can be received",
+        )
+    part_ids = [payload.part_id for payload in payloads]
+    if len(set(part_ids)) != len(part_ids):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Each purchase-order line can appear only once per receipt",
+        )
+    lines = list(database.scalars(
+        select(PurchaseOrderLine).where(
+            PurchaseOrderLine.organization_id == user.organization_id,
+            PurchaseOrderLine.purchase_order_id == order.id,
+        )
+    ).all())
+    lines_by_part = {line.part_id: line for line in lines}
+    prior_receipts = list(database.scalars(
+        select(PurchaseOrderReceipt).where(
+            PurchaseOrderReceipt.organization_id == user.organization_id,
+            PurchaseOrderReceipt.purchase_order_id == order.id,
+        )
+    ).all())
+    received_by_part: dict[int, int] = {}
+    for receipt in prior_receipts:
+        received_by_part[receipt.part_id] = received_by_part.get(receipt.part_id, 0) + receipt.quantity
+
+    validated: list[tuple[PurchaseOrderReceiptCreate, Part]] = []
+    for payload in payloads:
+        line = lines_by_part.get(payload.part_id)
+        if line is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Part {payload.part_id} is not included in this purchase order",
+            )
+        remaining = line.quantity - received_by_part.get(payload.part_id, 0)
+        if payload.quantity > remaining:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Receipt quantity for part {payload.part_id} exceeds the remaining ordered quantity",
+            )
+        if payload.damaged_quantity > payload.quantity:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Damaged quantity cannot exceed received quantity",
+            )
+        if payload.backordered_quantity > remaining - payload.quantity:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Backordered quantity cannot exceed the unreceived ordered quantity",
+            )
+        if payload.location_id is not None and database.scalar(
+            select(StockLocation).where(
+                StockLocation.id == payload.location_id,
+                StockLocation.organization_id == user.organization_id,
+                StockLocation.active.is_(True),
+            )
+        ) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receiving location not found")
+        part = database.scalar(
+            select(Part).where(
+                Part.id == payload.part_id,
+                Part.organization_id == user.organization_id,
+            ).with_for_update()
+        )
+        if part is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part not found in this organization")
+        validated.append((payload, part))
+
+    receipts: list[PurchaseOrderReceipt] = []
+    for payload, part in validated:
+        good_quantity = payload.quantity - payload.damaged_quantity
+        prior_value = part.quantity_on_hand * part.unit_cost_paise
+        if good_quantity:
+            part.quantity_on_hand += good_quantity
+            part.unit_cost_paise = round(
+                (prior_value + good_quantity * payload.unit_cost_paise)
+                / part.quantity_on_hand
+            )
+            database.add(InventoryTransaction(
+                organization_id=user.organization_id,
+                part_id=part.id,
+                transaction_type="receipt",
+                quantity=good_quantity,
+                reference=f"{order.order_number}:{payload.invoice_number or 'receipt'}",
+                created_by=user.id,
+            ))
+        receipt = PurchaseOrderReceipt(
+            organization_id=user.organization_id,
+            purchase_order_id=order.id,
+            received_by=user.id,
+            **payload.model_dump(),
+        )
+        database.add(receipt)
+        receipts.append(receipt)
+        received_by_part[payload.part_id] = received_by_part.get(payload.part_id, 0) + payload.quantity
+
+    order.status = (
+        "Received"
+        if lines and all(received_by_part.get(line.part_id, 0) >= line.quantity for line in lines)
+        else "Partially received"
+    )
+    return receipts
+
+
 @router.post("/purchase-orders/{purchase_order_id}/receipts", response_model=PurchaseOrderReceiptRead, status_code=status.HTTP_201_CREATED)
 def receive_purchase_order(
     purchase_order_id: int,
@@ -5346,53 +5588,10 @@ def receive_purchase_order(
     order = database.scalar(select(PurchaseOrder).where(
         PurchaseOrder.id == purchase_order_id,
         PurchaseOrder.organization_id == user.organization_id,
-    ))
+    ).with_for_update())
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
-    part = database.scalar(select(Part).where(
-        Part.id == payload.part_id,
-        Part.organization_id == user.organization_id,
-    ).with_for_update())
-    if part is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part not found in this organization")
-    line = database.scalar(select(PurchaseOrderLine).where(
-        PurchaseOrderLine.organization_id == user.organization_id,
-        PurchaseOrderLine.purchase_order_id == order.id,
-        PurchaseOrderLine.part_id == payload.part_id,
-    ))
-    if line is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Part is not included in this purchase order")
-    if payload.damaged_quantity > payload.quantity:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Damaged quantity cannot exceed received quantity")
-    prior_receipts = list(database.scalars(select(PurchaseOrderReceipt).where(
-        PurchaseOrderReceipt.organization_id == user.organization_id,
-        PurchaseOrderReceipt.purchase_order_id == order.id,
-        PurchaseOrderReceipt.part_id == payload.part_id,
-    )).all())
-    if sum(receipt.quantity for receipt in prior_receipts) + payload.quantity > line.quantity:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Receipt quantity exceeds the ordered quantity")
-    if payload.location_id is not None and database.scalar(select(StockLocation).where(
-        StockLocation.id == payload.location_id,
-        StockLocation.organization_id == user.organization_id,
-    )) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receiving location not found")
-    receipt = PurchaseOrderReceipt(
-        organization_id=user.organization_id,
-        purchase_order_id=order.id,
-        received_by=user.id,
-        **payload.model_dump(),
-    )
-    part.quantity_on_hand += payload.quantity - payload.damaged_quantity
-    order.status = "Partially received"
-    database.add(receipt)
-    database.add(InventoryTransaction(
-        organization_id=user.organization_id,
-        part_id=part.id,
-        transaction_type="receipt",
-        quantity=payload.quantity - payload.damaged_quantity,
-        reference=order.order_number,
-        created_by=user.id,
-    ))
+    receipt = apply_purchase_order_receipts(order, [payload], user, database)[0]
     database.add(AuditLog(
         organization_id=user.organization_id,
         actor_user_id=user.id,
@@ -5400,7 +5599,15 @@ def receive_purchase_order(
         entity_type="purchase_order",
         entity_id=str(order.id),
         request_id=request.headers.get("x-request-id", str(uuid4())),
-        changes=json.dumps({"part_id": part.id, "quantity": payload.quantity, "damaged_quantity": payload.damaged_quantity}),
+        changes=json.dumps({
+            "part_id": payload.part_id,
+            "quantity": payload.quantity,
+            "damaged_quantity": payload.damaged_quantity,
+            "unit_cost_paise": payload.unit_cost_paise,
+            "invoice_number": payload.invoice_number,
+            "location_id": payload.location_id,
+            "status": order.status,
+        }),
     ))
     database.commit()
     database.refresh(receipt)
@@ -5522,10 +5729,15 @@ def export_expenses(
     format: str | None = Query(default=None, pattern="^(csv|pdf)$"),
     user: User = Depends(require_permission("finance_read")),
     database: Session = Depends(get_db),
+    vehicle_id: int | None = None,
+    transaction_type: Literal["REVENUE", "EXPENSE"] | None = None,
+    category: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> dict:
+    _ensure_historical_operational_expenses(database, user)
     expenses = database.scalars(
-        select(Expense)
-        .where(Expense.organization_id == user.organization_id)
+        expense_statement(user.organization_id, vehicle_id, transaction_type, category, start_date, end_date)
         .order_by(Expense.incurred_on.desc(), Expense.id.desc())
     ).all()
     return export_payload(
@@ -5782,7 +5994,7 @@ def assign_vehicle_driver(
     vehicle = database.scalar(select(Vehicle).where(
         Vehicle.id == vehicle_id,
         Vehicle.organization_id == user.organization_id,
-    ))
+    ).with_for_update())
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found in this organization")
     
@@ -5790,35 +6002,25 @@ def assign_vehicle_driver(
         User.id == payload.driver_id,
         User.organization_id == user.organization_id,
         User.role == "driver",
-    ))
+    ).with_for_update())
     if driver is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Driver not found in this organization")
     
-    # Close any existing assignments for this driver or vehicle
-    existing_assignments = database.scalars(select(VehicleAssignment).where(
-        VehicleAssignment.organization_id == user.organization_id,
-        VehicleAssignment.active == True,
-        (VehicleAssignment.driver_id == payload.driver_id) | (VehicleAssignment.vehicle_id == vehicle_id),
-    )).all()
-    
-    closed_count = 0
-    for assignment in existing_assignments:
-        if assignment.driver_id != payload.driver_id or assignment.vehicle_id != vehicle_id:
-            assignment.active = False
-            assignment.ended_at = utc_now()
-            closed_count += 1
-    
-    # Create new assignment
-    assignment = VehicleAssignment(
-        organization_id=user.organization_id,
-        vehicle_id=vehicle_id,
-        driver_id=payload.driver_id,
-        active=True,
-    )
-    vehicle.assigned_driver_id = driver.id
-    vehicle.driver_name = driver.full_name
-    database.add(assignment)
+    assignment, closed_count, changed = set_vehicle_driver_assignment(vehicle, driver, database)
+    if assignment is None:
+        raise HTTPException(status_code=409, detail="Driver assignment could not be created")
     database.flush()
+    if not changed:
+        database.commit()
+        return {
+            "id": assignment.id,
+            "vehicle_id": vehicle.id,
+            "vehicle_registration": vehicle.registration_number,
+            "driver_id": driver.id,
+            "driver_name": driver.full_name,
+            "active": True,
+            "created_at": assignment.created_at,
+        }
     
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -6007,12 +6209,13 @@ def work_order_handoff_timeline(
 # FleetOps Parity - Automation Endpoints
 @router.post("/automation/evaluate-vehicle/{vehicle_id}", response_model=dict)
 def evaluate_vehicle_maintenance(
+    request: Request,
     vehicle_id: int,
     user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Evaluate a vehicle for maintenance thresholds and auto-generate work orders"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     vehicle = database.scalar(select(Vehicle).where(
         Vehicle.id == vehicle_id,
@@ -6029,11 +6232,12 @@ def evaluate_vehicle_maintenance(
 
 @router.post("/automation/evaluate-inventory", response_model=dict)
 def evaluate_low_inventory(
+    request: Request,
     user: User = Depends(require_roles("inventory_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Evaluate inventory for low stock and create draft purchase orders"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     low_stock_count = 0
     draft_purchase_orders = 0
@@ -6080,11 +6284,12 @@ def evaluate_low_inventory(
 
 @router.post("/automation/evaluate-documents", response_model=dict)
 def evaluate_document_expiry(
+    request: Request,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Evaluate compliance documents for expiry within 30 days"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     horizon = date.today() + timedelta(days=30)
     expiring_count = 0
@@ -6118,11 +6323,12 @@ def evaluate_document_expiry(
 
 @router.post("/automation/evaluate-escalations", response_model=dict)
 def evaluate_escalations(
+    request: Request,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Evaluate for critical alerts and overdue work orders that need escalation"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     cutoff = datetime.now(timezone.utc) - timedelta(days=1)
     escalated_count = 0
@@ -6512,28 +6718,51 @@ def get_organization_quota(
 # ============================================================================
 
 class MaintenanceTemplateCreate(BaseModel):
-    """Schema for creating a maintenance template"""
-    name: str
+    name: str = Field(min_length=1, max_length=200)
     description: Optional[str] = None
     vehicle_type: str
-    interval_km: Optional[int] = None
-    interval_days: Optional[int] = None
-    tasks: list[dict] = []  # list of maintenance tasks
-    
+    interval_km: int | None = Field(default=None, gt=0)
+    interval_days: int | None = Field(default=None, gt=0)
+    tasks: list[str] = Field(min_length=1)
 
-class MaintenanceTemplateRead(BaseModel):
-    """Schema for reading a maintenance template"""
-    id: int
-    organization_id: int
-    name: str
-    description: Optional[str]
-    vehicle_type: str
-    interval_km: Optional[int]
-    interval_days: Optional[int]
-    tasks: list[dict]
-    created_at: datetime
-    
-    model_config = ConfigDict(from_attributes=True)
+    @model_validator(mode="after")
+    def validate_schedule(self):
+        self.name = self.name.strip()
+        self.tasks = [task.strip() for task in self.tasks]
+        if not self.name or any(not task for task in self.tasks):
+            raise ValueError("Template name and tasks cannot be blank")
+        if self.interval_km is None and self.interval_days is None:
+            raise ValueError("At least one service interval is required")
+        return self
+
+
+class MaintenanceTemplateApply(BaseModel):
+    vehicle_id: int
+
+
+def maintenance_template_response(template: MaintenanceTemplate) -> dict:
+    return {
+        "id": template.id,
+        "organization_id": template.organization_id,
+        "name": template.name,
+        "description": template.description,
+        "vehicle_type": template.vehicle_type,
+        "interval_km": template.interval_km,
+        "interval_days": template.interval_days,
+        "tasks": json.loads(template.tasks or "[]"),
+        "created_at": template.created_at,
+    }
+
+
+def organization_maintenance_template(template_id: int, user: User, database: Session) -> MaintenanceTemplate:
+    template = database.scalar(select(MaintenanceTemplate).where(
+        MaintenanceTemplate.id == template_id,
+        MaintenanceTemplate.organization_id == user.organization_id,
+        MaintenanceTemplate.is_active.is_(True),
+    ))
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return template
 
 
 @router.get("/maintenance/templates", response_model=list[dict])
@@ -6541,57 +6770,32 @@ def list_maintenance_templates(
     user: User = Depends(require_roles("owner", "fleet_manager", "mechanic")),
     database: Session = Depends(get_db),
 ) -> list[dict]:
-    """List all maintenance templates for the organization"""
-    # Since there's no MaintenanceTemplate model, we'll return predefined templates
-    templates = [
-        {
-            "id": 1,
-            "name": "Oil Change",
-            "vehicle_type": "All",
-            "interval_km": 5000,
-            "interval_days": 180,
-            "tasks": ["Change oil", "Replace oil filter", "Check fluid levels"],
-        },
-        {
-            "id": 2,
-            "name": "Tire Rotation",
-            "vehicle_type": "All",
-            "interval_km": 10000,
-            "interval_days": 365,
-            "tasks": ["Rotate tires", "Check tire pressure", "Inspect for wear"],
-        },
-        {
-            "id": 3,
-            "name": "Battery Service",
-            "vehicle_type": "All",
-            "interval_km": 50000,
-            "interval_days": 1095,
-            "tasks": ["Clean terminals", "Check battery voltage", "Load test"],
-        },
-    ]
-    return templates
+    return [maintenance_template_response(template) for template in database.scalars(
+        select(MaintenanceTemplate).where(
+            MaintenanceTemplate.organization_id == user.organization_id,
+            MaintenanceTemplate.is_active.is_(True),
+        ).order_by(MaintenanceTemplate.id)
+    ).all()]
 
 
 @router.post("/maintenance/templates", response_model=dict)
 def create_maintenance_template(
+    request: Request,
     payload: MaintenanceTemplateCreate,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
-    """Create a new maintenance template"""
-    reserve_idempotency_key(Request(), user, database)
-    
-    return {
-        "id": 1,
-        "organization_id": user.organization_id,
-        "name": payload.name,
-        "description": payload.description,
-        "vehicle_type": payload.vehicle_type,
-        "interval_km": payload.interval_km,
-        "interval_days": payload.interval_days,
-        "tasks": payload.tasks,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
+    reserve_idempotency_key(request, user, database)
+    template = MaintenanceTemplate(
+        organization_id=user.organization_id,
+        created_by=user.id,
+        **payload.model_dump(exclude={"tasks"}),
+        tasks=json.dumps(payload.tasks),
+    )
+    database.add(template)
+    database.commit()
+    database.refresh(template)
+    return maintenance_template_response(template)
 
 
 @router.get("/maintenance/templates/{template_id}", response_model=dict)
@@ -6600,74 +6804,47 @@ def get_maintenance_template(
     user: User = Depends(require_roles("owner", "fleet_manager", "mechanic")),
     database: Session = Depends(get_db),
 ) -> dict:
-    """Get a specific maintenance template"""
-    templates = {
-        1: {
-            "id": 1,
-            "name": "Oil Change",
-            "vehicle_type": "All",
-            "interval_km": 5000,
-            "interval_days": 180,
-            "tasks": ["Change oil", "Replace oil filter", "Check fluid levels"],
-        },
-        2: {
-            "id": 2,
-            "name": "Tire Rotation",
-            "vehicle_type": "All",
-            "interval_km": 10000,
-            "interval_days": 365,
-            "tasks": ["Rotate tires", "Check tire pressure", "Inspect for wear"],
-        },
-    }
-    
-    if template_id not in templates:
-        raise HTTPException(status_code=404, detail="Template not found")
-    
-    return templates[template_id]
+    return maintenance_template_response(organization_maintenance_template(template_id, user, database))
 
 
 @router.put("/maintenance/templates/{template_id}", response_model=dict)
 def update_maintenance_template(
+    request: Request,
     template_id: int,
     payload: MaintenanceTemplateCreate,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
-    """Update an existing maintenance template"""
-    reserve_idempotency_key(Request(), user, database)
-    
-    return {
-        "id": template_id,
-        "organization_id": user.organization_id,
-        "name": payload.name,
-        "description": payload.description,
-        "vehicle_type": payload.vehicle_type,
-        "interval_km": payload.interval_km,
-        "interval_days": payload.interval_days,
-        "tasks": payload.tasks,
-        "updated": True,
-    }
+    reserve_idempotency_key(request, user, database)
+    template = organization_maintenance_template(template_id, user, database)
+    template.name = payload.name
+    template.description = payload.description
+    template.vehicle_type = payload.vehicle_type
+    template.interval_km = payload.interval_km
+    template.interval_days = payload.interval_days
+    template.tasks = json.dumps(payload.tasks)
+    database.commit()
+    return maintenance_template_response(template)
 
 
 @router.delete("/maintenance/templates/{template_id}", response_model=dict)
 def delete_maintenance_template(
+    request: Request,
     template_id: int,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
-    """Delete a maintenance template"""
-    reserve_idempotency_key(Request(), user, database)
-    
-    return {
-        "id": template_id,
-        "deleted": True,
-    }
+    reserve_idempotency_key(request, user, database)
+    template = organization_maintenance_template(template_id, user, database)
+    template.is_active = False
+    database.commit()
+    return {"id": template_id, "deleted": True}
 
 
 @router.post("/maintenance/templates/{template_id}/apply", response_model=dict)
 def apply_maintenance_template(
     template_id: int,
-    payload: dict,
+    payload: MaintenanceTemplateApply,
     request: Request,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
@@ -6675,20 +6852,36 @@ def apply_maintenance_template(
     """Apply a maintenance template to a vehicle"""
     reserve_idempotency_key(request, user, database)
     
-    vehicle_id = payload.get("vehicle_id")
-    vehicle = database.get(Vehicle, vehicle_id)
+    template = organization_maintenance_template(template_id, user, database)
+    vehicle_id = payload.vehicle_id
+    vehicle = database.scalar(select(Vehicle).where(
+        Vehicle.id == vehicle_id,
+        Vehicle.organization_id == user.organization_id,
+    ).with_for_update())
     if not vehicle or vehicle.organization_id != user.organization_id:
         raise HTTPException(status_code=404, detail="Vehicle not found")
     
-    # Create maintenance plan from template
+    if template.vehicle_type.lower() != "all" and template.vehicle_type.lower() != vehicle.vehicle_type.lower():
+        raise HTTPException(status_code=422, detail="Template does not match the vehicle type")
+    existing = database.scalar(select(MaintenancePlan).where(
+        MaintenancePlan.organization_id == user.organization_id,
+        MaintenancePlan.vehicle_id == vehicle.id,
+        MaintenancePlan.template_id == template.id,
+        MaintenancePlan.active.is_(True),
+    ))
+    if existing is not None:
+        database.commit()
+        return {"template_id": template.id, "vehicle_id": vehicle.id, "maintenance_plan_id": existing.id, "added": 0, "skipped_existing": 1, "applied": True}
     plan = MaintenancePlan(
         organization_id=user.organization_id,
         vehicle_id=vehicle_id,
-        name=f"Maintenance Task {template_id}",
-        interval_km=5000,
-        interval_days=180,
-        next_due_km=vehicle.odometer_km + 5000,
-        next_due_on=(datetime.now(timezone.utc) + timedelta(days=180)).strftime("%Y-%m-%d"),
+        template_id=template.id,
+        name=template.name,
+        interval_km=template.interval_km,
+        interval_days=template.interval_days,
+        tasks=template.tasks or "[]",
+        next_due_km=vehicle.odometer_km + template.interval_km if template.interval_km else None,
+        next_due_on=(date.today() + timedelta(days=template.interval_days)).isoformat() if template.interval_days else None,
         active=True,
     )
     
@@ -6700,6 +6893,8 @@ def apply_maintenance_template(
         "template_id": template_id,
         "vehicle_id": vehicle_id,
         "maintenance_plan_id": plan.id,
+        "added": 1,
+        "skipped_existing": 0,
         "applied": True,
     }
 
@@ -6970,12 +7165,13 @@ def onboarding_bootstrap(
 
 @router.post("/onboarding/mark-step-complete", response_model=dict)
 def mark_onboarding_step_complete(
+    request: Request,
     payload: dict,
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Mark an onboarding step as complete"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     step_id = payload.get("step_id")
     
@@ -7068,12 +7264,24 @@ def get_dashboard_summary(
                 WorkOrder.organization_id == org.id,
                 WorkOrder.assigned_user_id == user.id,
             )
-        scoped_vehicle_count = database.scalar(
-            select(func.count(Vehicle.id)).where(Vehicle.id.in_(assigned_vehicle_ids))
-        ) or 0
+        elif user.role in {"accountant", "inventory_manager"}:
+            assigned_vehicle_ids = select(Vehicle.id).where(Vehicle.organization_id == org.id)
+        scoped_vehicles = database.scalars(select(Vehicle).where(
+            Vehicle.organization_id == org.id,
+            Vehicle.id.in_(assigned_vehicle_ids),
+        )).all()
+        scoped_vehicle_count = len(scoped_vehicles)
+        scoped_active = sum(vehicle.status not in {"Out of service", "Retired"} for vehicle in scoped_vehicles)
         scoped_work_orders = database.query(WorkOrder).filter(
             WorkOrder.id.in_(assigned_work_orders)
         )
+        if user.role == "driver":
+            scoped_work_orders = database.query(WorkOrder).filter(
+                WorkOrder.organization_id == org.id,
+                WorkOrder.vehicle_id.in_(assigned_vehicle_ids),
+            )
+        elif user.role in {"accountant", "inventory_manager"}:
+            scoped_work_orders = database.query(WorkOrder).filter(WorkOrder.organization_id == org.id)
         scoped_open = scoped_work_orders.filter(WorkOrder.status == "Open").count()
         scoped_in_progress = scoped_work_orders.filter(
             WorkOrder.status.in_(["In progress", "In Progress"])
@@ -7084,17 +7292,31 @@ def get_dashboard_summary(
                 hour=0, minute=0, second=0, microsecond=0
             ),
         ).count()
-        scoped_notifications = database.scalar(
-            select(func.count(OperationalNotification.id)).join(
-                NotificationDelivery,
-                NotificationDelivery.notification_id == OperationalNotification.id,
-            ).where(
-                OperationalNotification.organization_id == org.id,
-                NotificationDelivery.user_id == user.id,
-                NotificationDelivery.channel == "in_app",
-                OperationalNotification.status == "unread",
-            )
-        ) or 0
+        notification_ids = select(NotificationDelivery.notification_id).where(
+            NotificationDelivery.organization_id == org.id,
+            NotificationDelivery.user_id == user.id,
+            NotificationDelivery.channel == "in_app",
+        )
+        notifications = database.query(OperationalNotification).filter(
+            OperationalNotification.organization_id == org.id,
+            OperationalNotification.id.in_(notification_ids),
+        )
+        scoped_notifications = notifications.filter(OperationalNotification.status == "unread").count()
+        scoped_critical = notifications.filter(
+            OperationalNotification.status == "unread",
+            OperationalNotification.severity.in_(["CRITICAL", "critical"]),
+        ).count()
+        inventory = database.query(Part).filter(Part.organization_id == org.id)
+        can_view_inventory = user.role == "inventory_manager"
+        scoped_plans = database.query(MaintenancePlan).filter(
+            MaintenancePlan.organization_id == org.id,
+            MaintenancePlan.vehicle_id.in_(assigned_vehicle_ids),
+            MaintenancePlan.active.is_(True),
+        )
+        scoped_documents = database.query(ComplianceDocument).filter(
+            ComplianceDocument.organization_id == org.id,
+            ComplianceDocument.vehicle_id.in_(assigned_vehicle_ids),
+        )
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "organization_id": org.id,
@@ -7108,28 +7330,46 @@ def get_dashboard_summary(
             "needs_onboarding": False,
             "fleet_overview": {
                 "total_vehicles": scoped_vehicle_count,
-                "active_vehicles": 0,
-                "idle_vehicles": scoped_vehicle_count,
-                "avg_fleet_health": 0,
-                "active_drivers": 1 if user.role == "driver" and scoped_vehicle_count else 0,
+                "active_vehicles": scoped_active,
+                "idle_vehicles": scoped_vehicle_count - scoped_active,
+                "avg_fleet_health": round(sum(vehicle.health for vehicle in scoped_vehicles) / scoped_vehicle_count) if scoped_vehicle_count else None,
+                "active_drivers": database.query(VehicleAssignment).filter(
+                    VehicleAssignment.organization_id == org.id,
+                    VehicleAssignment.vehicle_id.in_(assigned_vehicle_ids),
+                    VehicleAssignment.active.is_(True),
+                ).count(),
             },
             "work_orders": {
                 "open": scoped_open,
                 "in_progress": scoped_in_progress,
+                "active": scoped_work_orders.filter(WorkOrder.status.not_in(["Completed", "Cancelled", "Closed", "Archived"])).count(),
+                "total": scoped_work_orders.count(),
                 "completed_today": scoped_completed_today,
             },
             "alerts_and_notifications": {
                 "unread_notifications": scoped_notifications,
-                "critical_alerts": 0,
+                "critical_alerts": scoped_critical,
             },
             "inventory": {
-                "low_stock_items": 0,
-                "total_items": 0,
+                "low_stock_items": inventory.filter(Part.quantity_on_hand <= Part.reorder_level).count() if can_view_inventory else None,
+                "total_items": inventory.count() if can_view_inventory else None,
             },
-            "maintenance": {"upcoming_tasks": 0},
-            "fuel_efficiency": {"avg_km_per_liter": 0.0},
-            "compliance": {"expired_documents": 0, "expiring_soon": 0},
-            "recent_activity": {"work_orders": [], "notifications": []},
+            "maintenance": {"upcoming_tasks": scoped_plans.count()},
+            "fuel_efficiency": {"avg_km_per_liter": None},
+            "compliance": {
+                "expired_documents": scoped_documents.filter(ComplianceDocument.status == "Expired").count(),
+                "expiring_soon": scoped_documents.filter(ComplianceDocument.status == "Expiring Soon").count(),
+            },
+            "recent_activity": {
+                "work_orders": [
+                    {"id": order.id, "vehicle_id": order.vehicle_id, "title": order.title, "status": order.status, "created_at": order.created_at.isoformat()}
+                    for order in scoped_work_orders.order_by(WorkOrder.created_at.desc()).limit(5).all()
+                ],
+                "notifications": [
+                    {"id": item.id, "title": item.title, "severity": item.severity, "created_at": item.created_at.isoformat()}
+                    for item in notifications.order_by(OperationalNotification.created_at.desc()).limit(5).all()
+                ],
+            },
         }
     
     # Count vehicles
@@ -7191,7 +7431,7 @@ def get_dashboard_summary(
         Vehicle.organization_id == org.id
     ).all()
     
-    avg_health = 100
+    avg_health = None
     if vehicles:
         total_health = sum(v.health for v in vehicles)
         avg_health = int(total_health / len(vehicles))
@@ -7207,21 +7447,6 @@ def get_dashboard_summary(
         MaintenancePlan.organization_id == org.id,
         MaintenancePlan.active == True
     ).count()
-    
-    # Calculate fuel efficiency
-    fuel_transactions = database.query(FuelTransaction).filter(
-        FuelTransaction.organization_id == org.id
-    ).order_by(FuelTransaction.created_at.desc()).limit(100).all()
-    
-    avg_fuel_efficiency = 0.0
-    if fuel_transactions:
-        efficiencies = []
-        for tx in fuel_transactions:
-            if tx.odometer_km > 0 and tx.litres_milli > 0:
-                efficiency = tx.odometer_km / (tx.litres_milli / 1000.0)
-                efficiencies.append(efficiency)
-        if efficiencies:
-            avg_fuel_efficiency = round(sum(efficiencies) / len(efficiencies), 2)
     
     # Recent activity
     recent_work_orders = database.query(WorkOrder).filter(
@@ -7282,7 +7507,7 @@ def get_dashboard_summary(
             "upcoming_tasks": upcoming_maintenance,
         },
         "fuel_efficiency": {
-            "avg_km_per_liter": avg_fuel_efficiency,
+            "avg_km_per_liter": None,
         },
         "compliance": {
             "expired_documents": expired_documents,
@@ -7856,12 +8081,13 @@ def get_work_order_board_stats(
 
 @router.post("/work-orders/{work_order_id}/reorder-parts", response_model=dict)
 def reorder_parts_for_work_order(
+    request: Request,
     work_order_id: int,
     user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Create purchase order for parts needed in a work order"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     work_order = database.get(WorkOrder, work_order_id)
     if not work_order or work_order.organization_id != user.organization_id:
@@ -8078,12 +8304,13 @@ def export_inventory_movements(
 
 @router.post("/inventory/movements/import", response_model=dict)
 def import_inventory_movements(
+    request: Request,
     file: UploadFile = File(...),
     user: User = Depends(require_roles("inventory_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Import inventory movements from CSV file"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     try:
         content = file.file.read().decode("utf-8")
@@ -8823,13 +9050,14 @@ def create_work_order_from_issue(
 
 @router.post("/triage/issues/{issue_id}/assign", response_model=dict)
 def assign_triage_issue(
+    request: Request,
     issue_id: int,
     payload: dict,
     user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Assign a triage issue to a mechanic/technician"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     issue = database.get(VehicleIssue, issue_id)
     if not issue or issue.organization_id != user.organization_id:
@@ -8871,13 +9099,14 @@ def assign_triage_issue(
 
 @router.post("/triage/issues/{issue_id}/resolve", response_model=dict)
 def resolve_triage_issue(
+    request: Request,
     issue_id: int,
     payload: dict,
     user: User = Depends(require_roles("fleet_manager", "mechanic")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Mark a triage issue as resolved"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     issue = database.get(VehicleIssue, issue_id)
     if not issue or issue.organization_id != user.organization_id:
@@ -8977,12 +9206,13 @@ def get_triage_stats(
 
 @router.post("/triage/bulk-action", response_model=dict)
 def perform_triage_bulk_action(
+    request: Request,
     payload: dict,
     user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Perform bulk action on multiple triage issues"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     issue_ids = payload.get("issue_ids", [])
     action = payload.get("action")  # resolve, assign, delete, convert_to_wo
@@ -9169,12 +9399,13 @@ def export_audit_logs(
 
 @router.post("/audit/import", response_model=dict)
 def import_audit_logs(
+    request: Request,
     file: UploadFile = File(...),
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Import audit logs from CSV file"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     try:
         content = file.file.read().decode("utf-8")
@@ -9388,13 +9619,14 @@ def get_compliance_expiry_report(
 
 @router.post("/compliance/documents/{document_id}/update-version", response_model=dict)
 def update_document_version(
+    request: Request,
     document_id: int,
     payload: dict,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Create a new version of a compliance document"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     document = database.get(ComplianceDocument, document_id)
     if not document or document.organization_id != user.organization_id:
@@ -9809,29 +10041,27 @@ def get_fuel_efficiency_report(
 def get_financial_metrics(
     user: User = Depends(require_roles("owner", "fleet_manager", "accountant")),
     database: Session = Depends(get_db),
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    vehicle_id: int | None = None,
+    transaction_type: Literal["REVENUE", "EXPENSE"] | None = None,
+    category: str | None = None,
 ) -> dict:
     """Get comprehensive financial metrics and KPIs"""
     _ensure_historical_operational_expenses(database, user)
     if not end_date:
-        end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        end_date = utc_now().date()
     
     if not start_date:
-        start_date = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+        start_date = end_date - timedelta(days=30)
     
-    try:
-        start_dt = datetime.fromisoformat(start_date)
-        end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format")
+    start_dt = datetime.combine(start_date, datetime.min.time())
+    end_dt = datetime.combine(end_date + timedelta(days=1), datetime.min.time())
     
     # Expenses
-    expenses = database.query(Expense).filter(
-        Expense.organization_id == user.organization_id,
-        Expense.created_at >= start_dt,
-        Expense.created_at <= end_dt,
-    ).all()
+    expenses = database.scalars(expense_statement(
+        user.organization_id, vehicle_id, transaction_type, category, start_date, end_date,
+    )).all()
     posted_expenses = [expense for expense in expenses if expense.status != "Rejected"]
     revenue_entries = [
         expense
@@ -9849,18 +10079,21 @@ def get_financial_metrics(
     # Fuel costs
     fuel_txs = database.query(FuelTransaction).filter(
         FuelTransaction.organization_id == user.organization_id,
-        FuelTransaction.created_at >= start_dt,
-        FuelTransaction.created_at <= end_dt,
-    ).all()
+        FuelTransaction.incurred_on >= start_date.isoformat(),
+        FuelTransaction.incurred_on <= end_date.isoformat(),
+        True if vehicle_id is None else FuelTransaction.vehicle_id == vehicle_id,
+    ).all() if transaction_type != "REVENUE" and (not category or category.upper() == "FUEL") else []
     
-    total_fuel_cost_paise = sum(ft.total_amount_paise for ft in fuel_txs)
+    total_fuel_cost_paise = sum(expense.amount_paise for expense in ledger_expenses if expense.category.upper() == "FUEL")
     
     # Toll costs
     toll_txs = database.query(TollTransaction).filter(
         TollTransaction.organization_id == user.organization_id,
-        TollTransaction.created_at >= start_dt,
-        TollTransaction.created_at <= end_dt,
-    ).all()
+        TollTransaction.incurred_on >= start_date.isoformat(),
+        TollTransaction.incurred_on <= end_date.isoformat(),
+        TollTransaction.status.not_in(("Rejected", "Denied")),
+        True if vehicle_id is None else TollTransaction.vehicle_id == vehicle_id,
+    ).all() if transaction_type != "REVENUE" and (not category or category.upper() in {"TOLL", "TOLLS"}) else []
     
     total_toll_cost_paise = sum(t.amount_paise for t in toll_txs)
     
@@ -9872,11 +10105,12 @@ def get_financial_metrics(
     )
     
     # Parts costs
-    parts_used = database.query(WorkOrderPartUsage).filter(
+    parts_used = database.query(WorkOrderPartUsage).join(WorkOrder, WorkOrder.id == WorkOrderPartUsage.work_order_id).filter(
         WorkOrderPartUsage.organization_id == user.organization_id,
         WorkOrderPartUsage.created_at >= start_dt,
-        WorkOrderPartUsage.created_at <= end_dt,
-    ).all()
+        WorkOrderPartUsage.created_at < end_dt,
+        True if vehicle_id is None else WorkOrder.vehicle_id == vehicle_id,
+    ).all() if transaction_type != "REVENUE" and (not category or category.upper() in {"MAINTENANCE", "REPAIR"}) else []
     
     total_parts_cost_paise = sum(pu.quantity * pu.unit_cost_paise for pu in parts_used)
     
@@ -9885,7 +10119,8 @@ def get_financial_metrics(
     
     # Revenue by vehicle
     vehicles = database.query(Vehicle).filter(
-        Vehicle.organization_id == user.organization_id
+        Vehicle.organization_id == user.organization_id,
+        True if vehicle_id is None else Vehicle.id == vehicle_id,
     ).all()
     
     vehicle_count = len(vehicles)
@@ -9898,6 +10133,13 @@ def get_financial_metrics(
         if cat not in expense_categories:
             expense_categories[cat] = 0
         expense_categories[cat] += expense.amount_paise
+    if total_toll_cost_paise:
+        expense_categories["TOLL"] = expense_categories.get("TOLL", 0) + total_toll_cost_paise
+    other_expenses_paise = sum(
+        expense.amount_paise for expense in ledger_expenses
+        if expense.category.upper() not in {"FUEL", "MAINTENANCE", "REPAIR", "TOLL", "TOLLS"}
+    )
+    ledger_toll_paise = sum(expense.amount_paise for expense in ledger_expenses if expense.category.upper() in {"TOLL", "TOLLS"})
 
     ledger_total_paise = sum(expense.amount_paise for expense in ledger_expenses) + total_toll_cost_paise
     vehicle_ledger_totals = {
@@ -9910,10 +10152,9 @@ def get_financial_metrics(
     for toll in toll_txs:
         if toll.vehicle_id in vehicle_ledger_totals:
             vehicle_ledger_totals[toll.vehicle_id] += toll.amount_paise
-    current_odometer = {
-        vehicle.id: max(vehicle.odometer_km, 1)
-        for vehicle in vehicles
-    }
+    distance = period_distance(database, user.organization_id, [vehicle.id for vehicle in vehicles], start_date, end_date)
+    total_distance = sum(value or 0 for value in distance.values())
+    complete_distance = bool(vehicles) and all(value is not None for value in distance.values())
 
     return {
         "report_period": {
@@ -9929,14 +10170,14 @@ def get_financial_metrics(
         "breakdown": {
             "fuel_cost_paise": total_fuel_cost_paise,
             "fuel_cost": total_fuel_cost_paise / 100.0,
-            "toll_cost_paise": total_toll_cost_paise,
-            "toll_cost": total_toll_cost_paise / 100.0,
+            "toll_cost_paise": total_toll_cost_paise + ledger_toll_paise,
+            "toll_cost": (total_toll_cost_paise + ledger_toll_paise) / 100.0,
             "maintenance_cost_paise": maintenance_costs,
             "maintenance_cost": maintenance_costs / 100.0,
             "parts_cost_paise": total_parts_cost_paise,
             "parts_cost": total_parts_cost_paise / 100.0,
-            "other_expenses_paise": total_expenses_paise,
-            "other_expenses": total_expenses_paise / 100.0,
+            "other_expenses_paise": other_expenses_paise,
+            "other_expenses": other_expenses_paise / 100.0,
         },
         "by_category": {
             cat: val / 100.0 for cat, val in expense_categories.items()
@@ -9947,9 +10188,10 @@ def get_financial_metrics(
             "profit": (total_revenue_paise - ledger_total_paise) / 100.0,
             "cpk": (
                 ledger_total_paise
-                / max(sum(current_odometer.values()), 1)
+                / total_distance
                 / 100.0
-            ),
+            ) if complete_distance and total_distance > 0 else None,
+            "distance_km": total_distance if complete_distance else None,
         },
         "expenseBreakdown": [
             {"category": category, "amount": amount / 100.0}
@@ -9977,7 +10219,8 @@ def get_financial_metrics(
                     )
                     - vehicle_ledger_totals[vehicle.id]
                 ) / 100.0,
-                "cpk": vehicle_ledger_totals[vehicle.id] / current_odometer[vehicle.id] / 100.0,
+                "cpk": vehicle_ledger_totals[vehicle.id] / distance[vehicle.id] / 100.0 if distance[vehicle.id] else None,
+                "distance_km": distance[vehicle.id],
             }
             for vehicle in vehicles
         ],
@@ -10216,7 +10459,7 @@ def approve_expense(
 @router.post("/financials/expenses/{expense_id}/reject", response_model=dict)
 def reject_expense(
     expense_id: int,
-    payload: dict,
+    payload: ExpenseReversal,
     request: Request,
     user: User = Depends(require_roles("owner", "accountant")),
     database: Session = Depends(get_db),
@@ -10227,8 +10470,10 @@ def reject_expense(
     expense = database.get(Expense, expense_id)
     if not expense or expense.organization_id != user.organization_id:
         raise HTTPException(status_code=404, detail="Expense not found")
+    if expense.status != "Pending":
+        raise HTTPException(status_code=409, detail="Only pending expenses can be rejected; approved expenses require reversal")
     
-    reason = payload.get("reason", "No reason provided")
+    reason = payload.reason
     
     expense.status = "Rejected"
     database.add(expense)
@@ -10285,15 +10530,24 @@ def bulk_approve_expenses(
     total_approved_paise = 0
     
     for expense in expenses:
-        if user.role == "accountant" and expense.created_by == user.id:
+        if expense.created_by == user.id:
             continue
-        if expense.status not in ["Approved"]:  # Don't reapprove
+        if expense.status == "Pending":
             expense.status = "Approved"
             expense.approved_by = user.id
             expense.approved_at = datetime.now(timezone.utc)
             database.add(expense)
             approved_count += 1
             total_approved_paise += expense.amount_paise
+            database.add(AuditLog(
+                organization_id=user.organization_id,
+                actor_user_id=user.id,
+                action="expense.approved",
+                entity_type="expense",
+                entity_id=str(expense.id),
+                request_id=request.headers.get("x-request-id", str(uuid4())),
+                changes=json.dumps({"status": expense.status, "amount_paise": expense.amount_paise, "bulk": True}),
+            ))
     
     database.commit()
     
@@ -10302,7 +10556,7 @@ def bulk_approve_expenses(
         "total_approved": approved_count,
         "total_amount_paise": total_approved_paise,
         "total_amount": total_approved_paise / 100.0,
-        "approved": True,
+        "approved": approved_count > 0,
     }
 
 
@@ -10313,12 +10567,13 @@ def bulk_approve_expenses(
 
 @router.post("/billing/test/check-plan-eligibility", response_model=dict)
 def check_plan_eligibility(
+    request: Request,
     _: User = Depends(require_development_mode),
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Check if organization is eligible for a plan upgrade"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     org = database.get(Organization, user.organization_id)
     if not org:
@@ -10461,13 +10716,14 @@ def activate_starter_plan(
 
 @router.post("/billing/test/upgrade-plan", response_model=dict)
 def upgrade_plan_test(
+    request: Request,
     payload: dict,
     _: User = Depends(require_development_mode),
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Upgrade to a plan in test mode (no payment)"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     new_plan = payload.get("plan")
     valid_plans = ["starter", "professional", "enterprise"]
@@ -10574,13 +10830,14 @@ def get_test_plans(
 
 @router.post("/billing/test/create-invoice", response_model=dict)
 def create_test_invoice(
+    request: Request,
     payload: dict,
     _: User = Depends(require_development_mode),
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Create a test invoice"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     org = database.get(Organization, user.organization_id)
     if not org:
@@ -10629,13 +10886,14 @@ def create_test_invoice(
 
 @router.post("/billing/test/simulate-payment", response_model=dict)
 def simulate_payment(
+    request: Request,
     payload: dict,
     _: User = Depends(require_development_mode),
     user: User = Depends(require_roles("owner")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Simulate a payment in test mode"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     invoice_id = payload.get("invoice_id")
     invoice = database.get(BillingInvoice, invoice_id)
@@ -11124,107 +11382,72 @@ def get_vendor_pricing_history(
 @router.post("/purchase-orders/{po_id}/receive-partial", response_model=dict)
 def receive_partial_purchase_order(
     po_id: int,
-    payload: dict,
+    payload: PurchaseOrderPartialReceiptCreate,
     request: Request,
     user: User = Depends(require_roles("inventory_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
-    """Receive partial shipment with variance tracking"""
     reserve_idempotency_key(request, user, database)
-    
-    po = database.get(PurchaseOrder, po_id)
-    if not po or po.organization_id != user.organization_id:
+
+    po = database.scalar(
+        select(PurchaseOrder).where(
+            PurchaseOrder.id == po_id,
+            PurchaseOrder.organization_id == user.organization_id,
+        ).with_for_update()
+    )
+    if po is None:
         raise HTTPException(status_code=404, detail="Purchase order not found")
-    
-    # Get items being received
-    items_received = payload.get("items", [])
-    received_quantity = 0
-    
-    for item in items_received:
-        part_id = item.get("part_id")
-        quantity = item.get("quantity", 0)
-        damaged_qty = item.get("damaged_quantity", 0)
-        backordered_qty = item.get("backordered_quantity", 0)
-        variance_reason = item.get("variance_reason")
-        location_id = item.get("location_id")
-        
-        part = database.scalar(select(Part).where(
-            Part.id == part_id,
-            Part.organization_id == user.organization_id,
-        ).with_for_update())
-        if not part or part.organization_id != user.organization_id:
-            continue
-        
-        # Get PO line
-        po_line = database.query(PurchaseOrderLine).filter(
-            PurchaseOrderLine.purchase_order_id == po_id,
-            PurchaseOrderLine.part_id == part_id,
-        ).first()
-        
-        if not po_line:
-            continue
-        
-        # Create receipt record
-        receipt = PurchaseOrderReceipt(
-            organization_id=user.organization_id,
-            purchase_order_id=po_id,
-            part_id=part_id,
-            quantity=quantity,
-            damaged_quantity=damaged_qty,
-            backordered_quantity=backordered_qty,
-            variance_reason=variance_reason,
-            unit_cost_paise=po_line.unit_cost_paise,
-            location_id=location_id,
-            received_by=user.id,
-        )
-        database.add(receipt)
-        
-        # Update inventory (good items only)
-        part.quantity_on_hand += (quantity - damaged_qty)
-        database.add(part)
-        received_quantity += quantity
-        
-        # Calculate variance
-        expected = po_line.quantity
-        received = quantity
-        variance = expected - received - backordered_qty
-        
-        if variance != 0:
-            # Create notification for variance
+
+    receipts = apply_purchase_order_receipts(po, payload.items, user, database)
+    database.flush()
+    lines_by_part = {
+        line.part_id: line
+        for line in database.scalars(
+            select(PurchaseOrderLine).where(
+                PurchaseOrderLine.organization_id == user.organization_id,
+                PurchaseOrderLine.purchase_order_id == po.id,
+            )
+        ).all()
+    }
+    for item in payload.items:
+        line = lines_by_part[item.part_id]
+        variance = item.damaged_quantity + item.backordered_quantity
+        if variance:
+            part = database.get(Part, item.part_id)
             queue_role_notification(
                 database,
                 organization_id=user.organization_id,
                 notification_type="PO_VARIANCE",
                 severity="HIGH" if abs(variance) > 10 else "MEDIUM",
-                title=f"PO variance for {part.name}",
-                detail=f"Expected {expected}, received {received}, backordered {backordered_qty}. Reason: {variance_reason}",
+                title=f"PO variance for {part.name if part else item.part_id}",
+                detail=(
+                    f"Ordered {line.quantity}, received {item.quantity}, "
+                    f"backordered {item.backordered_quantity}. "
+                    f"Reason: {item.variance_reason or 'Not provided'}"
+                ),
                 entity_type="purchase_order",
                 entity_id=str(po_id),
                 roles={"owner", "fleet_manager"},
             )
-    
-    # Update PO status if fully received
-    all_receipts = database.query(PurchaseOrderReceipt).filter(
-        PurchaseOrderReceipt.purchase_order_id == po_id
-    ).all()
-    
-    total_received = sum(r.quantity for r in all_receipts)
-    total_expected = sum(line.quantity for line in database.query(PurchaseOrderLine).filter(
-        PurchaseOrderLine.purchase_order_id == po_id
-    ).all())
-    
-    if total_received >= total_expected:
-        po.status = "Received"
-    else:
-        po.status = "Partially received"
-    
-    database.add(po)
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="purchase_order.received",
+        entity_type="purchase_order",
+        entity_id=str(po.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps({
+            "receipt_ids": [receipt.id for receipt in receipts],
+            "items": [item.model_dump() for item in payload.items],
+            "status": po.status,
+        }, default=str),
+    ))
     database.commit()
-    
+
     return {
         "purchase_order_id": po_id,
-        "items_received": len(items_received),
-        "receipt": {"quantity": received_quantity},
+        "items_received": len(receipts),
+        "receipt": {"quantity": sum(receipt.quantity for receipt in receipts)},
         "status": po.status,
         "received": True,
     }
@@ -11615,13 +11838,14 @@ def get_maintenance_plan(
 
 @router.post("/maintenance/plan/update-vehicle-schedule", response_model=dict)
 def update_vehicle_maintenance_schedule(
+    request: Request,
     vehicle_id: int,
     payload: dict,
     user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Update maintenance schedule for a vehicle"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     vehicle = database.get(Vehicle, vehicle_id)
     if not vehicle or vehicle.organization_id != user.organization_id:
@@ -11655,12 +11879,13 @@ def update_vehicle_maintenance_schedule(
 
 @router.post("/maintenance/plan/create", response_model=dict)
 def create_maintenance_plan_advanced(
+    request: Request,
     payload: dict,
     user: User = Depends(require_roles("fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
     """Create a new maintenance plan"""
-    reserve_idempotency_key(Request(), user, database)
+    reserve_idempotency_key(request, user, database)
     
     vehicle_id = payload.get("vehicle_id")
     vehicle = database.get(Vehicle, vehicle_id)

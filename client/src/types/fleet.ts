@@ -4,7 +4,7 @@ export type InvitationResponse = { email?: string; role?: string; delivery: "MAN
 export type FleetVehicle = { id: string; vin?: string; licensePlate: string; chassisNumber?: string | null; engineNumber?: string | null; vehicleType?: string | null; assignedRoute?: string | null; depotLocation?: string | null; make?: string; model?: string; year?: number; status?: string; currentOdometer?: number | string; latestOdometerReading?: number | string; latestOdometerAt?: string | Date | null; latestOdometerSource?: string | null; components?: ServiceComponent[] };
 export type FinancialRecord = { id: string; vehicleId: string; vehicle?: Pick<FleetVehicle, "vin" | "licensePlate">; type: "REVENUE" | "EXPENSE"; category: string; amount: number | string; transactionDate: string | Date; taxAmount?: number | string; gstin?: string | null; taxCategory?: string | null; invoiceNumber?: string | null; vendor?: string | null; paymentMethod?: string | null; costCenterType?: string | null; costCenterId?: string | null; tdsAmount?: number | string; reconciledAt?: string | Date | null; reconciliationRef?: string | null; approvalStatus?: string; reversalOfId?: string | null };
 export type FinancialReconciliationRow = { vehicleId: string; vehicle: string; fuelLogged: number | string; ledgerFuel: number | string; difference: number | string; status: string };
-export type FinancialMetricRow = { vehicleId: string; vehicle: string; revenue: number | string; expenses: number | string; profit: number | string; cpk: number | string };
+export type FinancialMetricRow = { vehicleId: string; vehicle: string; revenue: number | string; expenses: number | string; profit: number | string; cpk: number | string | null };
 export type NotificationRow = { id: string; title: string; message?: string; severity?: string; isRead?: boolean; referenceId?: string | null; acknowledgedAt?: string | Date | null; escalationLevel?: number | null; resolvedAt?: string | Date | null; createdAt: string | Date };
 export type InventoryPart = { id: string; sku: string; name: string; quantityOnHand: number | string; unitCost?: number | string; minReorderLevel?: number | string; binLocation?: string | null };
 export type ServiceComponent = { id: string; name: string; vehicleId: string; inventoryPartId?: string | null; componentType?: string; componentSubtype?: string | null; brand?: string | null; partNumber?: string | null; serialNumber?: string | null; installationDate?: string | Date | null; expectedLifeKm: number | string; expectedLifeDays?: number | null; installationOdometer?: number | string; lastServicedOdometer?: number | string; alertThresholdKm?: number | string; alertThresholdDays?: number | null; notes?: string | null; status?: string };
@@ -23,7 +23,14 @@ export type PurchaseOrderRow = { id: string; status: string; totalCost: number |
 export type InventoryMovementRow = { id: string; movementType: string; quantity: number | string; reason: string; createdAt: string | Date };
 export type InspectionRow = { id: string; inspectionType: string; status: string; notes?: string | null; createdAt: string | Date };
 export type FuelLogRow = { id: string; liters: number | string; amount: number | string; odometer: number | string; station?: string | null };
-export type ProcurementOrderRow = { id: string; status: string; totalCost: number | string; updatedAt?: string | Date; vendor?: { name: string } | null };
+export type ProcurementOrderRow = {
+  id: string;
+  status: string;
+  totalCost: number | string;
+  updatedAt?: string | Date;
+  vendor?: { name: string } | null;
+  lines?: Array<{ partId: string; quantity: number; unitCost: number | string }>;
+};
 export type WorkspaceMember = { id: string; role: string; email?: string; name?: string | null; fullName?: string | null };
 export type FleetMaintenanceSignal = ServiceComponent & { vehicleLabel: string; currentOdometer: number; installationOdometer: number; expectedLifeKm: number; alertThresholdKm: number; wear: number; remainingLifeKm: number; overdue: boolean; severity: "CRITICAL" | "HIGH" | "MEDIUM"; due: boolean };
 export type MaintenancePlanItem = { id: string; kind: "COMPONENT_DUE" | "DOCUMENT_EXPIRY" | "WORK_ORDER"; title: string; vehicleId?: string | null; vehicleLabel: string; dueDate: string | Date; priority: string; detail: string; sourceId: string };
