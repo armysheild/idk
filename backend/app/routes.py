@@ -2544,6 +2544,20 @@ def approve_work_order(
         entity_id=str(work_order.id),
         request_id=request.headers.get("x-request-id", str(uuid4())),
     ))
+    if work_order.assigned_user_id is not None:
+        queue_role_notification(
+            database,
+            organization_id=user.organization_id,
+            notification_type="work_order_approved",
+            severity="INFO",
+            title=f"Work order approved: {work_order.title}",
+            detail=f"Approved by {user.full_name or user.email}",
+            entity_type="work_order",
+            entity_id=str(work_order.id),
+            roles=set(),
+            user_ids={work_order.assigned_user_id},
+            dedupe_key=f"work_order_approved:{work_order.id}",
+        )
     database.commit()
     database.refresh(work_order)
     return work_order
@@ -4155,6 +4169,7 @@ def update_notification(
 def resolve_notification(
     notification_id: int,
     request: Request,
+    payload: dict,
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> OperationalNotification:
@@ -4171,6 +4186,7 @@ def resolve_notification(
     ))
     if delivery is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
+    resolution_note = (payload or {}).get("note") or (payload or {}).get("resolution_notes") or ""
     notification.status = "resolved"
     notification.resolved_at = utc_now()
     database.add(AuditLog(
@@ -4180,6 +4196,7 @@ def resolve_notification(
         entity_type="operational_notification",
         entity_id=str(notification.id),
         request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps({"resolution_note": resolution_note}),
     ))
     database.commit()
     database.refresh(notification)
@@ -8758,10 +8775,26 @@ def report_unsafe_disposition(
     vehicle_id = payload.get("vehicle_id")
     location = payload.get("location")
     
+    if vehicle_id is None:
+        assigned_vehicle = database.scalar(select(Vehicle).where(
+            Vehicle.organization_id == user.organization_id,
+            Vehicle.assigned_driver_id == driver_id,
+        ))
+        if assigned_vehicle is None:
+            raise HTTPException(status_code=400, detail="vehicle_id is required for a driver with no assigned vehicle")
+        vehicle_id = assigned_vehicle.id
+    else:
+        vehicle = database.scalar(select(Vehicle).where(
+            Vehicle.id == vehicle_id,
+            Vehicle.organization_id == user.organization_id,
+        ))
+        if vehicle is None:
+            raise HTTPException(status_code=404, detail="Vehicle not found")
+    
     # Create a high-priority issue for the driver
     issue = VehicleIssue(
         organization_id=user.organization_id,
-        vehicle_id=vehicle_id or 1,  # Default if not provided
+        vehicle_id=vehicle_id,
         driver_id=driver_id,
         title=f"Unsafe Disposition Report - {severity.upper()}",
         detail=description,
@@ -11330,51 +11363,6 @@ def escalate_notification(
         "escalated_to": escalated_to_severity,
         "reason": reason,
         "escalated": True,
-    }
-
-
-@router.post("/notifications/{notification_id}/resolve", response_model=dict)
-def resolve_notification(
-    notification_id: int,
-    payload: dict,
-    request: Request,
-    user: User = Depends(require_roles("owner", "fleet_manager")),
-    database: Session = Depends(get_db),
-) -> dict:
-    """Mark a notification as resolved"""
-    reserve_idempotency_key(request, user, database)
-    
-    notification = database.get(OperationalNotification, notification_id)
-    if not notification or notification.organization_id != user.organization_id:
-        raise HTTPException(status_code=404, detail="Notification not found")
-    
-    resolution_notes = payload.get("resolution_notes", "")
-    
-    notification.status = "resolved"
-    notification.resolved_at = datetime.now(timezone.utc)
-    database.add(notification)
-    
-    # Create audit event
-    audit_event = AuditEvent(
-        organization_id=user.organization_id,
-        actor_user_id=user.id,
-        actor_role=user.role,
-        action="notification_resolved",
-        entity_type="notification",
-        entity_id=str(notification_id),
-        summary=f"Notification resolved. Notes: {resolution_notes}",
-    )
-    database.add(audit_event)
-    
-    database.commit()
-    database.refresh(notification)
-    
-    return {
-        "notification_id": notification_id,
-        "status": notification.status,
-        "resolved_at": notification.resolved_at.isoformat(),
-        "resolution_notes": resolution_notes,
-        "resolved": True,
     }
 
 

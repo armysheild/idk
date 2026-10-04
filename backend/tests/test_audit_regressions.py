@@ -26,7 +26,7 @@ from backend.app.models import (
     InventoryMovement, InventoryTransaction, Part, PurchaseOrder, PurchaseOrderLine,
     PurchaseOrderReceipt, StockLocation, Vendor, VehicleAssignment, MaintenancePlan,
     ComplianceDocument, WorkOrderChecklistItem, OperationalNotification,
-    NotificationDelivery, VehicleComponent,
+    NotificationDelivery, VehicleComponent, VehicleIssue,
 )
 from backend.app.telematics import approved_provider_request
 
@@ -951,3 +951,73 @@ def test_expense_reject_and_approve_notify_submitter(audit_api, monkeypatch):
     delivered = database.scalars(select(NotificationDelivery.user_id).where(
         NotificationDelivery.notification_id == notification.id)).all()
     assert delivered == [users["driver"].id]
+
+
+def test_notification_serializer_exposes_ui_contract(audit_api):
+    client, database, users, vehicles = audit_api
+    notification = _insert_notification(database, users["fleet_manager"].id, "HIGH", "vehicle", vehicles[0].id, "ui_contract")
+    notification.escalation_level = 2
+    database.commit()
+    listed = client.get("/api/v1/notifications").json()
+    item = next(row for row in listed if row["id"] == notification.id)
+    assert item["message"] == item["detail"]
+    assert item["is_read"] is False
+    assert item["escalation_level"] == 2
+    assert item["reference_id"] == str(vehicles[0].id)
+    read = client.patch(f"/api/v1/notifications/{notification.id}", json={"status": "read"})
+    assert read.status_code == 200, read.text
+    assert read.json()["is_read"] is True
+
+
+def test_resolve_notification_records_submitted_note(audit_api):
+    client, database, users, vehicles = audit_api
+    notification = _insert_notification(database, users["fleet_manager"].id, "HIGH", "vehicle", vehicles[0].id, "resolve_note")
+    response = client.post(f"/api/v1/notifications/{notification.id}/resolve", json={"note": "Fixed in the field"})
+    assert response.status_code == 200, response.text
+    log = database.scalar(select(AuditLog).where(
+        AuditLog.action == "notification.resolved",
+        AuditLog.entity_id == str(notification.id),
+    ))
+    assert "Fixed in the field" in (log.changes or "")
+    database.refresh(notification)
+    assert notification.status == "resolved"
+
+
+def test_work_order_approval_notifies_assignee(audit_api, monkeypatch):
+    client, database, users, vehicles = audit_api
+    monkeypatch.undo()
+    work_order = WorkOrder(
+        organization_id=1, vehicle_id=vehicles[0].id, title="Brake service",
+        status="Ready for review", priority="High", created_by=users["fleet_manager"].id,
+        assigned_user_id=users["mechanic"].id,
+    )
+    database.add(work_order)
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["owner"]
+    response = client.post(f"/api/v1/work-orders/{work_order.id}/approve")
+    assert response.status_code == 200, response.text
+    notification = database.scalar(select(OperationalNotification).where(
+        OperationalNotification.notification_type == "work_order_approved"))
+    assert notification is not None
+    delivered = database.scalars(select(NotificationDelivery.user_id).where(
+        NotificationDelivery.notification_id == notification.id)).all()
+    assert delivered == [users["mechanic"].id]
+
+
+def test_unsafe_disposition_requires_a_valid_org_vehicle(audit_api, monkeypatch):
+    client, database, users, vehicles = audit_api
+    monkeypatch.undo()
+    response = client.post(f"/api/v1/drivers/{users['driver'].id}/unsafe-disposition", json={
+        "description": "Reckless driving", "severity": "high"})
+    assert response.status_code == 400, response.text
+    response = client.post(f"/api/v1/drivers/{users['driver'].id}/unsafe-disposition", json={
+        "description": "Reckless driving", "severity": "high", "vehicle_id": 999999})
+    assert response.status_code == 404, response.text
+    vehicles[0].assigned_driver_id = users["driver"].id
+    database.commit()
+    response = client.post(f"/api/v1/drivers/{users['driver'].id}/unsafe-disposition", json={
+        "description": "Reckless driving", "severity": "high"})
+    assert response.status_code == 200, response.text
+    issue = database.scalar(select(VehicleIssue).where(
+        VehicleIssue.driver_id == users["driver"].id))
+    assert issue.vehicle_id == vehicles[0].id

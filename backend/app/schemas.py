@@ -3,7 +3,7 @@ from datetime import datetime
 
 from datetime import datetime
 from typing import Any, Generic, TypeVar
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, model_validator
 
 from .telematics import validate_provider_url
 
@@ -626,6 +626,11 @@ class VehicleIssueRead(VehicleIssueCreate):
     created_at: datetime
     resolved_at: datetime | None
 
+    @computed_field
+    @property
+    def description(self) -> str:
+        return self.detail
+
 
 class NotificationResolve(BaseModel):
     status: str = Field(pattern=r"^(read|resolved)$")
@@ -793,8 +798,24 @@ class NotificationRead(BaseModel):
     entity_id: str
     dedupe_key: str
     status: str
+    escalation_level: int
     created_at: datetime
     resolved_at: datetime | None
+
+    @computed_field
+    @property
+    def is_read(self) -> bool:
+        return self.status != "unread"
+
+    @computed_field
+    @property
+    def message(self) -> str:
+        return self.detail
+
+    @computed_field
+    @property
+    def reference_id(self) -> str:
+        return self.entity_id
 
 
 class NotificationStatusUpdate(BaseModel):
