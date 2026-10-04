@@ -1942,6 +1942,7 @@ def create_driver_inspection(
         **payload.model_dump(),
     )
     database.add(inspection)
+    database.flush()
     database.add(AuditLog(
         organization_id=user.organization_id,
         actor_user_id=user.id,
@@ -1951,6 +1952,18 @@ def create_driver_inspection(
         request_id=request.headers.get("x-request-id", str(uuid4())),
         changes=json.dumps({"status": payload.status, "odometer_km": payload.odometer_km}),
     ))
+    queue_role_notification(
+        database,
+        organization_id=user.organization_id,
+        notification_type="dvir_submission",
+        severity="danger" if payload.status == "UNSAFE" else "warning" if payload.status == "REVIEW" else "info",
+        title=f"DVIR {payload.inspection_type.replace('_', ' ')}: {payload.status}",
+        detail=f"{vehicle.registration_number}: {payload.notes or 'No defects recorded'}",
+        entity_type="vehicle",
+        entity_id=str(vehicle.id),
+        roles={"owner", "fleet_manager"},
+        dedupe_key=f"dvir_submission:{inspection.id}",
+    )
     database.commit()
     database.refresh(inspection)
     return inspection
@@ -4078,7 +4091,7 @@ def list_notifications(
         source_entities = {
             "WORK_ORDER": ["work_order"],
             "VEHICLE": ["vehicle"],
-            "VEHICLE_ISSUE": ["triage_issue"],
+            "VEHICLE_ISSUE": ["triage_issue", "vehicle_issue"],
             "DOCUMENT_EXPIRY": ["compliance_document"],
         }.get(source_type.upper(), [source_type.lower()])
         statement = statement.where(OperationalNotification.entity_type.in_(source_entities))
@@ -11037,7 +11050,7 @@ def get_notification_source_detail(
                 "status": entity.status,
             }
     
-    elif notification.entity_type == "triage_issue":
+    elif notification.entity_type in ("triage_issue", "vehicle_issue"):
         entity = database.scalar(select(VehicleIssue).where(
             VehicleIssue.id == int(notification.entity_id),
             VehicleIssue.organization_id == user.organization_id,

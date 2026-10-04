@@ -25,7 +25,8 @@ from backend.app.models import (
     AuditLog, Expense, FuelTransaction, WorkOrder, OdometerLog,
     InventoryMovement, InventoryTransaction, Part, PurchaseOrder, PurchaseOrderLine,
     PurchaseOrderReceipt, StockLocation, Vendor, VehicleAssignment, MaintenancePlan,
-    ComplianceDocument, WorkOrderChecklistItem,
+    ComplianceDocument, WorkOrderChecklistItem, OperationalNotification,
+    NotificationDelivery,
 )
 from backend.app.telematics import approved_provider_request
 
@@ -758,3 +759,60 @@ def test_readiness_rewrite_reaches_backend_json(audit_api, monkeypatch):
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/json")
     assert response.json() == {"status": "ready", "database": "ok"}
+
+
+def test_dvir_submission_notifies_fleet_manager_and_owner(audit_api, monkeypatch):
+    client, database, users, vehicles = audit_api
+    monkeypatch.undo()
+    vehicles[0].assigned_driver_id = users["driver"].id
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["driver"]
+    response = client.post("/api/v1/driver/inspections", json={
+        "vehicle_id": vehicles[0].id,
+        "inspection_type": "pre_trip",
+        "status": "UNSAFE",
+        "odometer_km": vehicles[0].odometer_km,
+        "notes": "Brake pedal soft",
+    })
+    assert response.status_code == 201, response.text
+    notification = database.scalar(select(OperationalNotification).where(
+        OperationalNotification.notification_type == "dvir_submission",
+    ))
+    assert notification is not None
+    assert notification.severity == "danger"
+    assert "Brake pedal soft" in notification.detail
+    delivered = database.scalars(select(NotificationDelivery.user_id).where(
+        NotificationDelivery.notification_id == notification.id,
+        NotificationDelivery.channel == "in_app",
+    )).all()
+    assert set(delivered) == {users["owner"].id, users["fleet_manager"].id}
+    client.app.dependency_overrides[get_current_user] = lambda: users["fleet_manager"]
+    listed = client.get("/api/v1/notifications").json()
+    assert any(item["id"] == notification.id for item in listed)
+
+
+def test_driver_issue_notification_surfaces_in_vehicle_issue_feed(audit_api, monkeypatch):
+    client, database, users, vehicles = audit_api
+    monkeypatch.undo()
+    vehicles[0].assigned_driver_id = users["driver"].id
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["driver"]
+    response = client.post("/api/v1/driver/issues", json={
+        "vehicle_id": vehicles[0].id,
+        "title": "Brake warning light",
+        "detail": "Warning light stayed on during pre-trip",
+        "priority": "High",
+    })
+    assert response.status_code == 201, response.text
+    notification = database.scalar(select(OperationalNotification).where(
+        OperationalNotification.notification_type == "driver_issue",
+    ))
+    assert notification is not None
+    assert notification.entity_type == "vehicle_issue"
+    client.app.dependency_overrides[get_current_user] = lambda: users["fleet_manager"]
+    filtered = client.get("/api/v1/notifications", params={"source_type": "VEHICLE_ISSUE"}).json()
+    assert any(item["id"] == notification.id for item in filtered)
+    detail = client.get(f"/api/v1/notifications/{notification.id}/source-detail")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["source_type"] == "VEHICLE_ISSUE"
+    assert detail.json()["source"]["title"] == "Brake warning light"
