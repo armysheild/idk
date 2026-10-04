@@ -1,8 +1,10 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 import json
+import ssl
 from pathlib import Path
 from unittest.mock import Mock
 
+import httpcore
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -16,15 +18,16 @@ from backend.app import main, routes
 from backend.app.config import Settings
 from backend.app.database import Base, get_db
 from backend.app.dependencies import get_current_user
+from backend.app.finance import period_distance
 from backend.app.models import (
     Organization, User, Vehicle, TelematicsDevice, TelematicsIntegration,
     TelemetryReading,
-    AuditLog, Expense, WorkOrder, OdometerLog,
-    InventoryTransaction, Part, PurchaseOrder, PurchaseOrderLine,
+    AuditLog, Expense, FuelTransaction, WorkOrder, OdometerLog,
+    InventoryMovement, InventoryTransaction, Part, PurchaseOrder, PurchaseOrderLine,
     PurchaseOrderReceipt, StockLocation, Vendor, VehicleAssignment, MaintenancePlan,
     ComplianceDocument, WorkOrderChecklistItem,
 )
-from backend.app.telematics import approved_provider_url
+from backend.app.telematics import approved_provider_request
 
 
 @pytest.fixture
@@ -71,7 +74,7 @@ def configure_sync(monkeypatch, readings):
     )
     response = httpx.Response(200, json={"readings": readings}, request=httpx.Request("GET", "https://telemetry.example/readings"))
     outbound = Mock(return_value=response)
-    monkeypatch.setattr(routes.httpx, "get", outbound)
+    monkeypatch.setattr(routes.httpx.Client, "send", outbound)
     return outbound
 
 
@@ -88,19 +91,79 @@ def test_credentials_are_scoped_and_do_not_resolve_process_environment(monkeypat
 @pytest.mark.parametrize("url", ["http://telemetry.example", "https://user:pass@telemetry.example", "https://telemetry.example:8080"])
 def test_provider_destination_requires_https_without_userinfo_or_other_ports(url):
     with pytest.raises(ValueError):
-        approved_provider_url("a", url, "/readings", Settings())
+        approved_provider_request("a", url, "/readings", Settings())
 
 
 def test_unapproved_or_private_provider_destinations_are_blocked(monkeypatch):
     settings = Settings(telematics_provider_hosts={"a": ["telemetry.example"]})
     with pytest.raises(ValueError, match="not approved"):
-        approved_provider_url("a", "https://other.example", "/readings", settings)
+        approved_provider_request("a", "https://other.example", "/readings", settings)
     monkeypatch.setattr(
         "backend.app.telematics.socket.getaddrinfo",
         lambda *args, **kwargs: [(2, 1, 6, "", ("127.0.0.1", 443))],
     )
     with pytest.raises(ValueError, match="public"):
-        approved_provider_url("a", "https://telemetry.example", "/readings", settings)
+        approved_provider_request("a", "https://telemetry.example", "/readings", settings)
+
+
+@pytest.mark.parametrize("address", ["8.8.8.8", "2606:4700:4700::1111"])
+def test_telematics_connects_to_validated_ip_with_original_tls_identity(audit_api, monkeypatch, address):
+    _, database, _, _ = audit_api
+    settings = Settings(
+        telematics_provider_hosts={"a": ["telemetry.example"]},
+        telematics_credentials={"1": {"token": "synthetic-token"}},
+    )
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+    resolver = Mock(side_effect=[
+        [(2, 1, 6, "", (address, 443))],
+        [(2, 1, 6, "", ("127.0.0.1", 443))],
+    ])
+    monkeypatch.setattr("backend.app.telematics.socket.getaddrinfo", resolver)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9999")
+    body = b'{"readings":[]}'
+    stream = Mock(spec=httpcore.NetworkStream)
+    stream.start_tls.return_value = stream
+    stream.get_extra_info.return_value = None
+    stream.read.side_effect = [
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+        + str(len(body)).encode() + b"\r\n\r\n" + body,
+        b"",
+    ]
+    connect = Mock(return_value=stream)
+    monkeypatch.setattr("httpcore._backends.sync.SyncBackend.connect_tcp", connect)
+    integration = TelematicsIntegration(organization_id=1, provider="a", base_url="https://telemetry.example", credential_ref="token")
+    database.add(integration)
+    database.commit()
+    assert routes.sync_telematics_integration(integration, database)["status"] == "success"
+    assert resolver.call_count == connect.call_count == 1
+    assert connect.call_args.kwargs["host"] == address
+    assert connect.call_args.kwargs["port"] == 443
+    tls = stream.start_tls.call_args.kwargs
+    assert tls["server_hostname"] == "telemetry.example"
+    assert tls["ssl_context"].check_hostname
+    assert tls["ssl_context"].verify_mode == ssl.CERT_REQUIRED
+    assert any(b"Host: telemetry.example\r\n" in call.args[0] for call in stream.write.call_args_list)
+
+
+def test_telematics_does_not_follow_provider_redirects(audit_api, monkeypatch):
+    _, database, _, _ = audit_api
+    settings = Settings(
+        telematics_provider_hosts={"a": ["telemetry.example"]},
+        telematics_credentials={"1": {"token": "synthetic-token"}},
+    )
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+    monkeypatch.setattr("backend.app.telematics.socket.getaddrinfo", lambda *args, **kwargs: [(2, 1, 6, "", ("8.8.8.8", 443))])
+    stream = Mock(spec=httpcore.NetworkStream)
+    stream.start_tls.return_value = stream
+    stream.get_extra_info.return_value = None
+    stream.read.side_effect = [b"HTTP/1.1 302 Found\r\nLocation: https://127.0.0.1/readings\r\nContent-Length: 0\r\n\r\n", b""]
+    connect = Mock(return_value=stream)
+    monkeypatch.setattr("httpcore._backends.sync.SyncBackend.connect_tcp", connect)
+    integration = TelematicsIntegration(organization_id=1, provider="a", base_url="https://telemetry.example", credential_ref="token")
+    database.add(integration)
+    database.commit()
+    assert routes.sync_telematics_integration(integration, database)["status"] == "failed"
+    assert connect.call_count == 1
 
 
 def test_provider_matching_does_not_update_another_providers_vehicle(audit_api, monkeypatch):
@@ -117,7 +180,10 @@ def test_provider_matching_does_not_update_another_providers_vehicle(audit_api, 
     assert result["status"] == "success"
     assert [vehicle.odometer_km for vehicle in vehicles] == [1000, 9000]
     assert database.scalar(select(TelemetryReading.device_id)) == devices[1].id
-    assert outbound.call_args.kwargs["follow_redirects"] is False
+    request = outbound.call_args.args[0]
+    assert request.url.host == "8.8.8.8"
+    assert request.headers["Host"] == "telemetry.example"
+    assert request.extensions["sni_hostname"] == "telemetry.example"
 
 
 def test_invalid_sync_batch_rolls_back_all_readings_and_odometer_updates(audit_api, monkeypatch):
@@ -195,6 +261,60 @@ def test_maintenance_cost_basis_survives_later_labor_rate_changes(audit_api):
     assert expense.amount_paise == 100000
 
 
+def test_finance_reads_refresh_pending_maintenance_expenses(audit_api):
+    client, database, users, vehicles = audit_api
+    client.app.dependency_overrides[get_current_user] = lambda: users["accountant"]
+    work_order = WorkOrder(
+        organization_id=1, vehicle_id=vehicles[0].id, title="Repair", status="Completed",
+        labor_hours=2, completed_at=datetime(2026, 1, 5),
+    )
+    database.add(work_order)
+    database.flush()
+    expense = routes._sync_work_order_expense(database, work_order, users["mechanic"])
+    database.commit()
+    expense_id = expense.id
+    work_order.title = "Final repair"
+    work_order.vehicle_id = vehicles[1].id
+    work_order.labor_hours = 3
+    work_order.completed_at = datetime(2026, 1, 6)
+    database.get(Organization, 1).labor_rate_per_hour = 2000
+    database.commit()
+    for _ in range(2):
+        assert client.get("/api/v1/financials/ledger").status_code == 200
+        database.refresh(expense)
+        assert expense.amount_paise == 150000
+        assert expense.vehicle_id == vehicles[1].id
+        assert expense.incurred_on == "2026-01-06"
+        assert expense.description == f"Work order #{work_order.id}: Final repair"
+        assert expense.cost_center == f"work_order:{work_order.id}"
+        assert expense.status == "Pending"
+        assert expense.created_by == users["mechanic"].id
+        assert database.scalars(select(Expense.id)).all() == [expense_id]
+
+
+@pytest.mark.parametrize("expense_status,amount", [("Approved", 100000), ("Rejected", 100000), ("Rejected", 0)])
+def test_maintenance_sync_preserves_accounting_decisions(audit_api, expense_status, amount):
+    client, database, users, vehicles = audit_api
+    client.app.dependency_overrides[get_current_user] = lambda: users["accountant"]
+    work_order = WorkOrder(organization_id=1, vehicle_id=vehicles[0].id, title="Repair", status="Completed", labor_hours=5)
+    database.add(work_order)
+    database.flush()
+    expense = expense_for(
+        users["mechanic"], vehicles[0], amount=amount, category="MAINTENANCE",
+        status=expense_status, cost_center=f"work_order:{work_order.id}",
+    )
+    database.add(expense)
+    database.commit()
+    assert client.get("/api/v1/financials/ledger").status_code == 200
+    routes._sync_work_order_expense(database, work_order, users["accountant"])
+    database.commit()
+    database.refresh(expense)
+    assert expense.status == expense_status
+    assert expense.amount_paise == amount
+    assert expense.incurred_on == "2026-01-15"
+    assert expense.description == "Synthetic expense"
+
+
 def test_finance_period_filters_business_dates_and_uses_period_distance(audit_api):
     client, database, users, vehicles = audit_api
     client.app.dependency_overrides[get_current_user] = lambda: users["accountant"]
@@ -247,6 +367,37 @@ def test_period_distance_does_not_attribute_old_readings_to_current_costs(audit_
     assert metrics["totals"]["expenses"] == 10
     assert metrics["totals"]["cpk"] is None
     assert metrics["rows"][0]["distance_km"] is None
+
+
+@pytest.mark.parametrize("logs,fuels,expected", [
+    ([("2026-01-01T10:00:00", 1100), ("2026-01-02T10:00:00", 1300)], [("2026-01-01", 1200)], 200),
+    ([("2026-01-01T09:00:00", 1000), ("2026-01-01T18:00:00", 1100)], [("2026-01-01", 1200)], 200),
+    ([("2026-01-01T09:00:00", 1100), ("2026-01-01T18:00:00", 1000)], [("2026-01-01", 1200)], None),
+    ([("2026-01-02T10:00:00", 1100)], [("2026-01-01", 1200)], None),
+    ([], [("2026-01-01", 1000), ("2026-01-02", 1300)], 300),
+    ([], [("2026-01-01", 1000), ("2026-01-01", 1300)], None),
+])
+def test_period_distance_respects_date_only_fuel_evidence(audit_api, logs, fuels, expected):
+    _, database, users, vehicles = audit_api
+    vehicle = vehicles[0]
+    database.add_all(
+        OdometerLog(
+            organization_id=1, vehicle_id=vehicle.id, reading_km=reading,
+            source="driver", created_at=datetime.fromisoformat(timestamp),
+        )
+        for timestamp, reading in logs
+    )
+    database.add_all(
+        FuelTransaction(
+            organization_id=1, vehicle_id=vehicle.id, odometer_km=reading, incurred_on=day,
+            fuel_type="Diesel", litres_milli=1000, price_per_litre_paise=10000,
+            total_amount_paise=10000, created_by=users["driver"].id,
+        )
+        for day, reading in fuels
+    )
+    database.commit()
+    distances = period_distance(database, 1, [vehicle.id], date(2026, 1, 1), date(2026, 1, 31))
+    assert distances[vehicle.id] == expected
 
 
 def test_ledger_has_count_and_second_page_and_exports_all_filtered_records(audit_api):
@@ -329,6 +480,18 @@ def test_purchase_order_receipts_validate_evidence_limits_and_inventory_accounti
         "unit_cost_paise": 20000, "invoice_number": "INV-100",
         "location_id": location.id,
     }]}
+    database.add(Organization(id=2, name="Other stores", slug="other-stores"))
+    foreign_location = StockLocation(organization_id=2, name="Foreign store", code="FOREIGN")
+    inactive_location = StockLocation(organization_id=1, name="Inactive store", code="INACTIVE", active=False)
+    database.add_all([foreign_location, inactive_location])
+    database.commit()
+    for invalid_location in (foreign_location.id, inactive_location.id, 99999):
+        invalid_payload = {"items": [{**payload["items"][0], "location_id": invalid_location}]}
+        assert client.post(path, json=invalid_payload).status_code == 404
+        database.refresh(part)
+        assert part.quantity_on_hand == 10
+        assert database.scalar(select(func.count(InventoryMovement.id))) == 0
+        assert database.scalar(select(func.count(PurchaseOrderReceipt.id))) == 0
     response = client.post(path, headers={"Idempotency-Key": "receipt-1"}, json=payload)
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "Partially received"
@@ -341,6 +504,14 @@ def test_purchase_order_receipts_validate_evidence_limits_and_inventory_accounti
     assert receipt.unit_cost_paise == 20000
     assert receipt.location_id == location.id
     assert database.scalar(select(func.sum(InventoryTransaction.quantity))) == 2
+    movement = database.scalar(select(InventoryMovement))
+    assert movement.location_id == location.id
+    assert movement.part_id == part.id
+    assert movement.organization_id == 1
+    assert movement.quantity == 2
+    assert movement.transaction_type == "receipt"
+    assert movement.reference == "PO-RECEIPT:INV-100"
+    assert client.get("/api/v1/inventory/movements").json()[0]["quantity"] == 2
 
     repeated = client.post(path, headers={"Idempotency-Key": "receipt-1"}, json=payload)
     assert repeated.status_code == 409
@@ -363,6 +534,7 @@ def test_purchase_order_receipts_validate_evidence_limits_and_inventory_accounti
     }]})
     assert final.status_code == 200
     assert final.json()["status"] == "Received"
+    assert database.scalar(select(func.sum(InventoryMovement.quantity)).where(InventoryMovement.location_id == location.id)) == 3
 
 
 def test_driver_reassignment_clears_previous_vehicle_and_repeats_without_duplicate_history(audit_api):
@@ -395,6 +567,31 @@ def test_driver_reassignment_clears_previous_vehicle_and_repeats_without_duplica
     database.refresh(vehicles[1])
     assert vehicles[1].assigned_driver_id is None and vehicles[1].driver_name is None
     assert database.scalar(select(func.count(VehicleAssignment.id)).where(VehicleAssignment.active.is_(True))) == 1
+
+
+@pytest.mark.parametrize("terminal_status", ["Received", "Closed", "Cancelled"])
+def test_terminal_purchase_orders_cannot_be_reopened(audit_api, terminal_status):
+    client, database, users, _ = audit_api
+    client.app.dependency_overrides[get_current_user] = lambda: users["inventory_manager"]
+    vendor = Vendor(organization_id=1, name="Terminal vendor", vendor_type="Parts supplier")
+    database.add(vendor)
+    database.flush()
+    order = PurchaseOrder(
+        organization_id=1, vendor_id=vendor.id, order_number="PO-TERMINAL",
+        status=terminal_status, total_paise=100, created_by=users["inventory_manager"].id,
+    )
+    database.add(order)
+    database.commit()
+    path = f"/api/v1/purchase-orders/{order.id}"
+    assert client.patch(path, json={"status": "Submitted"}).status_code == 409
+    database.refresh(order)
+    assert order.status == terminal_status
+    assert client.patch(path, json={"status": terminal_status}).status_code == 200
+    client.app.dependency_overrides[get_current_user] = lambda: users["owner"]
+    assert client.patch(path, json={"status": "Approved"}).status_code == 409
+    database.refresh(order)
+    assert order.status == terminal_status
+    assert database.scalar(select(func.count(AuditLog.id)).where(AuditLog.action == "purchase_order.status_updated")) == 0
 
 
 def test_maintenance_templates_persist_tasks_intervals_and_tenant_boundaries(audit_api):

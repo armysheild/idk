@@ -66,6 +66,7 @@ export function ProcurementWorkspace() {
       toast.success(`Received ${result.receipt.quantity} units into inventory`);
       void utils.purchaseOrders.list.invalidate();
       void utils.inventory.list.invalidate();
+      void utils.inventory.movements.invalidate();
     },
     onError: (error) =>
       toast.error("Receipt failed", { description: error.message }),
@@ -406,7 +407,7 @@ export function ProcurementWorkspace() {
                       disabled={
                         updateStatus.isPending ||
                         ["RECEIVED", "CLOSED", "CANCELLED"].includes(
-                          String(order.status),
+                          orderStatus,
                         )
                       }
                       onChange={(event) =>

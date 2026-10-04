@@ -18,7 +18,7 @@ import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, false, select, func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -153,7 +153,7 @@ from .schemas import (
     AuditEventRead,
 )
 from .storage import download_object, resolve_object, save_upload
-from .telematics import approved_provider_url
+from .telematics import approved_provider_request
 from .finance import capture_labor_rate, expense_statement, period_distance
 from .schemas import ExpenseReconciliation
 
@@ -4267,6 +4267,7 @@ def _ensure_operational_expense(
         expense.approved_at = None
     elif expense.status == "Pending":
         expense.vehicle_id = vehicle_id
+        expense.category = category
         expense.amount_paise = amount_paise
         expense.incurred_on = incurred_on
         expense.vendor = vendor
@@ -4279,7 +4280,7 @@ def _sync_work_order_expense(database: Session, work_order: WorkOrder, user: Use
         Expense.organization_id == user.organization_id,
         Expense.cost_center == f"work_order:{work_order.id}",
     ))
-    if existing is not None and existing.status == "Approved":
+    if existing is not None and existing.status != "Pending":
         return existing
     part_usages = database.scalars(select(WorkOrderPartUsage).where(
         WorkOrderPartUsage.work_order_id == work_order.id,
@@ -4313,7 +4314,7 @@ def _sync_work_order_expense(database: Session, work_order: WorkOrder, user: Use
         category="MAINTENANCE",
         description=f"Work order #{work_order.id}: {work_order.title}",
         amount_paise=amount_paise,
-        incurred_on=(work_order.completed_at or utc_now()).date().isoformat(),
+        incurred_on=(work_order.completed_at or work_order.started_at or work_order.created_at).date().isoformat(),
         created_by=user.id,
         source_key=f"work_order:{work_order.id}",
         created_at=work_order.completed_at or work_order.created_at,
@@ -4321,7 +4322,7 @@ def _sync_work_order_expense(database: Session, work_order: WorkOrder, user: Use
 
 
 def _ensure_historical_operational_expenses(database: Session, user: User) -> None:
-    existing_sources = set(database.scalars(select(Expense.cost_center).where(
+    existing_sources = dict(database.execute(select(Expense.cost_center, Expense.status).where(
         Expense.organization_id == user.organization_id,
         Expense.cost_center.is_not(None),
     )).all())
@@ -4354,7 +4355,8 @@ def _ensure_historical_operational_expenses(database: Session, user: User) -> No
         )
     ).all()
     for work_order in work_orders:
-        if f"work_order:{work_order.id}" in existing_sources:
+        source_status = existing_sources.get(f"work_order:{work_order.id}")
+        if source_status is not None and source_status != "Pending":
             continue
         if work_order.status == "Archived" and work_order.started_at is None:
             continue
@@ -4704,15 +4706,15 @@ def sync_telematics_integration(integration: TelematicsIntegration, database: Se
         database.commit()
         return {"integration_id": integration.id, "status": "missing_credentials", "readings": 0, "vehicles_updated": 0}
     try:
-        provider_url = approved_provider_url(
-            integration.provider, integration.base_url, integration.sync_path, get_settings(),
+        settings = get_settings()
+        provider_request = approved_provider_request(
+            integration.provider, integration.base_url, integration.sync_path, settings,
         )
-        response = httpx.get(
-            provider_url,
-            headers={"Authorization": f"Bearer {token}", "X-Provider": integration.provider},
-            timeout=get_settings().telematics_default_timeout_seconds,
-            follow_redirects=False,
-        )
+        provider_request.headers.update({"Authorization": f"Bearer {token}", "X-Provider": integration.provider})
+        with httpx.Client(
+            timeout=settings.telematics_default_timeout_seconds, follow_redirects=False, trust_env=False,
+        ) as client:
+            response = client.send(provider_request)
         response.raise_for_status()
         payload = response.json()
         readings = payload.get("readings", payload) if isinstance(payload, dict) else payload
@@ -5422,7 +5424,10 @@ def update_purchase_order_status(
     user: User = Depends(require_roles("owner", "inventory_manager")),
     database: Session = Depends(get_db),
 ) -> PurchaseOrder:
-    order = database.scalar(select(PurchaseOrder).where(PurchaseOrder.id == purchase_order_id, PurchaseOrder.organization_id == user.organization_id))
+    order = database.scalar(select(PurchaseOrder).where(
+        PurchaseOrder.id == purchase_order_id,
+        PurchaseOrder.organization_id == user.organization_id,
+    ).with_for_update())
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
     if user.role == "inventory_manager" and payload.status == "Approved":
@@ -5431,6 +5436,10 @@ def update_purchase_order_status(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The purchase-order creator cannot approve it")
     if user.role == "owner" and payload.status != "Approved":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super Admin / Owner can only approve purchase orders")
+    if order.status.upper() in {"RECEIVED", "CLOSED", "CANCELLED"}:
+        if order.status.upper() == payload.status.upper():
+            return order
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Terminal purchase orders cannot change status")
     order.status = payload.status
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -5558,6 +5567,16 @@ def apply_purchase_order_receipts(
                 reference=f"{order.order_number}:{payload.invoice_number or 'receipt'}",
                 created_by=user.id,
             ))
+            if payload.location_id is not None:
+                database.add(InventoryMovement(
+                    organization_id=user.organization_id,
+                    part_id=part.id,
+                    location_id=payload.location_id,
+                    transaction_type="receipt",
+                    quantity=good_quantity,
+                    reference=f"{order.order_number}:{payload.invoice_number or 'receipt'}",
+                    created_by=user.id,
+                ))
         receipt = PurchaseOrderReceipt(
             organization_id=user.organization_id,
             purchase_order_id=order.id,

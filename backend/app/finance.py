@@ -55,6 +55,7 @@ def period_distance(
     for log in logs:
         recorded_at = log.created_at.astimezone(timezone.utc).replace(tzinfo=None) if log.created_at.tzinfo else log.created_at
         readings[log.vehicle_id].append((recorded_at, log.reading_km))
+    fuel_readings: dict[int, list[tuple[date, int]]] = {vehicle_id: [] for vehicle_id in vehicle_ids}
     fuels = database.scalars(select(FuelTransaction).where(
         FuelTransaction.organization_id == organization_id,
         FuelTransaction.vehicle_id.in_(vehicle_ids),
@@ -62,13 +63,25 @@ def period_distance(
         FuelTransaction.incurred_on <= end_date.isoformat(),
     )).all()
     for fuel in fuels:
-        readings[fuel.vehicle_id].append((datetime.combine(date.fromisoformat(fuel.incurred_on), time.min), fuel.odometer_km))
+        fuel_readings[fuel.vehicle_id].append((date.fromisoformat(fuel.incurred_on), fuel.odometer_km))
     distances: dict[int, int | None] = {}
     for vehicle_id, samples in readings.items():
-        samples.sort()
-        selected = [sample for sample in samples if start <= sample[0] < end]
-        if len(selected) < 2 or any(right[1] < left[1] for left, right in zip(selected, selected[1:])):
+        samples.sort(key=lambda sample: sample[0])
+        if any(right[1] < left[1] for left, right in zip(samples, samples[1:])):
+            distances[vehicle_id] = None
+            continue
+        days: dict[date, list[int]] = {}
+        for recorded_at, reading in samples:
+            days.setdefault(recorded_at.date(), []).append(reading)
+        for incurred_on, reading in fuel_readings[vehicle_id]:
+            days.setdefault(incurred_on, []).append(reading)
+        bounds = [(min(days[day]), max(days[day])) for day in sorted(days)]
+        if (
+            not bounds
+            or (len(bounds) == 1 and len(samples) < 2)
+            or any(right[0] < left[1] for left, right in zip(bounds, bounds[1:]))
+        ):
             distances[vehicle_id] = None
         else:
-            distances[vehicle_id] = selected[-1][1] - selected[0][1]
+            distances[vehicle_id] = bounds[-1][1] - bounds[0][0]
     return distances
