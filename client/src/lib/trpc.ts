@@ -815,7 +815,7 @@ export function mutationPath(path: string, input: unknown) {
   if (path === "financials.create") return "/api/v1/expenses";
   if (path === "financials.approve" && value?.id) return `/api/v1/financials/expenses/${value.id}/approve`;
   if (path === "financials.reverse" && value?.id) return `/api/v1/expenses/${value.id}/reverse`;
-  if (path === "financials.reject" && value?.id) return `/api/v1/expenses/${value.id}/reject`;
+  if (path === "financials.reject" && value?.id) return `/api/v1/financials/expenses/${value.id}/reject`;
   if (path === "financials.reconcileRecord" && value?.id) return `/api/v1/expenses/${value.id}/reconcile`;
   if (path === "notifications.escalate" && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}/escalate`;
   if (path === "notifications.resolve" && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}/resolve`;

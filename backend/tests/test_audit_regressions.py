@@ -228,6 +228,48 @@ def test_bulk_approval_preserves_self_created_and_rejected_expenses_and_audits_s
     assert database.scalar(select(func.count(AuditLog.id)).where(AuditLog.action == "expense.approved")) == 1
 
 
+@pytest.mark.parametrize("actor", ["owner", "accountant"])
+def test_pending_expense_rejection_persists_audited_reason(audit_api, actor):
+    client, database, users, vehicles = audit_api
+    client.app.dependency_overrides[get_current_user] = lambda: users[actor]
+    expense = expense_for(users["fleet_manager"], vehicles[0])
+    database.add(expense)
+    database.commit()
+    path = f"/api/v1/financials/expenses/{expense.id}/reject"
+    assert client.post(path, json={"reason": "x"}).status_code == 422
+    response = client.post(path, json={"reason": "Invoice mismatch"})
+    assert response.status_code == 200
+    assert response.json()["rejected"]
+    database.refresh(expense)
+    assert expense.status == "Rejected"
+    audit = database.scalar(select(AuditLog).where(AuditLog.action == "expense.rejected"))
+    assert audit.actor_user_id == users[actor].id
+    assert json.loads(audit.changes)["reason"] == "Invoice mismatch"
+    assert client.post(path, json={"reason": "Repeated decision"}).status_code == 409
+    metrics = client.get("/api/v1/financials/metrics").json()
+    assert metrics["totals"]["expenses"] == 0
+
+
+def test_expense_rejection_rejects_approved_records_other_roles_and_tenants(audit_api):
+    client, database, users, vehicles = audit_api
+    expense = expense_for(users["fleet_manager"], vehicles[0], status="Approved")
+    database.add(expense)
+    database.commit()
+    path = f"/api/v1/financials/expenses/{expense.id}/reject"
+    client.app.dependency_overrides[get_current_user] = lambda: users["owner"]
+    assert client.post(path, json={"reason": "Must use reversal"}).status_code == 409
+    client.app.dependency_overrides[get_current_user] = lambda: users["fleet_manager"]
+    assert client.post(path, json={"reason": "Forbidden role"}).status_code == 403
+    database.add(Organization(id=2, name="Other finance", slug="other-finance"))
+    users["accountant"].organization_id = 2
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["accountant"]
+    assert client.post(path, json={"reason": "Other tenant"}).status_code == 404
+    database.refresh(expense)
+    assert expense.status == "Approved"
+    assert database.scalar(select(func.count(AuditLog.id))) == 0
+
+
 def test_approved_maintenance_cost_is_immutable_on_reads_and_operational_sync(audit_api):
     client, database, users, vehicles = audit_api
     client.app.dependency_overrides[get_current_user] = lambda: users["accountant"]

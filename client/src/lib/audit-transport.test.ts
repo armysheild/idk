@@ -60,7 +60,15 @@ describe("audited workspace transport", () => {
     expect(mutationPath("financials.reconcileRecord", { id: "42" })).toBe("/api/v1/expenses/42/reconcile");
     expect(serializeInput("financials.reconcileRecord", { id: "42", reconciliationRef: "BANK-42" }))
       .toEqual({ reconciliation_ref: "BANK-42" });
-    expect(mutationPath("financials.reject", { id: "42" })).toBe("/api/v1/expenses/42/reject");
+  });
+
+  it("posts rejection and reversal to their distinct pending and approved expense endpoints", () => {
+    expect(mutationMethod("financials.reject")).toBe("POST");
+    expect(mutationPath("financials.reject", { id: "42" })).toBe("/api/v1/financials/expenses/42/reject");
+    expect(serializeInput("financials.reject", { id: "42", reason: "Invoice mismatch" }))
+      .toMatchObject({ reason: "Invoice mismatch" });
+    expect(mutationMethod("financials.reverse")).toBe("POST");
+    expect(mutationPath("financials.reverse", { id: "42" })).toBe("/api/v1/expenses/42/reverse");
   });
 
   it("retains receipt price, invoice, and selected location", () => {
