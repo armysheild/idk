@@ -16,11 +16,14 @@ type VendorRow = {
   active?: boolean;
 };
 
+type StockLocationRow = { id: string; name: string; code: string; active: boolean };
+
 export function ProcurementWorkspace() {
   const utils = trpc.useUtils();
   const orders = trpc.purchaseOrders.list.useQuery(undefined, { retry: false });
   const parts = trpc.inventory.list.useQuery(undefined, { retry: false });
   const vendors = trpc.vendors.list.useQuery(undefined, { retry: false });
+  const locations = trpc.inventory.locations.useQuery(undefined, { retry: false });
   const [drafts, setDrafts] = useState<
     Record<
       string,
@@ -63,6 +66,7 @@ export function ProcurementWorkspace() {
       toast.success(`Received ${result.receipt.quantity} units into inventory`);
       void utils.purchaseOrders.list.invalidate();
       void utils.inventory.list.invalidate();
+      void utils.inventory.movements.invalidate();
     },
     onError: (error) =>
       toast.error("Receipt failed", { description: error.message }),
@@ -382,6 +386,8 @@ export function ProcurementWorkspace() {
           <div>
             {(orders.data ?? []).map((order: ProcurementOrderRow) => {
               const draft = getDraft(order.id);
+              const orderStatus = statusKey(order.status);
+              const orderedPartIds = new Set((order.lines ?? []).map((line) => String(line.partId)));
               const selectedPart = (parts.data ?? []).find(
                 (part: InventoryPart) => part.id === draft.partId,
               );
@@ -397,11 +403,11 @@ export function ProcurementWorkspace() {
                     </div>
                     <select
                       aria-label={`Update purchase order ${order.id}`}
-                      value={String(order.status)}
+                      value={orderStatus}
                       disabled={
                         updateStatus.isPending ||
                         ["RECEIVED", "CLOSED", "CANCELLED"].includes(
-                          String(order.status),
+                          orderStatus,
                         )
                       }
                       onChange={(event) =>
@@ -409,7 +415,7 @@ export function ProcurementWorkspace() {
                           id: order.id,
                           status: event.target.value as
                             | "DRAFT"
-                            | "SENT"
+                            | "SUBMITTED"
                             | "APPROVED"
                             | "ORDERED"
                             | "PARTIALLY_RECEIVED"
@@ -421,7 +427,7 @@ export function ProcurementWorkspace() {
                       }
                     >
                       <option value="DRAFT">Draft</option>
-                      <option value="SENT">Sent</option>
+                      <option value="SUBMITTED">Submitted</option>
                       <option value="APPROVED" disabled>
                         Approved · Super Admin / Owner
                       </option>
@@ -434,13 +440,15 @@ export function ProcurementWorkspace() {
                       <option value="CLOSED">Closed</option>
                     </select>
                   </header>
-                  {!["CANCELLED", "CLOSED"].includes(String(order.status)) && (
+                  {["SUBMITTED", "APPROVED", "PARTIALLY_RECEIVED"].includes(orderStatus) && (
                     <form
                       onSubmit={(event) => {
                         event.preventDefault();
                         if (
                           !selectedPart ||
                           !draft.unitCost ||
+                          !draft.invoiceNumber.trim() ||
+                          !draft.location ||
                           Number(draft.quantity) < 1
                         )
                           return;
@@ -458,7 +466,7 @@ export function ProcurementWorkspace() {
                           ),
                           unitCost: Number(draft.unitCost),
                           invoiceNumber: draft.invoiceNumber || undefined,
-                          location: draft.location || undefined,
+                          locationId: draft.location,
                           complete: draft.complete,
                         });
                       }}
@@ -473,7 +481,7 @@ export function ProcurementWorkspace() {
                           }
                         >
                           <option value="">Select inventory part</option>
-                          {(parts.data ?? []).map((part: InventoryPart) => (
+                          {(parts.data ?? []).filter((part: InventoryPart) => orderedPartIds.has(String(part.id))).map((part: InventoryPart) => (
                             <option key={part.id} value={part.id}>
                               {part.sku} · {part.name} · {part.quantityOnHand}{" "}
                               on hand
@@ -549,6 +557,7 @@ export function ProcurementWorkspace() {
                       <label>
                         Invoice number
                         <input
+                          required
                           value={draft.invoiceNumber}
                           onChange={(event) =>
                             setDraft(order.id, {
@@ -559,12 +568,18 @@ export function ProcurementWorkspace() {
                       </label>
                       <label>
                         Bin / location
-                        <input
+                        <select
+                          required
                           value={draft.location}
                           onChange={(event) =>
                             setDraft(order.id, { location: event.target.value })
                           }
-                        />
+                        >
+                          <option value="">Select receiving location</option>
+                          {(locations.data ?? []).filter((location: StockLocationRow) => location.active).map((location: StockLocationRow) => (
+                            <option key={location.id} value={location.id}>{location.code} · {location.name}</option>
+                          ))}
+                        </select>
                       </label>
                       <label className="replacement-procurement-check">
                         <input
@@ -584,6 +599,8 @@ export function ProcurementWorkspace() {
                           receivePartial.isPending ||
                           !selectedPart ||
                           !draft.unitCost ||
+                          !draft.invoiceNumber.trim() ||
+                          !draft.location ||
                           Number(draft.quantity) < 1
                         }
                       >

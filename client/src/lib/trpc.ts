@@ -4,15 +4,15 @@ import { supabase } from "@/lib/supabase";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? "" : "http://localhost:8000");
 
 type QueryOptions = { enabled?: boolean; retry?: boolean };
-type MutationOptions = { onSuccess?: (value: unknown) => void; onError?: (error: Error) => void };
+type MutationOptions = {
+  onSuccess?: (value: unknown) => void;
+  onError?: (error: Error) => void;
+};
 
-function camelize(value: unknown): unknown {
+export function camelize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(camelize);
   if (!value || typeof value !== "object") return value;
-  const result = Object.fromEntries(Object.entries(value).map(([key, nested]) => [
-    key.replace(/_([a-z])/g, (_, character: string) => character.toUpperCase()),
-    camelize(nested),
-  ]));
+  const result = Object.fromEntries(Object.entries(value).map(([key, nested]) => [key.replace(/_([a-z])/g, (_, character: string) => character.toUpperCase()), camelize(nested)]));
   if (result.registrationNumber && !result.licensePlate) result.licensePlate = result.registrationNumber;
   if (result.modelYear !== undefined && result.year === undefined) result.year = result.modelYear;
   if (result.serviceIntervalKm !== undefined && result.expectedLifeKm === undefined) result.expectedLifeKm = result.serviceIntervalKm;
@@ -63,6 +63,65 @@ function camelize(value: unknown): unknown {
   return result;
 }
 
+export function dateOnly(value: unknown): string | undefined {
+  if (value instanceof Date) {
+    const pad = (part: number) => String(part).padStart(2, "0");
+    return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+  }
+  if (typeof value === "string" && value) return value.slice(0, 10);
+  return undefined;
+}
+
+function financeFilters(input: unknown, format?: "pdf") {
+  const filters = input as
+    | {
+        vehicleId?: string;
+        type?: string;
+        category?: string;
+        from?: string | Date;
+        to?: string | Date;
+        skip?: number;
+        limit?: number;
+      }
+    | undefined;
+  const params = new URLSearchParams();
+  if (filters?.vehicleId) params.set("vehicle_id", filters.vehicleId);
+  if (filters?.type) params.set("transaction_type", filters.type);
+  if (filters?.category) params.set("category", filters.category);
+  if (filters?.from) params.set("start_date", dateOnly(filters.from) ?? "");
+  if (filters?.to) params.set("end_date", dateOnly(filters.to) ?? "");
+  if (filters?.skip !== undefined) params.set("skip", String(filters.skip));
+  if (filters?.limit !== undefined) params.set("limit", String(filters.limit));
+  if (format) params.set("format", format);
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+function financeRecord(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (typeof record.amountPaise !== "number" || typeof record.category !== "string") return value;
+  return {
+    ...record,
+    id: String(record.id),
+    vehicleId: record.vehicleId == null ? "" : String(record.vehicleId),
+    amount: record.amountPaise / 100,
+    transactionDate: record.incurredOn ?? record.createdAt,
+    type: record.category.endsWith("_REVENUE") || record.category === "REVENUE" ? "REVENUE" : "EXPENSE",
+    taxAmount: Number(record.gstAmountPaise ?? 0) / 100,
+    tdsAmount: Number(record.tdsAmountPaise ?? 0) / 100,
+    approvalStatus: record.status,
+  };
+}
+
+export function financeResponse(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(financeRecord);
+  if (!value || typeof value !== "object") return value;
+  const response = value as Record<string, unknown>;
+  if (Array.isArray(response.items)) return { ...response, items: response.items.map(financeRecord) };
+  return financeRecord(value);
+}
+
 function vehicleStatus(value: unknown): string | undefined {
   const statuses: Record<string, string> = {
     ACTIVE: "Idle / parked",
@@ -73,7 +132,7 @@ function vehicleStatus(value: unknown): string | undefined {
     OUT_OF_SERVICE: "Out of service",
     RETIRED: "Retired",
   };
-  return typeof value === "string" ? statuses[value] ?? value : undefined;
+  return typeof value === "string" ? (statuses[value] ?? value) : undefined;
 }
 
 function workOrderStatus(value: unknown): string | undefined {
@@ -90,13 +149,14 @@ function workOrderStatus(value: unknown): string | undefined {
     CLOSED: "Closed",
     ARCHIVED: "Archived",
   };
-  return typeof value === "string" ? statuses[value] ?? value : undefined;
+  return typeof value === "string" ? (statuses[value] ?? value) : undefined;
 }
 
 function purchaseOrderStatus(value: unknown): string {
   const statuses: Record<string, string> = {
     DRAFT: "Draft",
     SENT: "Submitted",
+    SUBMITTED: "Submitted",
     APPROVED: "Approved",
     ORDERED: "Approved",
     PARTIALLY_RECEIVED: "Partially received",
@@ -104,295 +164,351 @@ function purchaseOrderStatus(value: unknown): string {
     CANCELLED: "Cancelled",
     CLOSED: "Closed",
   };
-  return typeof value === "string" ? statuses[value] ?? value : "Draft";
+  return typeof value === "string" ? (statuses[value] ?? value) : "Draft";
 }
 
-function serializeInput(path: string, input: unknown): unknown {
+export function serializeInput(path: string, input: unknown): unknown {
   if (!input || typeof input !== "object" || Array.isArray(input)) return input;
   const value = input as Record<string, unknown>;
   if (path === "workOrders.approve") return {};
-  const priority = typeof value.priority === "string"
-    ? value.priority.charAt(0) + value.priority.slice(1).toLowerCase()
-    : value.priority;
-  if (path === "vehicles.create") return {
-    registration_number: value.licensePlate,
-    vin: value.vin || undefined,
-    chassis_number: value.chassisNumber || undefined,
-    engine_number: value.engineNumber || undefined,
-    make: value.make || undefined,
-    model: value.model,
-    model_year: value.year ? Number(value.year) : undefined,
-    vehicle_type: value.vehicleType ?? "Vehicle",
-    depot: value.depotLocation ?? "Main depot",
-    assigned_route: value.assignedRoute || undefined,
-    maintenance_template: value.maintenanceTemplate || undefined,
-    status: vehicleStatus(value.status) ?? "Idle / parked",
-    odometer_km: value.currentOdometer ?? 0,
-    assigned_driver_id: value.driverId,
-    telematics_provider: value.telematicsProvider || undefined,
-    telematics_device_identifier: value.telematicsDeviceIdentifier || undefined,
-  };
-  if (path === "vehicles.update") return {
-    registration_number: value.licensePlate,
-    vin: value.vin,
-    chassis_number: value.chassisNumber,
-    engine_number: value.engineNumber,
-    make: value.make,
-    model: value.model,
-    model_year: value.year ? Number(value.year) : undefined,
-    vehicle_type: value.vehicleType,
-    depot: value.depotLocation,
-    assigned_route: value.assignedRoute,
-    maintenance_template: value.maintenanceTemplate,
-    status: vehicleStatus(value.status),
-    odometer_km: value.currentOdometer,
-  };
-  if (path === "workOrders.installPart") return {
-    work_order_part_usage_id: value.workOrderPartUsageId,
-    serial_number: value.serialNumber,
-    lot_number: value.lotNumber,
-    quantity: value.quantity,
-    installed_odometer_km: value.installedOdometerKm,
-  };
-  if (path === "workOrders.allocatePart") return {
-    part_id: value.partId,
-    quantity: value.quantity,
-  };
-  if (path.startsWith("workOrders.")) return {
-    vehicle_id: value.vehicleId,
-    title: value.title,
+  if (path === "maintenanceTemplates.applyTemplate") return { vehicle_id: value.vehicleId };
+  if (path === "maintenanceTemplates.create" || path === "maintenanceTemplates.update") return {
+    name: value.name,
     description: value.description,
-    workstream: value.workstream ?? "shared",
-    priority,
-    status: workOrderStatus(value.status),
-    assigned_user_id: value.assignedMechanicId ?? value.assignedUserId,
-    due_date: value.dueDate,
-    labor_hours: value.laborHours,
-    repair_notes: value.repairNotes,
-    component_id: value.componentId,
-    items: value.items,
+    vehicle_type: value.vehicleType,
+    interval_km: value.intervalKm,
+    interval_days: value.intervalDays,
+    tasks: value.tasks,
   };
-  if (path === "driver.createInspection") return {
-    vehicle_id: value.vehicleId,
-    inspection_type: String(value.inspectionType ?? "PRE_TRIP").toLowerCase(),
-    status: value.status === "PASS" ? "SAFE" : value.status === "FAIL" ? "UNSAFE" : value.status,
-    odometer_km: value.odometerKm ?? value.odometer ?? 0,
-    notes: value.notes,
-    photo_data: value.photoData,
-  };
-  if (path === "vehicles.updateOdometer") return {
-    odometer_km: value.reading,
-    odometer_source: "manual_driver",
-  };
-  if (path === "organizationSettings.updateIntegration") return {
-    endpoint: value.endpoint,
-    account_identifier: value.accountIdentifier,
-    active: value.active,
-  };
-  if (path === "driver.createFuelLog") return {
-    vehicle_id: value.vehicleId,
-    station: value.station,
-    fuel_type: value.fuelType ?? "Diesel",
-    litres_milli: Math.round(Number(value.liters ?? 0) * 1000),
-    price_per_litre_paise: Number(value.liters) > 0 ? Math.round((Number(value.amount ?? 0) / Number(value.liters)) * 100) : 0,
-    odometer_km: value.odometer ?? 0,
-    incurred_on: new Date().toISOString().slice(0, 10),
-    receipt_data: value.receiptData,
-  };
-  if (path === "vehicleIssues.create") return {
-    vehicle_id: value.vehicleId,
-    title: value.title,
-    detail: value.description ?? value.detail,
-    priority,
-    photo_data: value.photoData,
-    photo_content_type: value.photoContentType,
-  };
-  if (path === "documents.create" || path === "documents.update") return {
-    vehicle_id: value.vehicleId,
-    name: value.title ?? value.name,
-    document_type: value.docType ?? value.documentType,
-    issued_by: value.issuedBy,
-    expires_on: value.expiryDate ? new Date(String(value.expiryDate)).toISOString().slice(0, 10) : value.expiresOn,
-    file_key: value.fileUrl ?? value.fileKey,
-  };
-  if (path === "documents.archive") return { status: "Archived" };
-  if (path === "inventory.receive" || path === "inventory.issue") return {
-    part_id: value.partId,
-    transaction_type: path.endsWith("receive") ? "receipt" : "issue",
-    quantity: value.quantity,
-    reference: value.reason,
-  };
-  if (path === "inventory.adjust") return {
-    part_id: value.partId,
-    expected_quantity_on_hand: value.expectedQuantityOnHand,
-    delta: value.delta,
-    reference: value.reason,
-  };
-  if (path === "inventory.transfer") return {
-    part_id: value.partId,
-    to_bin_location: value.toBinLocation,
-    reason: value.reason,
-  };
-  if (path === "components.create" || path === "components.update") return {
-    vehicle_id: value.vehicleId,
-    name: value.name,
-    component_type: value.componentType ?? "General",
-    component_subtype: value.componentSubtype,
-    inventory_part_id: value.inventoryPartId ? Number(value.inventoryPartId) : undefined,
-    brand: value.brand,
-    part_number: value.partNumber,
-    serial_number: value.serialNumber,
-    installation_date: value.installationDate instanceof Date
-      ? value.installationDate.toISOString().slice(0, 10)
-      : value.installationDate,
-    installed_at_km: value.installedAtKm ?? value.installationOdometer ?? value.lastServicedOdometer ?? 0,
-    last_service_km: value.lastServiceKm ?? value.lastServicedOdometer,
-    service_interval_km: value.serviceIntervalKm ?? value.expectedLifeKm,
-    expected_life_days: value.expectedLifeDays,
-    alert_threshold_km: value.alertThresholdKm,
-    alert_threshold_days: value.alertThresholdDays,
-    notes: value.notes,
-    status: value.status ?? "Healthy",
-  };
-  if (path === "inventory.create") return {
-    sku: value.sku,
-    name: value.name,
-    category: value.category ?? "General",
-    quantity_on_hand: value.quantityOnHand ?? 0,
-    reorder_level: value.minReorderLevel ?? value.reorderLevel ?? 0,
-    unit_cost_paise: Math.round(Number(value.unitCost ?? value.unitCostPaise ?? 0) * (value.unitCostPaise ? 1 : 100)),
-    supplier: value.supplier,
-  };
-  if (path === "financials.create") return {
-    vehicle_id: value.vehicleId,
-    category: value.category ?? "Other",
-    description: value.description ?? `${value.type ?? "Expense"} · ${value.category ?? "Other"}`,
-    amount_paise: Math.round(Number(value.amount ?? 0) * 100),
-    gst_amount_paise: Math.round(Number(value.taxAmount ?? 0) * 100),
-    incurred_on: value.transactionDate ?? new Date().toISOString().slice(0, 10),
-    vendor: value.vendor,
-    gstin: value.gstin,
-    tax_category: value.taxCategory,
-    invoice_number: value.invoiceNumber,
-    tds_amount_paise: Math.round(Number(value.tdsAmount ?? 0) * 100),
-    payment_mode: value.paymentMethod,
-    status: "Pending",
-  };
-  if (path === "team.assignVehicle") return { vehicle_id: value.vehicleId, driver_id: value.driverId };
-  if (path === "team.invite") return {
-    email: value.email,
-    full_name: value.fullName ?? String(value.email ?? "").split("@")[0],
-    mobile_phone: value.mobileNumber ?? value.mobilePhone,
-    role: String(value.role ?? "driver").toLowerCase(),
-    expires_in_days: value.expiresInDays ?? 7,
-  };
-  if (path === "vendors.create") return {
-    name: value.name,
-    vendor_type: value.vendorType ?? "Parts supplier",
-    gstin: value.gstin,
-    contact_name: value.contactPerson ?? value.contactName,
-    phone: value.phone,
-    email: value.email,
-    address: value.address,
-    active: value.active ?? true,
-  };
-  if (path === "vendors.update") return {
-    name: value.name,
-    vendor_type: value.vendorType ?? value.vendor_type,
-    gstin: value.gstin,
-    contact_name: value.contactPerson ?? value.contactName ?? value.contact_name,
-    phone: value.phone,
-    email: value.email,
-    address: value.address,
-    active: value.active,
-  };
-  if (path === "profile.update") return {
-    full_name: value.fullName,
-    mobile_phone: value.mobilePhone ?? value.mobileNumber,
-    sms_alerts_enabled: value.smsAlertsEnabled ?? false,
-    whatsapp_alerts_enabled: value.whatsappAlertsEnabled ?? false,
-  };
-  if (path === "organizationSettings.update") return {
-    name: value.name,
-    subscription_plan: value.subscriptionPlan,
-    timezone: value.timezone,
-    odometer_max_daily_km: value.odometerMaxDailyKm,
-    labor_rate_per_hour: value.laborRatePerHour,
-    safety_contact_name: value.safetyContactName,
-    safety_contact_phone: value.safetyContactPhone,
-  };
-  if (path === "onboarding.complete") return {
-    organization_name: value.orgName,
-    first_name: String(value.fullName ?? "").trim().split(/\s+/)[0] ?? "",
-    last_name: String(value.fullName ?? "").trim().split(/\s+/).slice(1).join(" ") || "Owner",
-    mobile_phone: value.mobileNumber,
-    sms_alerts_enabled: value.smsAlertsEnabled ?? false,
-    whatsapp_alerts_enabled: value.whatsappAlertsEnabled ?? false,
-  };
-  if (path === "onboarding.completeInviteWithPassword") return {
-    token: value.token,
-    password: value.password,
-    mobile_phone: value.mobileNumber,
-    sms_alerts_enabled: value.smsAlertsEnabled ?? false,
-    whatsapp_alerts_enabled: value.whatsappAlertsEnabled ?? false,
-  };
-  if (path === "notifications.markRead") return { status: "read" };
-  if (path === "notifications.escalate") return {
-    severity: value.severity ?? "CRITICAL",
-    reason: value.reason ?? "Escalated by user",
-  };
-  if (path === "notifications.resolve") return {
-    note: value.note ?? "",
-  };
-  if (path === "driver.unsafeDisposition") return {
-    vehicle_id: value.vehicleId,
-    description: value.notes,
-    severity: value.disposition === "UNSAFE_TO_DRIVE" ? "high" : "medium",
-    location: value.location,
-  };
-  if (path === "workOrders.reservePart" || path === "workOrders.returnReservedPart") return {
-    part_id: value.partId,
-    quantity: value.quantity,
-    reason: value.reason,
-  };
-  if (path === "workOrders.issuePart") return {
-    work_order_part_usage_id: value.workOrderPartUsageId,
-    quantity: value.quantity,
-  };
-  if (path === "telematics.createIntegration" || path === "telematics.updateIntegration") return {
-    provider: value.provider,
-    base_url: value.baseUrl,
-    sync_path: value.syncPath || "/readings",
-    credential_ref: value.credentialRef || undefined,
-    api_token: value.apiToken || undefined,
-    active: value.active ?? true,
-    sync_interval_minutes: Number(value.syncIntervalMinutes || 1440),
-  };
-  if (path === "telematics.createDevice") return {
-    vehicle_id: value.vehicleId,
-    provider: value.provider,
-    device_identifier: value.deviceIdentifier,
-    active: value.active ?? true,
-  };
-  if (path === "telematics.updateDevice") return { active: value.active };
-  if (path === "purchaseOrders.create") return {
-    vendor_id: value.vendorId,
-    lines: value.lines ?? [{ part_id: value.partId ?? 0, quantity: 1, unit_cost_paise: Math.round(Number(value.totalCost ?? 0) * 100) }],
-    notes: value.notes,
-  };
-  if (path === "purchaseOrders.updateStatus") return { status: purchaseOrderStatus(value.status) };
-  if (path === "purchaseOrders.receivePartial") return {
-    items: [{
+  const priority = typeof value.priority === "string" ? value.priority.charAt(0) + value.priority.slice(1).toLowerCase() : value.priority;
+  if (path === "vehicles.create")
+    return {
+      registration_number: value.licensePlate,
+      vin: value.vin || undefined,
+      chassis_number: value.chassisNumber || undefined,
+      engine_number: value.engineNumber || undefined,
+      make: value.make || undefined,
+      model: value.model,
+      model_year: value.year ? Number(value.year) : undefined,
+      vehicle_type: value.vehicleType ?? "Vehicle",
+      depot: value.depotLocation ?? "Main depot",
+      assigned_route: value.assignedRoute || undefined,
+      maintenance_template: value.maintenanceTemplate || undefined,
+      status: vehicleStatus(value.status) ?? "Idle / parked",
+      odometer_km: value.currentOdometer ?? 0,
+      assigned_driver_id: value.driverId,
+      telematics_provider: value.telematicsProvider || undefined,
+      telematics_device_identifier: value.telematicsDeviceIdentifier || undefined,
+    };
+  if (path === "vehicles.update")
+    return {
+      registration_number: value.licensePlate,
+      vin: value.vin,
+      chassis_number: value.chassisNumber,
+      engine_number: value.engineNumber,
+      make: value.make,
+      model: value.model,
+      model_year: value.year ? Number(value.year) : undefined,
+      vehicle_type: value.vehicleType,
+      depot: value.depotLocation,
+      assigned_route: value.assignedRoute,
+      maintenance_template: value.maintenanceTemplate,
+      status: vehicleStatus(value.status),
+      odometer_km: value.currentOdometer,
+    };
+  if (path === "workOrders.installPart")
+    return {
+      work_order_part_usage_id: value.workOrderPartUsageId,
+      serial_number: value.serialNumber,
+      lot_number: value.lotNumber,
+      quantity: value.quantity,
+      installed_odometer_km: value.installedOdometerKm,
+    };
+  if (path === "workOrders.allocatePart") return {
       part_id: value.partId,
       quantity: value.quantity,
-      damaged_quantity: value.damagedQuantity ?? 0,
-      backordered_quantity: value.backorderedQuantity ?? 0,
-      variance_reason: value.varianceReason,
-      unit_cost_paise: Math.round(Number(value.unitCost ?? 0) * 100),
+    };
+  if (path.startsWith("workOrders.")) return {
+      vehicle_id: value.vehicleId,
+      title: value.title,
+      description: value.description,
+      workstream: value.workstream ?? "shared",
+      priority,
+      status: workOrderStatus(value.status),
+      assigned_user_id: value.assignedMechanicId ?? value.assignedUserId,
+      due_date: value.dueDate,
+      labor_hours: value.laborHours,
+      repair_notes: value.repairNotes,
+      component_id: value.componentId,
+      items: value.items,
+    };
+  if (path === "driver.createInspection")
+    return {
+      vehicle_id: value.vehicleId,
+      inspection_type: String(value.inspectionType ?? "PRE_TRIP").toLowerCase(),
+      status: value.status === "PASS" ? "SAFE" : value.status === "FAIL" ? "UNSAFE" : value.status,
+      odometer_km: value.odometerKm ?? value.odometer ?? 0,
+      notes: value.notes,
+      photo_data: value.photoData,
+    };
+  if (path === "vehicles.updateOdometer")
+    return {
+      odometer_km: value.reading,
+      odometer_source: "manual_driver",
+    };
+  if (path === "organizationSettings.updateIntegration")
+    return {
+      endpoint: value.endpoint,
+      account_identifier: value.accountIdentifier,
+      active: value.active,
+    };
+  if (path === "driver.createFuelLog")
+    return {
+      vehicle_id: value.vehicleId,
+      station: value.station,
+      fuel_type: value.fuelType ?? "Diesel",
+      litres_milli: Math.round(Number(value.liters ?? 0) * 1000),
+      price_per_litre_paise: Number(value.liters) > 0 ? Math.round((Number(value.amount ?? 0) / Number(value.liters)) * 100) : 0,
+      odometer_km: value.odometer ?? 0,
+      incurred_on: new Date().toISOString().slice(0, 10),
+      receipt_data: value.receiptData,
+    };
+  if (path === "vehicleIssues.create")
+    return {
+      vehicle_id: value.vehicleId,
+      title: value.title,
+      detail: value.description ?? value.detail,
+      priority,
+      photo_data: value.photoData,
+      photo_content_type: value.photoContentType,
+    };
+  if (path === "documents.create" || path === "documents.update")
+    return {
+      vehicle_id: value.vehicleId,
+      name: value.title ?? value.name,
+      document_type: value.docType ?? value.documentType,
+      issued_by: value.issuedBy,
+      expires_on: value.expiryDate ? new Date(String(value.expiryDate)).toISOString().slice(0, 10) : value.expiresOn,
+      file_key: value.fileUrl ?? value.fileKey,
+    };
+  if (path === "documents.archive") return { status: "Archived" };
+  if (path === "inventory.receive" || path === "inventory.issue")
+    return {
+      part_id: value.partId,
+      transaction_type: path.endsWith("receive") ? "receipt" : "issue",
+      quantity: value.quantity,
+      reference: value.reason,
+    };
+  if (path === "inventory.adjust")
+    return {
+      part_id: value.partId,
+      expected_quantity_on_hand: value.expectedQuantityOnHand,
+      delta: value.delta,
+      reference: value.reason,
+    };
+  if (path === "inventory.transfer")
+    return {
+      part_id: value.partId,
+      to_bin_location: value.toBinLocation,
+      reason: value.reason,
+    };
+  if (path === "components.create" || path === "components.update")
+    return {
+      vehicle_id: value.vehicleId,
+      name: value.name,
+      component_type: value.componentType ?? "General",
+      component_subtype: value.componentSubtype,
+      inventory_part_id: value.inventoryPartId ? Number(value.inventoryPartId) : undefined,
+      brand: value.brand,
+      part_number: value.partNumber,
+      serial_number: value.serialNumber,
+      installation_date: value.installationDate instanceof Date ? value.installationDate.toISOString().slice(0, 10) : value.installationDate,
+      installed_at_km: value.installedAtKm ?? value.installationOdometer ?? value.lastServicedOdometer ?? 0,
+      last_service_km: value.lastServiceKm ?? value.lastServicedOdometer,
+      service_interval_km: value.serviceIntervalKm ?? value.expectedLifeKm,
+      expected_life_days: value.expectedLifeDays,
+      alert_threshold_km: value.alertThresholdKm,
+      alert_threshold_days: value.alertThresholdDays,
+      notes: value.notes,
+      status: value.status ?? "Healthy",
+    };
+  if (path === "inventory.create")
+    return {
+      sku: value.sku,
+      name: value.name,
+      category: value.category ?? "General",
+      quantity_on_hand: value.quantityOnHand ?? 0,
+      reorder_level: value.minReorderLevel ?? value.reorderLevel ?? 0,
+      unit_cost_paise: Math.round(Number(value.unitCost ?? value.unitCostPaise ?? 0) * (value.unitCostPaise ? 1 : 100)),
+      supplier: value.supplier,
+    };
+  if (path === "financials.create")
+    return {
+      vehicle_id: value.vehicleId,
+      category: value.category ?? "Other",
+      description: value.description ?? `${value.type ?? "Expense"} · ${value.category ?? "Other"}`,
+      amount_paise: Math.round(Number(value.amount ?? 0) * 100),
+      gst_amount_paise: Math.round(Number(value.taxAmount ?? 0) * 100),
+      incurred_on: dateOnly(value.transactionDate) ?? dateOnly(new Date()),
+      vendor: value.vendor,
+      gstin: value.gstin,
+      tax_category: value.taxCategory,
       invoice_number: value.invoiceNumber,
-      location_id: value.locationId,
-    }],
-  };
+      tds_amount_paise: Math.round(Number(value.tdsAmount ?? 0) * 100),
+      payment_mode: value.paymentMethod,
+      status: "Pending",
+    };
+  if (path === "team.assignVehicle") return { vehicle_id: value.vehicleId, driver_id: value.driverId };
+  if (path === "team.invite")
+    return {
+      email: value.email,
+      full_name: value.fullName ?? String(value.email ?? "").split("@")[0],
+      mobile_phone: value.mobileNumber ?? value.mobilePhone,
+      role: String(value.role ?? "driver").toLowerCase(),
+      expires_in_days: value.expiresInDays ?? 7,
+    };
+  if (path === "vendors.create")
+    return {
+      name: value.name,
+      vendor_type: value.vendorType ?? "Parts supplier",
+      gstin: value.gstin,
+      contact_name: value.contactPerson ?? value.contactName,
+      phone: value.phone,
+      email: value.email,
+      address: value.address,
+      active: value.active ?? true,
+    };
+  if (path === "vendors.update")
+    return {
+      name: value.name,
+      vendor_type: value.vendorType ?? value.vendor_type,
+      gstin: value.gstin,
+      contact_name: value.contactPerson ?? value.contactName ?? value.contact_name,
+      phone: value.phone,
+      email: value.email,
+      address: value.address,
+      active: value.active,
+    };
+  if (path === "profile.update")
+    return {
+      full_name: value.fullName,
+      mobile_phone: value.mobilePhone ?? value.mobileNumber,
+      sms_alerts_enabled: value.smsAlertsEnabled ?? false,
+      whatsapp_alerts_enabled: value.whatsappAlertsEnabled ?? false,
+    };
+  if (path === "organizationSettings.update")
+    return {
+      name: value.name,
+      subscription_plan: value.subscriptionPlan,
+      timezone: value.timezone,
+      odometer_max_daily_km: value.odometerMaxDailyKm,
+      labor_rate_per_hour: value.laborRatePerHour,
+      safety_contact_name: value.safetyContactName,
+      safety_contact_phone: value.safetyContactPhone,
+    };
+  if (path === "onboarding.complete")
+    return {
+      organization_name: value.orgName,
+      first_name:
+        String(value.fullName ?? "")
+          .trim()
+          .split(/\s+/)[0] ?? "",
+      last_name:
+        String(value.fullName ?? "")
+          .trim()
+          .split(/\s+/)
+          .slice(1)
+          .join(" ") || "Owner",
+      mobile_phone: value.mobileNumber,
+      sms_alerts_enabled: value.smsAlertsEnabled ?? false,
+      whatsapp_alerts_enabled: value.whatsappAlertsEnabled ?? false,
+    };
+  if (path === "onboarding.completeInviteWithPassword")
+    return {
+      token: value.token,
+      password: value.password,
+      mobile_phone: value.mobileNumber,
+      sms_alerts_enabled: value.smsAlertsEnabled ?? false,
+      whatsapp_alerts_enabled: value.whatsappAlertsEnabled ?? false,
+    };
+  if (path === "notifications.markRead") return { status: "read" };
+  if (path === "notifications.escalate")
+    return {
+      severity: value.severity ?? "CRITICAL",
+      reason: value.reason ?? "Escalated by user",
+    };
+  if (path === "notifications.resolve")
+    return {
+      note: value.note ?? "",
+    };
+  if (path === "driver.unsafeDisposition")
+    return {
+      vehicle_id: value.vehicleId,
+      description: value.notes,
+      severity: value.disposition === "UNSAFE_TO_DRIVE" ? "high" : "medium",
+      location: value.location,
+    };
+  if (path === "workOrders.reservePart" || path === "workOrders.returnReservedPart")
+    return {
+      part_id: value.partId,
+      quantity: value.quantity,
+      reason: value.reason,
+    };
+  if (path === "workOrders.issuePart")
+    return {
+      work_order_part_usage_id: value.workOrderPartUsageId,
+      quantity: value.quantity,
+    };
+  if (path === "telematics.createIntegration" || path === "telematics.updateIntegration")
+    return {
+      provider: value.provider,
+      base_url: value.baseUrl,
+      sync_path: value.syncPath || "/readings",
+      credential_ref: value.credentialRef || undefined,
+      api_token: value.apiToken || undefined,
+      active: value.active ?? true,
+      sync_interval_minutes: Number(value.syncIntervalMinutes || 1440),
+    };
+  if (path === "telematics.createDevice")
+    return {
+      vehicle_id: value.vehicleId,
+      provider: value.provider,
+      device_identifier: value.deviceIdentifier,
+      active: value.active ?? true,
+    };
+  if (path === "telematics.updateDevice") return { active: value.active };
+  if (path === "purchaseOrders.create")
+    return {
+      vendor_id: value.vendorId,
+      lines: value.lines ?? [
+        {
+          part_id: value.partId ?? 0,
+          quantity: 1,
+          unit_cost_paise: Math.round(Number(value.totalCost ?? 0) * 100),
+        },
+      ],
+      notes: value.notes,
+    };
+  if (path === "purchaseOrders.updateStatus") return { status: purchaseOrderStatus(value.status) };
+  if (path === "purchaseOrders.receivePartial")
+    return {
+      items: [
+        {
+          part_id: value.partId,
+          quantity: value.quantity,
+          damaged_quantity: value.damagedQuantity ?? 0,
+          backordered_quantity: value.backorderedQuantity ?? 0,
+          variance_reason: value.varianceReason,
+          unit_cost_paise: Math.round(Number(value.unitCost ?? 0) * 100),
+          invoice_number: value.invoiceNumber,
+          location_id: value.locationId ?? value.location,
+        },
+      ],
+    };
+  if (path === "financials.reconcileRecord")
+    return {
+      reconciliation_ref: value.reconciliationRef,
+    };
   return input;
 }
 
@@ -415,7 +531,8 @@ let sessionExpiredNotified = false;
 async function recoverSession(): Promise<string | undefined> {
   if (!supabase) return undefined;
   if (!sessionRecoveryPromise) {
-    sessionRecoveryPromise = supabase.auth.refreshSession()
+    sessionRecoveryPromise = supabase.auth
+      .refreshSession()
       .then(({ data }) => data.session?.access_token)
       .finally(() => {
         sessionRecoveryPromise = null;
@@ -433,14 +550,15 @@ async function expireSession() {
 
 async function request(path: string, input?: unknown, method = "GET", inputPath = path) {
   const body = serializeInput(inputPath, input);
-  const send = async (token?: string) => fetch(`${API_BASE_URL}${path}`, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    ...(method === "GET" ? {} : { body: JSON.stringify(body ?? {}) }),
-  });
+  const send = async (token?: string) =>
+    fetch(`${API_BASE_URL}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      ...(method === "GET" ? {} : { body: JSON.stringify(body ?? {}) }),
+    });
   let token = await accessToken();
   let response = await send(token);
   if (response.status === 401 && supabase) {
@@ -454,19 +572,21 @@ async function request(path: string, input?: unknown, method = "GET", inputPath 
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    const detail = Array.isArray(body?.detail)
-      ? body.detail.map((item: { msg?: string }) => item.msg ?? "Invalid request").join(", ")
-      : body?.detail;
+    const detail = Array.isArray(body?.detail) ? body.detail.map((item: { msg?: string }) => item.msg ?? "Invalid request").join(", ") : body?.detail;
     const error = new Error(detail || `Request failed with status ${response.status}`);
-    Object.assign(error, { status: response.status, data: { code: response.status === 401 ? "UNAUTHORIZED" : "BAD_REQUEST" } });
+    Object.assign(error, {
+      status: response.status,
+      data: { code: response.status === 401 ? "UNAUTHORIZED" : "BAD_REQUEST" },
+    });
     throw error;
   }
   if (response.status === 204) return null;
   const payload = await response.json();
   const normalized = camelize(payload);
   if (inputPath === "financials.approvalQueue" && normalized && typeof normalized === "object") {
-    return (normalized as Record<string, unknown>).pendingItems ?? [];
+    return financeResponse((normalized as Record<string, unknown>).pendingItems ?? []);
   }
+  if (inputPath.startsWith("financials.") && inputPath !== "financials.metrics") return financeResponse(normalized);
   return normalized;
 }
 
@@ -476,11 +596,12 @@ async function uploadDocumentFile(documentId: string | number, fileData: string)
   const bytes = Uint8Array.from(atob(match[2]), (character) => character.charCodeAt(0));
   const form = new FormData();
   form.append("file", new Blob([bytes], { type: match[1] }), `document-${documentId}`);
-  const send = async (token?: string) => fetch(`${API_BASE_URL}/api/v1/documents/${documentId}/file`, {
-    method: "POST",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    body: form,
-  });
+  const send = async (token?: string) =>
+    fetch(`${API_BASE_URL}/api/v1/documents/${documentId}/file`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    });
   let token = await accessToken();
   let response = await send(token);
   if (response.status === 401 && supabase) {
@@ -526,14 +647,14 @@ function collectionPath(path: string) {
   return map[root] ?? `/api/v1/${root}`;
 }
 
-function queryPath(path: string, input: unknown) {
+export function queryPath(path: string, input: unknown) {
   if (path === "auth.me") return "/api/v1/auth/me";
   if (path === "dashboard.summary") return "/api/v1/dashboard/summary";
   if (path === "telematics.overview") return "/api/v1/telematics/overview";
   if (path === "telematics.integrations") return "/api/v1/telematics/integrations";
   if (path === "telematics.devices") return "/api/v1/telematics/devices";
   if (path === "telematics.health") return "/api/v1/telematics/health";
-  if (path === "financials.metrics") return "/api/v1/financials/metrics";
+  if (path === "financials.metrics") return `/api/v1/financials/metrics${financeFilters(input)}`;
   if (path === "compliance.summary") return "/api/v1/compliance/summary";
   if (path === "billing.plans") return "/api/v1/subscription/plans";
   if (path === "billing.status") return "/api/v1/subscription";
@@ -564,7 +685,14 @@ function queryPath(path: string, input: unknown) {
   if (path === "documents.versions" && (input as { documentId?: string | number } | undefined)?.documentId) return `/api/v1/compliance/documents/${(input as { documentId: string | number }).documentId}/versions`;
   if (path === "documents.list") return "/api/v1/documents";
   if (path === "notifications.list") {
-    const filters = input as { severity?: string; sourceType?: string; status?: string; vehicleId?: string } | undefined;
+    const filters = input as
+      | {
+          severity?: string;
+          sourceType?: string;
+          status?: string;
+          vehicleId?: string;
+        }
+      | undefined;
     const params = new URLSearchParams();
     if (filters?.severity) params.set("severity", filters.severity);
     if (filters?.sourceType) params.set("source_type", filters.sourceType);
@@ -573,19 +701,20 @@ function queryPath(path: string, input: unknown) {
     const query = params.toString();
     return `/api/v1/notifications${query ? `?${query}` : ""}`;
   }
-  if (path === "financials.list") return "/api/v1/expenses";
+  if (path === "financials.list") return `/api/v1/financials/ledger${financeFilters(input)}`;
   if (path === "inventory.workOrders") return "/api/v1/inventory/work-orders";
   if (path === "inventory.workOrderParts" && (input as { workOrderId?: string | number } | undefined)?.workOrderId) {
     return `/api/v1/inventory/work-orders/${(input as { workOrderId: string | number }).workOrderId}/parts`;
   }
-  if (path === "financials.vehicles") return "/api/v1/vehicles";
+  if (path === "financials.vehicles") return "/api/v1/financials/vehicles";
   if (path === "inventory.list") return "/api/v1/parts";
+  if (path === "inventory.locations") return "/api/v1/stock-locations";
   if (path === "vendors.list") return "/api/v1/vendors";
   if (path === "purchaseOrders.list") return "/api/v1/purchase-orders";
   if (path === "documents.exportPdf") return "/api/v1/export/documents?format=pdf";
   if (path === "documents.exportCsv") return "/api/v1/export/documents";
-  if (path === "financials.exportPdf") return "/api/v1/export/expenses?format=pdf";
-  if (path === "financials.exportCsv") return "/api/v1/export/expenses";
+  if (path === "financials.exportPdf") return `/api/v1/export/expenses${financeFilters(input, "pdf")}`;
+  if (path === "financials.exportCsv") return `/api/v1/export/expenses${financeFilters(input)}`;
   if (path === "inventory.exportCsv") return "/api/v1/inventory/movements/export";
   if (path === "inventory.previewImport") return "/api/v1/inventory/movements/preview-text";
   if (path === "documents.previewImport") return "/api/v1/documents/preview-import";
@@ -601,23 +730,46 @@ function queryPath(path: string, input: unknown) {
   if (path === "financials.approvalQueue") return "/api/v1/financials/approval-queue";
   if (path === "financials.reconcile") return "/api/v1/financials/reconciliation";
   if (path === "notifications.sourceDetail") {
-    const notificationId = (input as { notificationId?: string | number; id?: string | number } | undefined)?.notificationId
-      ?? (input as { id?: string | number } | undefined)?.id;
+    const notificationId = (input as { notificationId?: string | number; id?: string | number } | undefined)?.notificationId ?? (input as { id?: string | number } | undefined)?.id;
     if (notificationId) return `/api/v1/notifications/${notificationId}/source-detail`;
   }
   if (path === "vendors.pricingHistory" && (input as { vendorId?: string | number } | undefined)?.vendorId) return `/api/v1/vendors/${(input as { vendorId: string | number }).vendorId}/pricing-history`;
   if (path === "purchaseOrders.list") return "/api/v1/purchase-orders";
   if (path === "compliance.summary") return "/api/v1/compliance/summary";
   const base = collectionPath(path);
-  const value = input as { id?: string | number; vehicleId?: string | number; workOrderId?: string | number } | undefined;
+  const value = input as
+    | {
+        id?: string | number;
+        vehicleId?: string | number;
+        workOrderId?: string | number;
+      }
+    | undefined;
   if (path.endsWith("detail") && value?.id) return `${base}/${value.id}`;
   if (path.includes("odometerHistory") && value?.vehicleId) return `/api/v1/vehicles/${value.vehicleId}/odometer`;
   if (path.includes("handoffTimeline") && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/handoff-timeline`;
   return base;
 }
 
-function mutationPath(path: string, input: unknown) {
-  const value = input as { id?: string | number; vehicleId?: string | number; workOrderId?: string | number; notificationId?: string | number; issueId?: string | number; partId?: string | number; poId?: string | number; vendorId?: string | number; componentId?: string | number; documentId?: string | number; userId?: string | number; installationId?: string | number; integrationId?: string | number; provider?: string } | undefined;
+export function mutationPath(path: string, input: unknown) {
+  const value = input as
+    | {
+        id?: string | number;
+        vehicleId?: string | number;
+        templateId?: string | number;
+        workOrderId?: string | number;
+        notificationId?: string | number;
+        issueId?: string | number;
+        partId?: string | number;
+        poId?: string | number;
+        vendorId?: string | number;
+        componentId?: string | number;
+        documentId?: string | number;
+        userId?: string | number;
+        installationId?: string | number;
+        integrationId?: string | number;
+        provider?: string;
+      }
+    | undefined;
   const base = collectionPath(path);
   if (path === "auth.logout") return "/api/v1/auth/logout";
   if (path === "profile.update") return "/api/v1/users/me";
@@ -645,7 +797,7 @@ function mutationPath(path: string, input: unknown) {
   if (path === "workOrders.allocatePart" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/parts`;
   if (path === "workOrders.bulkUpdate") return "/api/v1/work-orders/bulk-update";
   if (path === "workOrders.updateChecklist" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/checklist`;
-  if (path === "maintenanceTemplates.applyTemplate" && value?.id) return `/api/v1/maintenance/templates/${value.id}/apply`;
+  if (path === "maintenanceTemplates.applyTemplate" && (value?.id ?? value?.templateId)) return `/api/v1/maintenance/templates/${value.id ?? value.templateId}/apply`;
   if (path === "driver.createInspection") return "/api/v1/driver/inspections";
   if (path === "driver.createFuelLog") return "/api/v1/fuel-transactions";
   if (path === "driver.unsafeDisposition") return "/api/v1/drivers/me/unsafe-disposition";
@@ -663,6 +815,7 @@ function mutationPath(path: string, input: unknown) {
   if (path === "financials.create") return "/api/v1/expenses";
   if (path === "financials.approve" && value?.id) return `/api/v1/financials/expenses/${value.id}/approve`;
   if (path === "financials.reverse" && value?.id) return `/api/v1/expenses/${value.id}/reverse`;
+  if (path === "financials.reject" && value?.id) return `/api/v1/financials/expenses/${value.id}/reject`;
   if (path === "financials.reconcileRecord" && value?.id) return `/api/v1/expenses/${value.id}/reconcile`;
   if (path === "notifications.escalate" && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}/escalate`;
   if (path === "notifications.resolve" && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}/resolve`;
@@ -699,14 +852,15 @@ function mutationPath(path: string, input: unknown) {
   return base;
 }
 
-function mutationMethod(path: string) {
+export function mutationMethod(path: string) {
+  if (path === "maintenanceTemplates.update") return "PUT";
   if (path === "documents.access") return "GET";
   if (path === "vehicleIssues.updateStatus") return "PUT";
   if (path === "vehicles.updateOdometer") return "PATCH";
   if (path === "organizationSettings.update") return "PUT";
   if (path.endsWith("update") || path.endsWith("updateStatus") || path === "profile.update" || path.includes("markRead")) return "PATCH";
   if (path === "documents.archive") return "PATCH";
-  if (path.includes("updateChecklist") || path.includes("reconcile")) return "PUT";
+  if (path.includes("updateChecklist")) return "PUT";
   if (path.endsWith("remove")) return "DELETE";
   return "POST";
 }
@@ -715,7 +869,11 @@ function useApiQuery(path: string, input: unknown, options?: QueryOptions) {
   const enabled = options?.enabled ?? true;
   const inputKey = JSON.stringify(input);
   const queryKey = `${path}:${inputKey}`;
-  const [state, setState] = useState<{ data: unknown; error: Error | null; isLoading: boolean }>({ data: undefined, error: null, isLoading: enabled });
+  const [state, setState] = useState<{
+    data: unknown;
+    error: Error | null;
+    isLoading: boolean;
+  }>({ data: undefined, error: null, isLoading: enabled });
   const refetch = useCallback(async () => {
     setState((current) => ({ ...current, isLoading: true, error: null }));
     try {
@@ -742,54 +900,71 @@ function useApiQuery(path: string, input: unknown, options?: QueryOptions) {
 }
 
 function useApiMutation(path: string, options?: MutationOptions) {
-  const [state, setState] = useState<{ error: Error | null; isPending: boolean }>({ error: null, isPending: false });
-  const mutateAsync = useCallback(async (input?: unknown) => {
-    setState({ error: null, isPending: true });
-    try {
-      let data: unknown;
-      if (path === "documents.create" && typeof (input as { fileData?: unknown } | undefined)?.fileData === "string") {
-        const document = await request(mutationPath(path, input), input, mutationMethod(path), path) as { id?: string | number };
-        if (!document.id) throw new Error("Document creation returned no identifier");
-        await uploadDocumentFile(document.id, (input as { fileData: string }).fileData);
-        data = document;
-      } else {
-        data = await request(mutationPath(path, input), input, mutationMethod(path), path);
+  const [state, setState] = useState<{
+    error: Error | null;
+    isPending: boolean;
+  }>({ error: null, isPending: false });
+  const mutateAsync = useCallback(
+    async (input?: unknown) => {
+      setState({ error: null, isPending: true });
+      try {
+        let data: unknown;
+        if (path === "documents.create" && typeof (input as { fileData?: unknown } | undefined)?.fileData === "string") {
+          const document = (await request(mutationPath(path, input), input, mutationMethod(path), path)) as { id?: string | number };
+          if (!document.id) throw new Error("Document creation returned no identifier");
+          await uploadDocumentFile(document.id, (input as { fileData: string }).fileData);
+          data = document;
+        } else {
+          data = await request(mutationPath(path, input), input, mutationMethod(path), path);
+        }
+        setState({ error: null, isPending: false });
+        options?.onSuccess?.(data);
+        return data;
+      } catch (error) {
+        setState({ error: error as Error, isPending: false });
+        options?.onError?.(error as Error);
+        throw error;
       }
-      setState({ error: null, isPending: false });
-      options?.onSuccess?.(data);
-      return data;
-    } catch (error) {
-      setState({ error: error as Error, isPending: false });
-      options?.onError?.(error as Error);
-      throw error;
-    }
-  }, [options, path]);
-  return { ...state, mutateAsync, mutate: (input?: unknown) => { void mutateAsync(input); } };
+    },
+    [options, path],
+  );
+  return {
+    ...state,
+    mutateAsync,
+    mutate: (input?: unknown) => {
+      void mutateAsync(input);
+    },
+  };
 }
 
 const queryRegistry = new Map<string, Set<() => Promise<unknown>>>();
 
 function createUtilsProxy(path = ""): any {
-  return new Proxy({}, {
-    get(_target, property: string) {
-      if (property === "invalidate") return async () => {
-        await Promise.all(
-          Array.from(queryRegistry.entries())
-            .filter(([key]) => key.startsWith(`${path}:`))
-            .flatMap(([, callbacks]) => Array.from(callbacks).map((callback) => callback())),
-        );
-      };
-      if (property === "reset") return async () => {
-        await Promise.all(
-          Array.from(queryRegistry.entries())
-            .filter(([key]) => key.startsWith(`${path}:`))
-            .flatMap(([, callbacks]) => Array.from(callbacks).map((callback) => callback())),
-        );
-      };
-      if (property === "setData") return () => undefined;
-      return createUtilsProxy(path ? `${path}.${property}` : property);
+  return new Proxy(
+    {},
+    {
+      get(_target, property: string) {
+        if (property === "invalidate")
+          return async () => {
+            await Promise.all(
+              Array.from(queryRegistry.entries())
+                .filter(([key]) => key.startsWith(`${path}:`))
+                .flatMap(([, callbacks]) => Array.from(callbacks).map((callback) => callback())),
+            );
+          };
+        if (property === "reset")
+          return async () => {
+            await Promise.all(
+              Array.from(queryRegistry.entries())
+                .filter(([key]) => key.startsWith(`${path}:`))
+                .flatMap(([, callbacks]) => Array.from(callbacks).map((callback) => callback())),
+            );
+          };
+        if (property === "setData") return () => undefined;
+        return createUtilsProxy(path ? `${path}.${property}` : property);
+      },
     },
-  });
+  );
 }
 
 const utils = createUtilsProxy();

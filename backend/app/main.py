@@ -39,7 +39,7 @@ app.add_middleware(
 async def request_context(request: Request, call_next):
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         origin = request.headers.get("origin")
-        if origin and origin not in settings.allowed_origins:
+        if origin and origin not in settings.allowed_origins and origin != str(request.base_url).rstrip("/"):
             return JSONResponse(status_code=403, content={"detail": "Origin is not allowed"})
     request_id = request.headers.get("x-request-id", str(uuid4()))
     started = perf_counter()

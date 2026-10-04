@@ -175,6 +175,7 @@ export function OperationsFrame({
 export function CommandDeck({
   operatorName,
   activeVehicles,
+  activeWorkOrders,
   vehicleCount,
   unreadCount,
   lowStockCount,
@@ -191,6 +192,7 @@ export function CommandDeck({
 }: {
   operatorName: string;
   activeVehicles: number;
+  activeWorkOrders: number;
   vehicleCount: number;
   unreadCount: number;
   lowStockCount: number;
@@ -222,7 +224,7 @@ export function CommandDeck({
       <div className="command-stat-strip">
         <article><span>Fleet availability</span><strong>{activeVehicles}<small> / {vehicleCount}</small></strong><p>vehicles active now</p></article>
         <article className={exceptionCount ? "has-risk" : ""}><span>Action signals</span><strong>{exceptionCount}</strong><p>{exceptionCount ? "require review" : "all caught up"}</p></article>
-        <article><span>Open handoffs</span><strong>{orders.filter((order) => order.status !== "Completed").length}</strong><p>work orders in motion</p></article>
+        <article><span>Open handoffs</span><strong>{activeWorkOrders}</strong><p>work orders in motion</p></article>
         <article><span>Operating spend</span><strong>{expenseTotal}</strong><p>recorded ledger expense</p></article>
       </div>
       <div className="command-deck-grid">
