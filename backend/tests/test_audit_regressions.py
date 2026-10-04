@@ -816,3 +816,20 @@ def test_driver_issue_notification_surfaces_in_vehicle_issue_feed(audit_api, mon
     assert detail.status_code == 200, detail.text
     assert detail.json()["source_type"] == "VEHICLE_ISSUE"
     assert detail.json()["source"]["title"] == "Brake warning light"
+
+
+def test_same_origin_mutations_are_not_cors_rejected():
+    with TestClient(main.app) as client:
+        foreign = client.post(
+            "/api/v1/auth/login",
+            headers={"Origin": "https://attacker.example"},
+            json={"email": "someone@example.com", "password": "password123"},
+        )
+        assert foreign.status_code == 403
+        assert foreign.json()["detail"] == "Origin is not allowed"
+        same_origin = client.post(
+            "/api/v1/auth/login",
+            headers={"Origin": "http://testserver"},
+            json={"email": "someone@example.com", "password": "password123"},
+        )
+        assert not (same_origin.status_code == 403 and same_origin.json()["detail"] == "Origin is not allowed")
