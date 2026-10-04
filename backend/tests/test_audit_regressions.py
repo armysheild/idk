@@ -26,7 +26,7 @@ from backend.app.models import (
     InventoryMovement, InventoryTransaction, Part, PurchaseOrder, PurchaseOrderLine,
     PurchaseOrderReceipt, StockLocation, Vendor, VehicleAssignment, MaintenancePlan,
     ComplianceDocument, WorkOrderChecklistItem, OperationalNotification,
-    NotificationDelivery,
+    NotificationDelivery, VehicleComponent,
 )
 from backend.app.telematics import approved_provider_request
 
@@ -779,7 +779,7 @@ def test_dvir_submission_notifies_fleet_manager_and_owner(audit_api, monkeypatch
         OperationalNotification.notification_type == "dvir_submission",
     ))
     assert notification is not None
-    assert notification.severity == "danger"
+    assert notification.severity == "CRITICAL"
     assert "Brake pedal soft" in notification.detail
     delivered = database.scalars(select(NotificationDelivery.user_id).where(
         NotificationDelivery.notification_id == notification.id,
@@ -833,3 +833,121 @@ def test_same_origin_mutations_are_not_cors_rejected():
             json={"email": "someone@example.com", "password": "password123"},
         )
         assert not (same_origin.status_code == 403 and same_origin.json()["detail"] == "Origin is not allowed")
+
+
+def _insert_notification(database, user_id, severity, entity_type, entity_id, ntype="test"):
+    notification = OperationalNotification(
+        organization_id=1, notification_type=ntype, severity=severity,
+        title="t", detail="d", entity_type=entity_type, entity_id=str(entity_id),
+        dedupe_key=f"{ntype}:{entity_type}:{entity_id}",
+    )
+    database.add(notification)
+    database.flush()
+    database.add(NotificationDelivery(
+        organization_id=1, notification_id=notification.id,
+        user_id=user_id, channel="in_app", status="delivered",
+    ))
+    database.commit()
+    return notification
+
+
+def test_maintenance_threshold_and_inventory_filters_cover_entity_types(audit_api):
+    client, database, users, vehicles = audit_api
+    component = VehicleComponent(
+        organization_id=1, vehicle_id=vehicles[0].id, name="Brake pads",
+        component_type="wear", installed_at_km=0,
+    )
+    plan = MaintenancePlan(organization_id=1, vehicle_id=vehicles[0].id, name="Plan", tasks="[]")
+    part = Part(organization_id=1, sku="SK1", name="Oil filter", category="Filters")
+    database.add_all([component, plan, part])
+    database.commit()
+    n_component = _insert_notification(database, users["fleet_manager"].id, "danger", "vehicle_component", component.id, "component_threshold")
+    n_plan = _insert_notification(database, users["fleet_manager"].id, "HIGH", "maintenance_plan", plan.id, "maintenance_due")
+    n_part = _insert_notification(database, users["fleet_manager"].id, "HIGH", "part", part.id, "INVENTORY_LOW")
+    response = client.get("/api/v1/notifications", params={"source_type": "MAINTENANCE_THRESHOLD"})
+    assert response.status_code == 200
+    ids = {item["id"] for item in response.json()}
+    assert {n_component.id, n_plan.id} <= ids
+    assert n_part.id not in ids
+    response = client.get("/api/v1/notifications", params={"source_type": "INVENTORY_LOW"})
+    assert {item["id"] for item in response.json()} == {n_part.id}
+    detail = client.get(f"/api/v1/notifications/{n_part.id}/source-detail")
+    assert detail.status_code == 200
+    assert detail.json()["source_type"] == "INVENTORY_LOW"
+    assert detail.json()["source"]["sku"] == "SK1"
+
+
+def test_severity_filter_matches_legacy_vocabulary(audit_api):
+    client, database, users, vehicles = audit_api
+    warning = _insert_notification(database, users["fleet_manager"].id, "warning", "vehicle", vehicles[0].id, "legacy_warning")
+    danger = _insert_notification(database, users["fleet_manager"].id, "danger", "vehicle", vehicles[0].id, "legacy_danger")
+    assert warning.id in {item["id"] for item in client.get("/api/v1/notifications", params={"severity": "HIGH"}).json()}
+    assert danger.id in {item["id"] for item in client.get("/api/v1/notifications", params={"severity": "CRITICAL"}).json()}
+
+
+def test_queue_notification_normalizes_legacy_severity(audit_api, monkeypatch):
+    client, database, users, vehicles = audit_api
+    monkeypatch.undo()
+    routes.queue_role_notification(
+        database, organization_id=1, notification_type="test_sev", severity="warning",
+        title="t", detail="d", entity_type="vehicle", entity_id="1",
+        roles={"fleet_manager"},
+    )
+    notification = database.scalar(select(OperationalNotification).where(
+        OperationalNotification.notification_type == "test_sev"))
+    assert notification.severity == "HIGH"
+
+
+def test_fuel_log_notifies_finance_roles(audit_api, monkeypatch):
+    client, database, users, vehicles = audit_api
+    monkeypatch.undo()
+    vehicles[0].assigned_driver_id = users["driver"].id
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["driver"]
+    response = client.post("/api/v1/fuel-transactions", json={
+        "vehicle_id": vehicles[0].id, "fuel_type": "Diesel", "litres_milli": 10000,
+        "price_per_litre_paise": 9000, "odometer_km": vehicles[0].odometer_km,
+        "incurred_on": "2026-10-04"})
+    assert response.status_code == 201, response.text
+    notification = database.scalar(select(OperationalNotification).where(
+        OperationalNotification.notification_type == "fuel_log"))
+    assert notification is not None
+    delivered = database.scalars(select(NotificationDelivery.user_id).where(
+        NotificationDelivery.notification_id == notification.id,
+        NotificationDelivery.channel == "in_app")).all()
+    assert set(delivered) == {users["owner"].id, users["fleet_manager"].id, users["accountant"].id}
+
+
+def test_expense_reject_and_approve_notify_submitter(audit_api, monkeypatch):
+    client, database, users, vehicles = audit_api
+    monkeypatch.undo()
+    expense = Expense(
+        organization_id=1, category="FUEL", description="Driver fuel", amount_paise=500000,
+        incurred_on="2026-10-01", status="Pending", created_by=users["driver"].id,
+    )
+    database.add(expense)
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["accountant"]
+    response = client.post(f"/api/v1/financials/expenses/{expense.id}/reject", json={"reason": "Duplicate entry"})
+    assert response.status_code == 200, response.text
+    notification = database.scalar(select(OperationalNotification).where(
+        OperationalNotification.notification_type == "expense_rejected"))
+    assert notification is not None
+    delivered = database.scalars(select(NotificationDelivery.user_id).where(
+        NotificationDelivery.notification_id == notification.id)).all()
+    assert delivered == [users["driver"].id]
+
+    expense2 = Expense(
+        organization_id=1, category="TOLL", description="Toll", amount_paise=30000,
+        incurred_on="2026-10-01", status="Pending", created_by=users["driver"].id,
+    )
+    database.add(expense2)
+    database.commit()
+    response = client.post(f"/api/v1/financials/expenses/{expense2.id}/approve")
+    assert response.status_code == 200, response.text
+    notification = database.scalar(select(OperationalNotification).where(
+        OperationalNotification.notification_type == "expense_approved"))
+    assert notification is not None
+    delivered = database.scalars(select(NotificationDelivery.user_id).where(
+        NotificationDelivery.notification_id == notification.id)).all()
+    assert delivered == [users["driver"].id]

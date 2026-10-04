@@ -3899,6 +3899,7 @@ def queue_role_notification(
     user_ids: set[int] | None = None,
     dedupe_key: str | None = None,
 ) -> None:
+    severity = {"danger": "CRITICAL", "warning": "HIGH"}.get(severity.lower(), severity.upper())
     dedupe_key = dedupe_key or f"{notification_type}:{entity_id}"
     existing = database.scalar(select(OperationalNotification).where(
         OperationalNotification.organization_id == organization_id,
@@ -4076,7 +4077,12 @@ def list_notifications(
         NotificationDelivery.channel == "in_app",
     )
     if severity and severity.upper() != "ALL":
-        statement = statement.where(OperationalNotification.severity == severity.upper())
+        severity_matches = {
+            "INFO": ["INFO", "info"],
+            "HIGH": ["HIGH", "warning"],
+            "CRITICAL": ["CRITICAL", "danger"],
+        }.get(severity.upper(), [severity.upper()])
+        statement = statement.where(OperationalNotification.severity.in_(severity_matches))
     if status_filter and status_filter.upper() != "ALL":
         requested_status = status_filter.upper()
         statement = statement.where(
@@ -4091,8 +4097,11 @@ def list_notifications(
         source_entities = {
             "WORK_ORDER": ["work_order"],
             "VEHICLE": ["vehicle"],
-            "VEHICLE_ISSUE": ["triage_issue", "vehicle_issue"],
-            "DOCUMENT_EXPIRY": ["compliance_document"],
+            "VEHICLE_ISSUE": ["triage_issue", "vehicle_issue", "driver_issue"],
+            "DOCUMENT_EXPIRY": ["compliance_document", "document"],
+            "MAINTENANCE_THRESHOLD": ["vehicle_component", "maintenance_plan"],
+            "INVENTORY_LOW": ["part"],
+            "PURCHASE_ORDER": ["purchase_order"],
         }.get(source_type.upper(), [source_type.lower()])
         statement = statement.where(OperationalNotification.entity_type.in_(source_entities))
     if vehicle_id is not None:
@@ -4619,6 +4628,18 @@ def create_fuel_transaction(
         created_by=user.id,
         source_key=f"fuel_transaction:{fuel.id}",
         vendor=fuel.station,
+    )
+    queue_role_notification(
+        database,
+        organization_id=user.organization_id,
+        notification_type="fuel_log",
+        severity="INFO",
+        title=f"Fuel log: {vehicle.registration_number}",
+        detail=f"{payload.litres_milli / 1000:.2f} L · ₹{total_amount_paise / 100:,.2f} recorded by {user.full_name or user.email}",
+        entity_type="fuel_transaction",
+        entity_id=str(fuel.id),
+        roles={"owner", "fleet_manager", "accountant"},
+        dedupe_key=f"fuel_log:{fuel.id}",
     )
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -10476,6 +10497,20 @@ def approve_expense(
             "category": expense.category
         })
     ))
+    if expense.created_by is not None:
+        queue_role_notification(
+            database,
+            organization_id=user.organization_id,
+            notification_type="expense_approved",
+            severity="INFO",
+            title=f"Expense approved: {expense.category}",
+            detail=f"{expense.description or 'Expense'} · ₹{expense.amount_paise / 100:,.2f} approved by {user.full_name or user.email}",
+            entity_type="expense",
+            entity_id=str(expense.id),
+            roles=set(),
+            user_ids={expense.created_by},
+            dedupe_key=f"expense_approved:{expense.id}",
+        )
     database.commit()
     database.refresh(expense)
     
@@ -10524,6 +10559,20 @@ def reject_expense(
             "category": expense.category
         })
     ))
+    if expense.created_by is not None:
+        queue_role_notification(
+            database,
+            organization_id=user.organization_id,
+            notification_type="expense_rejected",
+            severity="HIGH",
+            title=f"Expense rejected: {expense.category}",
+            detail=f"{expense.description or 'Expense'} · ₹{expense.amount_paise / 100:,.2f} rejected by {user.full_name or user.email}. Reason: {reason}",
+            entity_type="expense",
+            entity_id=str(expense.id),
+            roles=set(),
+            user_ids={expense.created_by},
+            dedupe_key=f"expense_rejected:{expense.id}",
+        )
     database.commit()
     database.refresh(expense)
     
@@ -11050,7 +11099,7 @@ def get_notification_source_detail(
                 "status": entity.status,
             }
     
-    elif notification.entity_type in ("triage_issue", "vehicle_issue"):
+    elif notification.entity_type in ("triage_issue", "vehicle_issue", "driver_issue"):
         entity = database.scalar(select(VehicleIssue).where(
             VehicleIssue.id == int(notification.entity_id),
             VehicleIssue.organization_id == user.organization_id,
@@ -11061,6 +11110,123 @@ def get_notification_source_detail(
                 "id": entity.id,
                 "title": entity.title,
                 "priority": entity.priority,
+                "status": entity.status,
+            }
+    
+    elif notification.entity_type == "vehicle_component":
+        entity = database.scalar(select(VehicleComponent).where(
+            VehicleComponent.id == int(notification.entity_id),
+            VehicleComponent.organization_id == user.organization_id,
+        ))
+        if entity:
+            entity_data = {
+                "type": "vehicle_component",
+                "id": entity.id,
+                "name": entity.name,
+                "vehicle_id": entity.vehicle_id,
+                "component_type": entity.component_type,
+                "next_service_km": entity.next_service_km,
+                "status": entity.status,
+            }
+    
+    elif notification.entity_type == "maintenance_plan":
+        entity = database.scalar(select(MaintenancePlan).where(
+            MaintenancePlan.id == int(notification.entity_id),
+            MaintenancePlan.organization_id == user.organization_id,
+        ))
+        if entity:
+            entity_data = {
+                "type": "maintenance_plan",
+                "id": entity.id,
+                "name": entity.name,
+                "vehicle_id": entity.vehicle_id,
+                "next_due_km": entity.next_due_km,
+                "next_due_on": entity.next_due_on,
+                "active": entity.active,
+            }
+    
+    elif notification.entity_type == "document":
+        entity = database.scalar(select(ComplianceDocument).where(
+            ComplianceDocument.id == int(notification.entity_id),
+            ComplianceDocument.organization_id == user.organization_id,
+        ))
+        if entity:
+            entity_data = {
+                "type": "compliance_document",
+                "id": entity.id,
+                "name": entity.name,
+                "document_type": entity.document_type,
+                "expires_on": entity.expires_on,
+                "status": entity.status,
+            }
+    
+    elif notification.entity_type == "part":
+        entity = database.scalar(select(Part).where(
+            Part.id == int(notification.entity_id),
+            Part.organization_id == user.organization_id,
+        ))
+        if entity:
+            entity_data = {
+                "type": "part",
+                "id": entity.id,
+                "name": entity.name,
+                "sku": entity.sku,
+                "quantity_on_hand": entity.quantity_on_hand,
+            }
+    
+    elif notification.entity_type == "purchase_order":
+        entity = database.scalar(select(PurchaseOrder).where(
+            PurchaseOrder.id == int(notification.entity_id),
+            PurchaseOrder.organization_id == user.organization_id,
+        ))
+        if entity:
+            entity_data = {
+                "type": "purchase_order",
+                "id": entity.id,
+                "order_number": entity.order_number,
+                "status": entity.status,
+            }
+    
+    elif notification.entity_type == "fuel_transaction":
+        entity = database.scalar(select(FuelTransaction).where(
+            FuelTransaction.id == int(notification.entity_id),
+            FuelTransaction.organization_id == user.organization_id,
+        ))
+        if entity:
+            entity_data = {
+                "type": "fuel_transaction",
+                "id": entity.id,
+                "vehicle_id": entity.vehicle_id,
+                "total_amount_paise": entity.total_amount_paise,
+                "litres_milli": entity.litres_milli,
+            }
+    
+    elif notification.entity_type == "expense":
+        entity = database.scalar(select(Expense).where(
+            Expense.id == int(notification.entity_id),
+            Expense.organization_id == user.organization_id,
+        ))
+        if entity:
+            entity_data = {
+                "type": "expense",
+                "id": entity.id,
+                "category": entity.category,
+                "description": entity.description,
+                "amount_paise": entity.amount_paise,
+                "status": entity.status,
+            }
+    
+    elif notification.entity_type == "notification":
+        entity = database.scalar(select(OperationalNotification).where(
+            OperationalNotification.id == int(notification.entity_id),
+            OperationalNotification.organization_id == user.organization_id,
+        ))
+        if entity:
+            entity_data = {
+                "type": "notification",
+                "id": entity.id,
+                "title": entity.title,
+                "severity": entity.severity,
                 "status": entity.status,
             }
     
@@ -11075,7 +11241,17 @@ def get_notification_source_detail(
             "work_order": "WORK_ORDER",
             "vehicle": "VEHICLE",
             "compliance_document": "DOCUMENT_EXPIRY",
+            "document": "DOCUMENT_EXPIRY",
             "triage_issue": "VEHICLE_ISSUE",
+            "vehicle_issue": "VEHICLE_ISSUE",
+            "driver_issue": "VEHICLE_ISSUE",
+            "vehicle_component": "MAINTENANCE_THRESHOLD",
+            "maintenance_plan": "MAINTENANCE_THRESHOLD",
+            "part": "INVENTORY_LOW",
+            "purchase_order": "PURCHASE_ORDER",
+            "fuel_transaction": "FUEL_TRANSACTION",
+            "expense": "EXPENSE",
+            "notification": "NOTIFICATION",
         }.get(notification.entity_type, notification.entity_type.upper()),
         "source": entity_data,
     }
