@@ -35,9 +35,17 @@ def get_current_user(token: str = Depends(oauth2_scheme), database: Session = De
                 user = database.scalar(select(User).where(User.supabase_user_id == subject))
                 if user is None and email:
                     user = database.scalar(select(User).where(User.email == email))
-                    if user is not None:
+                    if user is not None and user.supabase_user_id in (None, subject):
                         user.supabase_user_id = subject
                         database.commit()
+                if user is not None and user.session_revoked_at is not None:
+                    issued_at = claims.get("iat")
+                    try:
+                        revoked_before_issue = issued_at is not None and int(issued_at) <= int(user.session_revoked_at.timestamp())
+                    except (TypeError, ValueError):
+                        revoked_before_issue = False
+                    if revoked_before_issue:
+                        raise credentials_error
             except Exception:
                 if settings.environment.lower() != "development":
                     raise
@@ -55,7 +63,8 @@ def get_current_user(token: str = Depends(oauth2_scheme), database: Session = De
         if user is None:
             raise credentials_error
         user.role = normalize_role(user.role)
-        if database.bind is not None and database.bind.dialect.name == "postgresql":
+        bind = database.get_bind()
+        if bind is not None and bind.dialect.name == "postgresql":
             database.execute(
                 text("select set_config('app.organization_id', :organization_id, true)"),
                 {"organization_id": str(user.organization_id)},
@@ -119,7 +128,7 @@ def require_permission(permission: str):
     def dependency(user: User = Depends(get_current_user)) -> User:
         permissions = ROLE_PERMISSIONS.get(user.role, set())
         if "*" not in permissions and permission not in permissions:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Role {user.role} cannot access {permission}")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions for this action")
         return user
 
     return dependency

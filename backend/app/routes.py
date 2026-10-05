@@ -164,6 +164,20 @@ _AUTH_RATE_WINDOW_SECONDS = 60.0
 _auth_attempts: dict[str, list[float]] = {}
 _auth_attempts_lock = threading.Lock()
 
+_NOTIFICATION_SYNC_DEBOUNCE_SECONDS = 60.0
+_notification_sync_last: dict[tuple[int, int], float] = {}
+_notification_sync_lock = threading.Lock()
+
+
+def maybe_sync_notifications(user: User, database: Session) -> None:
+    key = (user.organization_id, user.id)
+    now = time.monotonic()
+    with _notification_sync_lock:
+        if now - _notification_sync_last.get(key, 0.0) < _NOTIFICATION_SYNC_DEBOUNCE_SECONDS:
+            return
+        _notification_sync_last[key] = now
+    sync_notifications(user, database)
+
 
 def enforce_auth_rate_limit(request: Request, endpoint: str) -> None:
     if get_settings().environment.lower() == "development":
@@ -195,8 +209,10 @@ def odometer_reading_is_flagged(
         OdometerLog.vehicle_id == vehicle_id,
     ).order_by(OdometerLog.created_at.desc()).limit(1))
     organization = database.get(Organization, organization_id)
-    if latest is not None and latest.reading_km == reading_km:
-        return True
+    if latest is not None and latest.reading_km == reading_km and latest.created_at is not None:
+        logged_at = latest.created_at if latest.created_at.tzinfo is not None else latest.created_at.replace(tzinfo=timezone.utc)
+        if utc_now() - logged_at <= timedelta(hours=1):
+            return True
     if organization is not None and reading_km - current_km > organization.odometer_max_daily_km:
         return True
     return False
@@ -233,6 +249,16 @@ def parse_iso_date(value: str | None) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         return None
+
+
+def resolve_maintenance_template_id(database: Session, organization_id: int, template_name: str | None) -> int | None:
+    if not template_name or not template_name.strip():
+        return None
+    template = database.scalar(select(MaintenanceTemplate).where(
+        MaintenanceTemplate.organization_id == organization_id,
+        func.lower(MaintenanceTemplate.name) == template_name.strip().lower(),
+    ))
+    return template.id if template else None
 
 
 def reserve_idempotency_key(request: Request, user: User, database: Session) -> None:
@@ -399,9 +425,11 @@ def signup(payload: OrganizationSignup, request: Request, database: Session = De
     try:
         supabase_user_id = provision_supabase_user(email, payload.password, payload.full_name.strip())
     except ValueError as error:
-        detail = str(error)
-        code = status.HTTP_409_CONFLICT if "already exists" in detail else status.HTTP_503_SERVICE_UNAVAILABLE
-        raise HTTPException(status_code=code, detail=detail) from error
+        already_exists = "already exists" in str(error)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT if already_exists else status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="A user with this email already exists" if already_exists else "Supabase Auth could not provision the account",
+        ) from error
     user = User(
         organization_id=organization.id,
         email=email,
@@ -465,9 +493,11 @@ def signup_account(payload: AccountSignup, request: Request, database: Session =
             metadata={"fullName": payload.full_name.strip(), "needsOnboarding": True},
         )
     except ValueError as error:
-        detail = str(error)
-        code = status.HTTP_409_CONFLICT if "already exists" in detail else status.HTTP_503_SERVICE_UNAVAILABLE
-        raise HTTPException(status_code=code, detail=detail) from error
+        already_exists = "already exists" in str(error)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT if already_exists else status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="A user with this email already exists" if already_exists else "Supabase Auth could not provision the account",
+        ) from error
     if not supabase_user_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Organization setup requires Supabase Auth")
     return AccountSignupRead(user_id=supabase_user_id, email=email)
@@ -505,6 +535,7 @@ def identity_provider_metadata() -> IdentityProviderMetadata:
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(user: User = Depends(get_current_user), database: Session = Depends(get_db)) -> None:
     user.token_version += 1
+    user.session_revoked_at = utc_now()
     database.commit()
 
 
@@ -552,25 +583,52 @@ def fleet_operations_summary(
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> FleetOperationsSummaryRead:
-    vehicles = list(database.scalars(select(Vehicle).where(Vehicle.organization_id == user.organization_id)).all())
-    work_orders = list(database.scalars(select(WorkOrder).where(WorkOrder.organization_id == user.organization_id)).all())
-    components = list(database.scalars(select(VehicleComponent).where(VehicleComponent.organization_id == user.organization_id)).all())
-    documents = list(database.scalars(select(ComplianceDocument).where(ComplianceDocument.organization_id == user.organization_id)).all())
-    parts = list(database.scalars(select(Part).where(Part.organization_id == user.organization_id)).all())
+    org_id = user.organization_id
     today = date.today().isoformat()
+    count = lambda statement: database.scalar(statement) or 0
+    active_vehicles = count(select(func.count(Vehicle.id)).where(
+        Vehicle.organization_id == org_id,
+        Vehicle.status.notin_(("Out of service", "Retired")),
+    ))
+    total_vehicles = count(select(func.count(Vehicle.id)).where(Vehicle.organization_id == org_id))
+    open_work_orders = count(select(func.count(WorkOrder.id)).where(
+        WorkOrder.organization_id == org_id,
+        WorkOrder.status.notin_(("Completed", "Cancelled")),
+    ))
+    overdue_work_orders = count(select(func.count(WorkOrder.id)).where(
+        WorkOrder.organization_id == org_id,
+        WorkOrder.status.notin_(("Completed", "Cancelled")),
+        WorkOrder.due_date.is_not(None),
+        WorkOrder.due_date < today,
+    ))
+    due_components = count(select(func.count(VehicleComponent.id)).where(
+        VehicleComponent.organization_id == org_id,
+        VehicleComponent.next_service_km.is_not(None),
+    ).join(Vehicle, Vehicle.id == VehicleComponent.vehicle_id).where(
+        Vehicle.odometer_km >= VehicleComponent.next_service_km,
+    ))
+    compliance_due = count(select(func.count(ComplianceDocument.id)).where(
+        ComplianceDocument.organization_id == org_id,
+        ComplianceDocument.expires_on.is_not(None),
+        ComplianceDocument.expires_on <= (date.today() + timedelta(days=30)).isoformat(),
+    ))
+    low_stock_parts = count(select(func.count(Part.id)).where(
+        Part.organization_id == org_id,
+        Part.quantity_on_hand <= Part.reorder_level,
+    ))
+    unassigned_vehicles = count(select(func.count(Vehicle.id)).where(
+        Vehicle.organization_id == org_id,
+        Vehicle.assigned_driver_id.is_(None),
+    ))
     return FleetOperationsSummaryRead(
-        active_vehicles=sum(vehicle.status not in ("Out of service", "Retired") for vehicle in vehicles),
-        total_vehicles=len(vehicles),
-        open_work_orders=sum(order.status not in ("Completed", "Cancelled") for order in work_orders),
-        overdue_work_orders=sum(order.status not in ("Completed", "Cancelled") and order.due_date is not None and order.due_date < today for order in work_orders),
-        due_components=sum(component.next_service_km is not None and next((vehicle.odometer_km for vehicle in vehicles if vehicle.id == component.vehicle_id), 0) >= component.next_service_km for component in components),
-        compliance_due=sum(
-            (expires_on := parse_iso_date(document.expires_on)) is not None
-            and expires_on <= date.today() + timedelta(days=30)
-            for document in documents
-        ),
-        low_stock_parts=sum(part.quantity_on_hand <= part.reorder_level for part in parts),
-        unassigned_vehicles=sum(vehicle.assigned_driver_id is None for vehicle in vehicles),
+        active_vehicles=active_vehicles,
+        total_vehicles=total_vehicles,
+        open_work_orders=open_work_orders,
+        overdue_work_orders=overdue_work_orders,
+        due_components=due_components,
+        compliance_due=compliance_due,
+        low_stock_parts=low_stock_parts,
+        unassigned_vehicles=unassigned_vehicles,
     )
 
 
@@ -828,9 +886,11 @@ def accept_invitation(payload: InvitationAccept, request: Request, database: Ses
     try:
         supabase_user_id = provision_supabase_user(invitation.email, payload.password, invitation.full_name)
     except ValueError as error:
-        detail = str(error)
-        code = status.HTTP_409_CONFLICT if "already exists" in detail else status.HTTP_503_SERVICE_UNAVAILABLE
-        raise HTTPException(status_code=code, detail=detail) from error
+        already_exists = "already exists" in str(error)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT if already_exists else status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="A user with this email already exists" if already_exists else "Supabase Auth could not provision the account",
+        ) from error
     member = User(
         organization_id=invitation.organization_id,
         email=invitation.email,
@@ -854,11 +914,24 @@ def accept_invitation(payload: InvitationAccept, request: Request, database: Ses
         request_id=str(uuid4()),
         changes=json.dumps({"role": member.role}),
     ))
-    database.commit()
-    access_token = create_access_token(str(member.id), member.token_version)
+    supabase_access_token = None
     settings = get_settings()
     if settings.auth_provider == "supabase" and settings.environment.lower() != "development":
-        access_token = sign_in_supabase_user(member.email, payload.password)
+        try:
+            supabase_access_token = sign_in_supabase_user(member.email, payload.password)
+        except ValueError as error:
+            database.rollback()
+            if supabase_user_id:
+                try:
+                    delete_supabase_user(supabase_user_id)
+                except ValueError:
+                    pass
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Supabase Auth could not create a session",
+            ) from error
+    database.commit()
+    access_token = supabase_access_token or create_access_token(str(member.id), member.token_version)
     return InvitationAcceptRead(
         organization_name=organization.name,
         user=member,
@@ -894,9 +967,11 @@ def create_user(
     try:
         supabase_user_id = provision_supabase_user(email, payload.password, payload.full_name.strip())
     except ValueError as error:
-        detail = str(error)
-        code = status.HTTP_409_CONFLICT if "already exists" in detail else status.HTTP_503_SERVICE_UNAVAILABLE
-        raise HTTPException(status_code=code, detail=detail) from error
+        already_exists = "already exists" in str(error)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT if already_exists else status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="A user with this email already exists" if already_exists else "Supabase Auth could not provision the account",
+        ) from error
     member = User(
         organization_id=user.organization_id,
         email=email,
@@ -1091,6 +1166,7 @@ def create_subscription_checkout(
 
 @router.post("/webhooks/razorpay", status_code=status.HTTP_204_NO_CONTENT)
 async def razorpay_webhook(request: Request, database: Session = Depends(get_db)) -> None:
+    enforce_auth_rate_limit(request, "razorpay-webhook")
     settings = get_settings()
     if not settings.razorpay_webhook_secret:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Razorpay webhook verification is not configured")
@@ -1429,6 +1505,7 @@ def create_vehicle(
         depot=payload.depot.strip(),
         assigned_route=payload.assigned_route.strip() if payload.assigned_route else None,
         maintenance_template=payload.maintenance_template.strip() if payload.maintenance_template else None,
+        maintenance_template_id=resolve_maintenance_template_id(database, user.organization_id, payload.maintenance_template),
         status=payload.status,
         health=payload.health,
         odometer_km=payload.odometer_km,
@@ -1529,6 +1606,8 @@ def update_vehicle(
             value = value.strip().upper()
         elif isinstance(value, str) and key in {"make", "model", "depot", "assigned_route", "maintenance_template"}:
             value = value.strip()
+        if key == "maintenance_template":
+            vehicle.maintenance_template_id = resolve_maintenance_template_id(database, user.organization_id, value)
         setattr(vehicle, key, value)
     if "odometer_km" in changes:
         odometer_flagged = odometer_reading_is_flagged(
@@ -2100,8 +2179,20 @@ def update_work_order(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only fleet or workshop roles can update work orders")
     if user.role in ("technician", "mechanic"):
         changes = {key: value for key, value in changes.items() if key in {"description", "status"}}
-        if "status" in changes and changes["status"] not in {"In progress", "Ready for review"}:
+        if "status" in changes and changes["status"] not in {"In progress", "Waiting for parts", "Ready for review", "Rework"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workshop roles can only update execution status")
+        if "status" in changes and changes["status"] != work_order.status:
+            workshop_transitions = {
+                "Open": {"In progress"},
+                "Assigned": {"In progress"},
+                "Scheduled": {"In progress"},
+                "In progress": {"Waiting for parts", "Ready for review"},
+                "Waiting for parts": {"In progress"},
+                "Ready for review": {"Rework"},
+                "Rework": {"In progress"},
+            }
+            if changes["status"] not in workshop_transitions.get(work_order.status, set()):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Invalid work-order transition: {work_order.status} to {changes['status']}")
     else:
         changes = {
             key: value
@@ -2153,6 +2244,8 @@ def update_work_order(
             capture_labor_rate(database, work_order)
         elif changes["status"] == "Ready for review" and work_order.completed_at is None:
             work_order.completed_at = transitioned_at
+        elif changes["status"] == "Rework":
+            work_order.completed_at = None
         elif changes["status"] == "Archived":
             work_order.archived_at = transitioned_at
     if previous_status != "Ready for review" and changes.get("status") == "Ready for review":
@@ -2533,8 +2626,8 @@ def approve_work_order(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
     if work_order.status != "Ready for review":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only work orders ready for review can be approved")
-    if work_order.created_by == user.id or work_order.assigned_user_id == user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The work-order creator or executor cannot approve it")
+    if work_order.assigned_user_id == user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The work-order executor cannot approve their own work")
     work_order.status = "Completed"
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -2921,12 +3014,6 @@ def record_work_order_part(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order or part not found")
     if payload.quantity <= 0:
         raise HTTPException(status_code=400, detail="Part quantity must be positive")
-    part = database.scalar(select(Part).where(
-        Part.id == payload.part_id,
-        Part.organization_id == user.organization_id,
-    ).with_for_update())
-    if part is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part not found")
     if part.quantity_on_hand < payload.quantity:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Insufficient stock for this work order")
     usage = WorkOrderPartUsage(
@@ -3177,7 +3264,7 @@ def transfer_inventory(
         part_id=part.id,
         location_id=location.id,
         transaction_type="transfer",
-        quantity=0,
+        quantity=payload.quantity if payload.quantity is not None else part.quantity_on_hand,
         reference=payload.reason,
     )
     database.add(movement)
@@ -3614,7 +3701,9 @@ def build_alerts(user: User, database: Session) -> list[dict[str, str | int]]:
     alerts: list[dict[str, str | int]] = []
     documents = database.scalars(select(ComplianceDocument).where(ComplianceDocument.organization_id == user.organization_id)).all()
     for document in documents:
-        expires_on = date.fromisoformat(document.expires_on)
+        expires_on = parse_iso_date(document.expires_on)
+        if expires_on is None:
+            continue
         days_until_expiry = (expires_on - today).days
         if days_until_expiry <= 30:
             alerts.append({
@@ -4077,7 +4166,7 @@ def list_notifications(
     database: Session = Depends(get_db),
 ) -> list[OperationalNotification]:
     try:
-        sync_notifications(user, database)
+        maybe_sync_notifications(user, database)
     except SQLAlchemyError as error:
         database.rollback()
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Notification synchronization failed") from error
@@ -4332,7 +4421,7 @@ def _sync_work_order_expense(database: Session, work_order: WorkOrder, user: Use
     )
     labor_cost_paise = (
         (work_order.labor_hours or 0)
-        * work_order.labor_rate_paise
+        * (work_order.labor_rate_paise or 0)
     )
     amount_paise = parts_cost_paise + labor_cost_paise
     if amount_paise <= 0:
@@ -5089,9 +5178,9 @@ def cron_sync_telematics(
         for document in database.scalars(select(ComplianceDocument).where(
             ComplianceDocument.organization_id == organization.id,
         )).all():
-            if not document.expires_on:
+            expires_on = parse_iso_date(document.expires_on)
+            if expires_on is None:
                 continue
-            expires_on = date.fromisoformat(document.expires_on)
             if expires_on <= horizon:
                 before = database.scalar(select(OperationalNotification.id).where(
                     OperationalNotification.organization_id == organization.id,
@@ -7984,7 +8073,7 @@ def get_work_order_board(
     database: Session = Depends(get_db),
 ) -> dict:
     """Get work order board (kanban view) organized by status"""
-    statuses = ["Open", "In progress", "In Review", "Completed", "Archived"]
+    statuses = ["Open", "In progress", "Waiting for parts", "Ready for review", "Rework", "Completed", "Archived"]
     board = {}
     
     for status in statuses:
@@ -8102,7 +8191,7 @@ def get_work_order_board_stats(
     database: Session = Depends(get_db),
 ) -> dict:
     """Get work order board statistics"""
-    statuses = ["Open", "In progress", "In Review", "Completed", "Archived"]
+    statuses = ["Open", "In progress", "Waiting for parts", "Ready for review", "Rework", "Completed", "Archived"]
     stats = {}
     
     for status in statuses:
@@ -8425,7 +8514,7 @@ def import_inventory_movements(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Import failed: {str(e)}")
+        raise HTTPException(status_code=400, detail="Import failed. Check the file format and required columns.")
 
 
 @router.post("/inventory/movements/preview", response_model=dict)
@@ -8452,7 +8541,7 @@ def preview_inventory_import(
             "columns": list(preview_rows[0].keys()) if preview_rows else [],
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Preview failed: {str(e)}")
+        raise HTTPException(status_code=400, detail="Preview failed. Check the file format and required columns.")
 
 
 @router.post("/inventory/movements/preview-text", response_model=dict)
@@ -9521,7 +9610,7 @@ def import_audit_logs(
             "total_imported": imported_count,
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Import failed: {str(e)}")
+        raise HTTPException(status_code=400, detail="Import failed. Check the file format and required columns.")
 
 
 @router.get("/compliance/documents/{document_id}/versions", response_model=list[dict])

@@ -16,7 +16,7 @@ class ApiResponse(BaseModel, Generic[T]):
     success: bool
     data: T | None = None
     message: str = ""
-    timestamp: datetime = Field(default_factory=lambda: datetime.now())
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class Token(BaseModel):
@@ -467,7 +467,7 @@ class WorkOrderCreate(BaseModel):
     description: str | None = None
     workstream: str = Field(default="shared", pattern=r"^(shared|physical_repair|technical_diagnostics)$")
     priority: str = Field(default="Medium", pattern=r"^(Low|Medium|High|Critical)$")
-    status: str = Field(default="Open", pattern=r"^(Draft|Open|Assigned|Scheduled|In progress|Ready for review|Completed|Closed|Archived)$")
+    status: str = Field(default="Open", pattern=r"^(Draft|Open|Assigned|Scheduled|In progress|Waiting for parts|Ready for review|Rework|Completed|Closed|Archived)$")
     due_date: str | None = None
     assigned_to: str | None = None
     assigned_user_id: int | None = None
@@ -491,7 +491,8 @@ class WorkOrderRead(WorkOrderCreate):
 class WorkOrderUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=2, max_length=200)
     workstream: str | None = Field(default=None, pattern=r"^(shared|physical_repair|technical_diagnostics)$")
-    status: str | None = Field(default=None, pattern=r"^(Draft|Open|Assigned|Scheduled|In progress|Ready for review|Completed|Closed|Archived)$")
+    status: str | None = Field(default=None, pattern=r"^(Draft|Open|Assigned|Scheduled|In progress|Waiting for parts|Ready for review|Rework|Completed|Closed|Archived)$")
+    assigned_user_id: int | None = None
     priority: str | None = None
     due_date: str | None = None
     assigned_to: str | None = None
@@ -707,6 +708,7 @@ class InventoryTransferCreate(BaseModel):
     part_id: int
     to_bin_location: str = Field(min_length=2, max_length=160)
     reason: str = Field(min_length=3, max_length=300)
+    quantity: int | None = Field(default=None, gt=0)
 
 
 class StockLocationCreate(BaseModel):
@@ -894,7 +896,7 @@ class FinancialTransactionFilter(BaseModel):
     status: str | None = None
     start_date: datetime | None = None
     end_date: datetime | None = None
-    gst_amount_paise: int
+    gst_amount_paise: int | None = None
 
 
 class FuelTransactionCreate(BaseModel):
@@ -1255,7 +1257,7 @@ class MechanicHandoffRead(BaseModel):
 
 class AuditEventRead(BaseModel):
     """Audit event with detailed tracking"""
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
     
     id: int
     actor_user_id: int
@@ -1263,8 +1265,8 @@ class AuditEventRead(BaseModel):
     action: str
     entity_type: str
     entity_id: str | None
-    summary: str
-    metadata: str | None
+    summary: str | None
+    metadata: str | None = Field(default=None, validation_alias="metadata_")
     created_at: datetime
 
 
