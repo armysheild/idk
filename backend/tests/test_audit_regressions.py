@@ -1132,3 +1132,31 @@ def test_build_alerts_skips_documents_without_expiry(audit_api):
     database.commit()
     alerts = routes.build_alerts(users["fleet_manager"], database)
     assert isinstance(alerts, list)
+
+
+def test_work_order_creator_can_approve_but_executor_cannot(audit_api):
+    client, database, users, vehicles = audit_api
+    work_order = WorkOrder(
+        organization_id=1, vehicle_id=vehicles[0].id, title="Fleet manager sign-off",
+        status="Ready for review", priority="Medium",
+        created_by=users["fleet_manager"].id,
+        assigned_user_id=users["mechanic"].id,
+    )
+    database.add(work_order)
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["fleet_manager"]
+    response = client.post(f"/api/v1/work-orders/{work_order.id}/approve")
+    assert response.status_code == 200, response.text
+    database.refresh(work_order)
+    assert work_order.status == "Completed"
+
+    self_assigned = WorkOrder(
+        organization_id=1, vehicle_id=vehicles[0].id, title="Self executed order",
+        status="Ready for review", priority="Medium",
+        created_by=users["owner"].id,
+        assigned_user_id=users["fleet_manager"].id,
+    )
+    database.add(self_assigned)
+    database.commit()
+    response = client.post(f"/api/v1/work-orders/{self_assigned.id}/approve")
+    assert response.status_code == 403, response.text

@@ -2626,8 +2626,8 @@ def approve_work_order(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
     if work_order.status != "Ready for review":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only work orders ready for review can be approved")
-    if work_order.created_by == user.id or work_order.assigned_user_id == user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The work-order creator or executor cannot approve it")
+    if work_order.assigned_user_id == user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The work-order executor cannot approve their own work")
     work_order.status = "Completed"
     database.add(AuditLog(
         organization_id=user.organization_id,
