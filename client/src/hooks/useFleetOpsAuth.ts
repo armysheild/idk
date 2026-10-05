@@ -83,6 +83,17 @@ export function useFleetOpsAuth() {
   };
 
   const signOut = async () => {
+    const accessToken = session?.access_token ?? sessionStorage.getItem("vahana:access-token");
+    if (accessToken) {
+      try {
+        await fetch(`${API_BASE_URL}/api/v1/auth/logout`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+      } catch {
+        /* best-effort server-side revocation; local sign-out still proceeds */
+      }
+    }
     if (supabase) await supabase.auth.signOut({ scope: "local" });
     sessionStorage.removeItem("vahana:access-token");
     setSession(null);

@@ -76,6 +76,7 @@ class User(Base):
     supabase_user_id: Mapped[Optional[str]] = mapped_column(String(80), unique=True, index=True)
     role: Mapped[str] = mapped_column(String(48), default="owner", nullable=False)
     token_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    session_revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     organization: Mapped[Organization] = relationship(back_populates="users")
 
@@ -116,10 +117,11 @@ class Vehicle(Base):
         assigned_driver_id: FK to currently assigned driver
     """
     __tablename__ = "vehicles"
+    __table_args__ = (UniqueConstraint("organization_id", "registration_number", name="uq_vehicles_org_registration"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
-    registration_number: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
+    registration_number: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     vin: Mapped[Optional[str]] = mapped_column(String(32), index=True)
     chassis_number: Mapped[Optional[str]] = mapped_column(String(120))
     engine_number: Mapped[Optional[str]] = mapped_column(String(120))
@@ -130,6 +132,7 @@ class Vehicle(Base):
     depot: Mapped[str] = mapped_column(String(120), nullable=False)
     assigned_route: Mapped[Optional[str]] = mapped_column(String(160))
     maintenance_template: Mapped[Optional[str]] = mapped_column(String(80))
+    maintenance_template_id: Mapped[Optional[int]] = mapped_column(ForeignKey("maintenance_templates.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="Idle / parked", nullable=False)
     health: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
     odometer_km: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -381,6 +384,7 @@ class MaintenanceTemplate(Base):
 
 class Part(Base):
     __tablename__ = "parts"
+    __table_args__ = (UniqueConstraint("organization_id", "sku", name="uq_parts_org_sku"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)

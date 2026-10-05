@@ -1021,3 +1021,114 @@ def test_unsafe_disposition_requires_a_valid_org_vehicle(audit_api, monkeypatch)
     issue = database.scalar(select(VehicleIssue).where(
         VehicleIssue.driver_id == users["driver"].id))
     assert issue.vehicle_id == vehicles[0].id
+
+
+def test_workshop_waiting_for_parts_and_rework_transitions(audit_api):
+    client, database, users, vehicles = audit_api
+    work_order = WorkOrder(
+        organization_id=1, vehicle_id=vehicles[0].id, title="Brake service",
+        status="In progress", priority="High", created_by=users["fleet_manager"].id,
+        assigned_user_id=users["mechanic"].id,
+    )
+    database.add(work_order)
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["mechanic"]
+    path = f"/api/v1/work-orders/{work_order.id}"
+    response = client.patch(path, json={"status": "Waiting for parts"})
+    assert response.status_code == 200, response.text
+    assert client.patch(path, json={"status": "Ready for review"}).status_code == 409
+    response = client.patch(path, json={"status": "In progress"})
+    assert response.status_code == 200, response.text
+    response = client.patch(path, json={"status": "Ready for review"})
+    assert response.status_code == 200, response.text
+    response = client.patch(path, json={"status": "Rework"})
+    assert response.status_code == 200, response.text
+    database.refresh(work_order)
+    assert work_order.completed_at is None
+    assert client.patch(path, json={"status": "Completed"}).status_code == 403
+    response = client.patch(path, json={"status": "In progress"})
+    assert response.status_code == 200, response.text
+
+
+def test_work_order_board_reports_real_review_and_hold_columns(audit_api):
+    client, database, users, vehicles = audit_api
+    for status in ("In progress", "Waiting for parts", "Ready for review", "Rework"):
+        database.add(WorkOrder(
+            organization_id=1, vehicle_id=vehicles[0].id, title=f"Order {status}",
+            status=status, priority="Medium", created_by=users["fleet_manager"].id,
+            assigned_user_id=users["mechanic"].id,
+        ))
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["fleet_manager"]
+    board = client.get("/api/v1/work-orders/board").json()["board"]
+    assert "In Review" not in board
+    assert len(board["Ready for review"]) == 1
+    assert len(board["Waiting for parts"]) == 1
+    assert len(board["Rework"]) == 1
+    stats = client.get("/api/v1/work-orders/board/stats").json()["status_breakdown"]
+    assert stats["Ready for review"] == 1
+    assert stats["Waiting for parts"] == 1
+
+
+def test_fleet_manager_can_reassign_via_assigned_user_id(audit_api):
+    client, database, users, vehicles = audit_api
+    work_order = WorkOrder(
+        organization_id=1, vehicle_id=vehicles[0].id, title="Brake service",
+        status="Open", priority="High", created_by=users["fleet_manager"].id,
+    )
+    database.add(work_order)
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["fleet_manager"]
+    response = client.patch(f"/api/v1/work-orders/{work_order.id}", json={"assigned_user_id": users["mechanic"].id})
+    assert response.status_code == 200, response.text
+    database.refresh(work_order)
+    assert work_order.assigned_user_id == users["mechanic"].id
+
+
+def test_odometer_duplicate_window_allows_overnight_readings(audit_api):
+    _, database, users, vehicles = audit_api
+    log = OdometerLog(
+        organization_id=1, vehicle_id=vehicles[0].id, reading_km=5000,
+        source="manual_driver", is_flagged=False,
+        created_at=datetime.now() - timedelta(hours=5),
+    )
+    database.add(log)
+    database.commit()
+    assert routes.odometer_reading_is_flagged(database, 1, vehicles[0].id, 5000, 5000) is False
+    log.created_at = datetime.now()
+    database.commit()
+    assert routes.odometer_reading_is_flagged(database, 1, vehicles[0].id, 5000, 5000) is True
+
+
+def test_logout_revokes_session_timestamp(audit_api):
+    client, database, users, vehicles = audit_api
+    client.app.dependency_overrides[get_current_user] = lambda: users["driver"]
+    assert users["driver"].session_revoked_at is None
+    assert client.post("/api/v1/auth/logout").status_code == 204
+    database.refresh(users["driver"])
+    assert users["driver"].session_revoked_at is not None
+
+
+def test_inventory_transfer_records_quantity(audit_api):
+    client, database, users, vehicles = audit_api
+    part = Part(
+        organization_id=1, sku="AUDIT-P1", name="Filter", category="Filters",
+        quantity_on_hand=7, reorder_level=0, unit_cost_paise=1000,
+    )
+    database.add(part)
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["inventory_manager"]
+    response = client.post("/api/v1/inventory/movements/transfer", json={
+        "part_id": part.id, "to_bin_location": "Bay 4", "reason": "Reorganize", "quantity": 3})
+    assert response.status_code == 201, response.text
+    assert response.json()["quantity"] == 3
+
+
+def test_build_alerts_skips_documents_without_expiry(audit_api):
+    _, database, users, vehicles = audit_api
+    database.add(ComplianceDocument(
+        organization_id=1, name="Permit", document_type="permit", expires_on="not-a-date",
+    ))
+    database.commit()
+    alerts = routes.build_alerts(users["fleet_manager"], database)
+    assert isinstance(alerts, list)
