@@ -511,7 +511,7 @@ export function serializeInput(path: string, input: unknown): unknown {
         ? (value.lines as { partId?: unknown; quantity?: unknown; unitCost?: unknown }[]).map((line) => ({
             part_id: Number(line.partId),
             quantity: Number(line.quantity),
-            unit_cost_paise: Math.round(Number(line.unitCost) * 100),
+            unit_cost_paise: Math.round(Number(line.unitCost ?? 0) * 100),
           }))
         : undefined,
     };

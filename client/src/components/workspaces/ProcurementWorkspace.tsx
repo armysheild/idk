@@ -22,7 +22,7 @@ type OrderEditDraft = {
   vendorId: string;
   expectedOn: string;
   notes: string;
-  lines: Array<{ partId: string; quantity: string; unitCost: string }>;
+  lines: Array<{ partId: string; quantity: string }>;
 };
 
 type VendorRow = {
@@ -541,7 +541,6 @@ export function ProcurementWorkspace() {
                               lines: (order.lines ?? []).map((line) => ({
                                 partId: String(line.partId),
                                 quantity: String(line.quantity),
-                                unitCost: String(line.unitCost ?? ""),
                               })),
                             })
                           }
@@ -573,7 +572,6 @@ export function ProcurementWorkspace() {
                           lines: editingOrder.lines.map((line) => ({
                             partId: Number(line.partId),
                             quantity: Number(line.quantity),
-                            unitCost: Number(line.unitCost),
                           })),
                         });
                       }}
@@ -633,17 +631,6 @@ export function ProcurementWorkspace() {
                               onChange={(event) => setEditingOrder((current) => current ? { ...current, lines: current.lines.map((item, i) => i === index ? { ...item, quantity: event.target.value } : item) } : current)}
                             />
                           </label>
-                          <label>
-                            Unit cost (₹)
-                            <input
-                              required
-                              type="number"
-                              min="0.01"
-                              step="0.01"
-                              value={line.unitCost}
-                              onChange={(event) => setEditingOrder((current) => current ? { ...current, lines: current.lines.map((item, i) => i === index ? { ...item, unitCost: event.target.value } : item) } : current)}
-                            />
-                          </label>
                           <button
                             type="button"
                             className="secondary-button compact-button"
@@ -658,7 +645,7 @@ export function ProcurementWorkspace() {
                       <button
                         type="button"
                         className="secondary-button compact-button"
-                        onClick={() => setEditingOrder((current) => current ? { ...current, lines: [...current.lines, { partId: "", quantity: "1", unitCost: "" }] } : current)}
+                        onClick={() => setEditingOrder((current) => current ? { ...current, lines: [...current.lines, { partId: "", quantity: "1" }] } : current)}
                       >
                         <Plus size={14} /> Add line
                       </button>
