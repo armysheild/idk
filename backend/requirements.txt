@@ -13,3 +13,4 @@ pytest==8.3.4
 hypothesis==6.168.1
 SQLAlchemy==2.0.36
 uvicorn[standard]==0.34.0
+reportlab==4.4.10

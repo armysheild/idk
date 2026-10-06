@@ -154,6 +154,7 @@ from .schemas import (
     AuditEventRead,
 )
 from .storage import download_object, resolve_object, save_upload
+from .documents import purchase_order_document, work_order_document
 from .telematics import approved_provider_request
 from .finance import capture_labor_rate, expense_statement, period_distance
 from .schemas import ExpenseReconciliation
@@ -2680,38 +2681,39 @@ def download_work_order(
     part_usages = database.scalars(select(WorkOrderPartUsage).where(
         WorkOrderPartUsage.work_order_id == work_order.id,
     )).all()
-    rows: list[list[object]] = [
-        ["Work order", f"#{work_order.id}", "Status", work_order.status],
-        ["Title", work_order.title, "Priority", work_order.priority],
-        ["Vehicle", vehicle.registration_number if vehicle else work_order.vehicle_id,
-         "Odometer km", vehicle.odometer_km if vehicle else ""],
-        ["Assigned to", assignee.full_name or assignee.email if assignee else (work_order.assigned_to or "Unassigned"),
-         "Created by", creator.full_name or creator.email if creator else ""],
-        ["Created", work_order.created_at.isoformat() if work_order.created_at else "",
-         "Due", work_order.due_date or (work_order.due_at.isoformat() if work_order.due_at else "")],
-        ["Scheduled", work_order.scheduled_for.isoformat() if work_order.scheduled_for else "",
-         "Completed", work_order.completed_at.isoformat() if work_order.completed_at else ""],
-        ["Repair brief", work_order.description or "", "", ""],
-    ]
-    if checklist:
-        rows.append(["", "", "", ""])
-        rows.append(["Checklist", "", "", ""])
-        for item in checklist:
-            rows.append(["[x]" if item.completed else "[ ]", item.title, "", ""])
-    if part_usages:
-        rows.append(["", "", "", ""])
-        rows.append(["Parts", "SKU", "Qty reserved", "Qty issued"])
-        for usage in part_usages:
-            part = database.scalar(select(Part).where(Part.id == usage.part_id))
-            rows.append([part.name if part else usage.part_id, part.sku if part else "", usage.quantity, usage.issued_quantity])
-    if work_order.repair_notes:
-        rows.append(["", "", "", ""])
-        rows.append(["Repair notes", work_order.repair_notes, "", ""])
-    title = f"Work order #{work_order.id} - {work_order.title}"
+    org = database.get(Organization, work_order.organization_id)
+    part_rows = []
+    for usage in part_usages:
+        part = database.scalar(select(Part).where(Part.id == usage.part_id))
+        part_rows.append((
+            part.name if part else str(usage.part_id),
+            part.sku if part else "",
+            usage.quantity,
+            usage.issued_quantity,
+        ))
+    content = work_order_document(
+        org_name=org.name if org else f"Organization {work_order.organization_id}",
+        work_order_id=work_order.id,
+        title=work_order.title,
+        status=work_order.status,
+        priority=work_order.priority,
+        vehicle_label=vehicle.registration_number if vehicle else str(work_order.vehicle_id),
+        odometer_km=vehicle.odometer_km if vehicle else None,
+        assignee=(assignee.full_name or assignee.email) if assignee else (work_order.assigned_to or "Unassigned"),
+        creator=(creator.full_name or creator.email) if creator else "",
+        created_at=work_order.created_at.isoformat() if work_order.created_at else "",
+        due=work_order.due_date or (work_order.due_at.isoformat() if work_order.due_at else ""),
+        scheduled=work_order.scheduled_for.isoformat() if work_order.scheduled_for else "",
+        completed=work_order.completed_at.isoformat() if work_order.completed_at else "",
+        description=work_order.description or "",
+        checklist=[(item.completed, item.title) for item in checklist],
+        parts=part_rows,
+        repair_notes=work_order.repair_notes or "",
+    )
     return {
         "filename": f"work-order-{work_order.id}.pdf",
-        "content": pdf_export_content(title, rows),
-        "row_count": len(rows),
+        "content": content,
+        "row_count": len(part_rows) + len(checklist),
     }
 
 
@@ -5905,32 +5907,34 @@ def download_purchase_order(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
     vendor = database.scalar(select(Vendor).where(Vendor.id == order.vendor_id))
     creator = database.scalar(select(User).where(User.id == order.created_by)) if order.created_by else None
-    def inr_amount(paise: int | None) -> str:
-        return f"Rs. {(paise or 0) / 100:,.2f}"
-    rows: list[list[object]] = [
-        ["Purchase order", order.order_number, "Status", order.status],
-        ["Vendor", vendor.name if vendor else "", "Contact", (vendor.phone or vendor.email or "") if vendor else ""],
-        ["Expected on", order.expected_on or "", "Raised", order.created_at.isoformat()[:10] if order.created_at else ""],
-        ["Raised by", (creator.full_name or creator.email) if creator else "", "", ""],
-        ["Notes", order.notes or "", "", ""],
-        ["", "", "", ""],
-        ["Part", "SKU", "Qty", "Unit cost", "Line total"],
-    ]
+    org = database.get(Organization, order.organization_id)
+    line_rows = []
     for line in order.lines:
         part = database.scalar(select(Part).where(Part.id == line.part_id))
-        rows.append([
-            part.name if part else line.part_id,
+        line_rows.append((
+            part.name if part else str(line.part_id),
             part.sku if part else "",
             line.quantity,
-            inr_amount(line.unit_cost_paise),
-            inr_amount(line.line_total_paise),
-        ])
-    rows.append(["", "", "", ""])
-    rows.append(["Total", "", "", "", inr_amount(order.total_paise)])
+            line.unit_cost_paise,
+            line.line_total_paise,
+        ))
+    content = purchase_order_document(
+        org_name=org.name if org else f"Organization {order.organization_id}",
+        order_number=order.order_number,
+        status=order.status,
+        vendor_name=vendor.name if vendor else "",
+        vendor_contact=(vendor.phone or vendor.email or "") if vendor else "",
+        expected_on=order.expected_on or "",
+        raised_on=order.created_at.isoformat()[:10] if order.created_at else "",
+        raised_by=(creator.full_name or creator.email) if creator else "",
+        notes=order.notes or "",
+        lines=line_rows,
+        total_paise=order.total_paise,
+    )
     return {
         "filename": f"{order.order_number}.pdf",
-        "content": pdf_export_content(f"Purchase order {order.order_number}", rows),
-        "row_count": len(rows),
+        "content": content,
+        "row_count": len(line_rows),
     }
 
 
