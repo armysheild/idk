@@ -22,7 +22,7 @@ type OrderEditDraft = {
   vendorId: string;
   expectedOn: string;
   notes: string;
-  lines: Array<{ partId: string; quantity: string }>;
+  lines: Array<{ partId: string; quantity: string; unitCost: string }>;
 };
 
 type VendorRow = {
@@ -62,8 +62,8 @@ export function ProcurementWorkspace() {
   const [newOrder, setNewOrder] = useState<{
     vendorId: string;
     expectedOn: string;
-    lines: Array<{ partId: string; quantity: string }>;
-  }>({ vendorId: "", expectedOn: "", lines: [{ partId: "", quantity: "1" }] });
+    lines: Array<{ partId: string; quantity: string; unitCost: string }>;
+  }>({ vendorId: "", expectedOn: "", lines: [{ partId: "", quantity: "1", unitCost: "" }] });
   const [selectedVendorId, setSelectedVendorId] = useState("");
   const [editingOrder, setEditingOrder] = useState<OrderEditDraft | null>(null);
   const [vendorDraft, setVendorDraft] = useState({ name: "", vendorType: "Parts supplier", phone: "", email: "" });
@@ -93,7 +93,7 @@ export function ProcurementWorkspace() {
   });
   const createPurchaseOrder = trpc.purchaseOrders.create.useMutation({
     onSuccess: () => {
-      setNewOrder({ vendorId: "", expectedOn: "", lines: [{ partId: "", quantity: "1" }] });
+      setNewOrder({ vendorId: "", expectedOn: "", lines: [{ partId: "", quantity: "1", unitCost: "" }] });
       toast.success("Draft purchase order created");
       void utils.purchaseOrders.list.invalidate();
     },
@@ -191,6 +191,7 @@ export function ProcurementWorkspace() {
               .map((line) => ({
                 partId: Number(line.partId),
                 quantity: Math.max(1, Number(line.quantity) || 1),
+                unitCost: line.unitCost === "" ? 0 : Number(line.unitCost),
               }));
             if (!newOrder.vendorId || !lines.length) return;
             createPurchaseOrder.mutate({
@@ -278,6 +279,24 @@ export function ProcurementWorkspace() {
                   }
                 />
               </label>
+              <label style={{ flex: 1 }}>
+                Unit cost (₹, optional)
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="TBD"
+                  value={line.unitCost}
+                  onChange={(event) =>
+                    setNewOrder((current) => ({
+                      ...current,
+                      lines: current.lines.map((item, i) =>
+                        i === index ? { ...item, unitCost: event.target.value } : item,
+                      ),
+                    }))
+                  }
+                />
+              </label>
               {newOrder.lines.length > 1 && (
                 <button
                   type="button"
@@ -301,7 +320,7 @@ export function ProcurementWorkspace() {
             onClick={() =>
               setNewOrder((current) => ({
                 ...current,
-                lines: [...current.lines, { partId: "", quantity: "1" }],
+                lines: [...current.lines, { partId: "", quantity: "1", unitCost: "" }],
               }))
             }
           >
@@ -484,8 +503,10 @@ export function ProcurementWorkspace() {
                     <div>
                       <strong>PO-{String(order.id).slice(0, 8).toUpperCase()}</strong>
                       <p>
-                        {order.vendor?.name ?? "Vendor pending"} · ₹
-                        {Number(order.totalCost).toLocaleString("en-IN")}
+                        {order.vendor?.name ?? "Vendor pending"} ·{" "}
+                        {Number(order.totalCost) > 0
+                          ? `₹${Number(order.totalCost).toLocaleString("en-IN")}`
+                          : "Price TBD"}
                       </p>
                     </div>
                     <select
@@ -541,6 +562,7 @@ export function ProcurementWorkspace() {
                               lines: (order.lines ?? []).map((line) => ({
                                 partId: String(line.partId),
                                 quantity: String(line.quantity),
+                                unitCost: String(line.unitCost ?? ""),
                               })),
                             })
                           }
@@ -572,6 +594,7 @@ export function ProcurementWorkspace() {
                           lines: editingOrder.lines.map((line) => ({
                             partId: Number(line.partId),
                             quantity: Number(line.quantity),
+                            unitCost: line.unitCost === "" ? 0 : Number(line.unitCost),
                           })),
                         });
                       }}
@@ -631,6 +654,17 @@ export function ProcurementWorkspace() {
                               onChange={(event) => setEditingOrder((current) => current ? { ...current, lines: current.lines.map((item, i) => i === index ? { ...item, quantity: event.target.value } : item) } : current)}
                             />
                           </label>
+                          <label>
+                            Unit cost (₹, optional)
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="TBD"
+                              value={line.unitCost}
+                              onChange={(event) => setEditingOrder((current) => current ? { ...current, lines: current.lines.map((item, i) => i === index ? { ...item, unitCost: event.target.value } : item) } : current)}
+                            />
+                          </label>
                           <button
                             type="button"
                             className="secondary-button compact-button"
@@ -645,7 +679,7 @@ export function ProcurementWorkspace() {
                       <button
                         type="button"
                         className="secondary-button compact-button"
-                        onClick={() => setEditingOrder((current) => current ? { ...current, lines: [...current.lines, { partId: "", quantity: "1" }] } : current)}
+                        onClick={() => setEditingOrder((current) => current ? { ...current, lines: [...current.lines, { partId: "", quantity: "1", unitCost: "" }] } : current)}
                       >
                         <Plus size={14} /> Add line
                       </button>

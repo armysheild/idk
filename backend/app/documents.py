@@ -170,6 +170,14 @@ def purchase_order_document(
         Spacer(1, 4 * mm),
         Paragraph("Line items", SECTION),
         _items_table(
+            ["Part", "SKU", "Qty", "Unit cost", "Line total"],
+            [[name, sku, str(qty), inr(unit) if unit else "—", inr(total) if total else "—"]
+             for name, sku, qty, unit, total in lines]
+            + [["", "", "", "Total", inr(total_paise)]],
+            [70 * mm, 35 * mm, 15 * mm, 30 * mm, 30 * mm],
+            {2, 3, 4},
+        ) if any(unit or total for _n, _s, _q, unit, total in lines) or total_paise else
+        _items_table(
             ["Part", "SKU", "Qty"],
             [[name, sku, str(qty)] for name, sku, qty, _unit, _total in lines],
             [110 * mm, 45 * mm, 25 * mm],
