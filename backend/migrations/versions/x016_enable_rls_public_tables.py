@@ -34,10 +34,24 @@ def _public_tables() -> list[str]:
 
 
 def upgrade() -> None:
+    if op.get_bind().dialect.name != "postgresql":
+        return
     for table in _public_tables():
         op.execute(f'ALTER TABLE public."{table}" ENABLE ROW LEVEL SECURITY')
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+    # x010 already protects org-scoped tables with tenant_isolation_* policies;
+    # only release RLS on tables that had no protection before this revision.
+    protected = {
+        row[0]
+        for row in bind.exec_driver_sql(
+            "SELECT tablename FROM pg_policies WHERE schemaname = 'public'"
+        ).fetchall()
+    }
     for table in _public_tables():
-        op.execute(f'ALTER TABLE public."{table}" DISABLE ROW LEVEL SECURITY')
+        if table not in protected:
+            op.execute(f'ALTER TABLE public."{table}" DISABLE ROW LEVEL SECURITY')
