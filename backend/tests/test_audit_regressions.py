@@ -1219,3 +1219,46 @@ def test_inventory_receipt_records_vendor_bill_and_date(audit_api):
     assert movement.bill_number == "INV-101"
     assert str(movement.received_on) == "2026-10-05"
     assert movement.unit_cost_paise == 12500
+
+
+def test_purchase_order_edit_and_download_pdf(audit_api):
+    client, database, users, _ = audit_api
+    vendor = Vendor(organization_id=1, name="Edit vendor", vendor_type="Parts supplier")
+    vendor2 = Vendor(organization_id=1, name="Edit vendor two", vendor_type="Parts supplier")
+    part = Part(organization_id=1, sku="PO-EDIT-1", name="Fan belt", category="Engine", unit_cost_paise=100)
+    part2 = Part(organization_id=1, sku="PO-EDIT-2", name="Coolant hose", category="Engine", unit_cost_paise=100)
+    database.add_all([vendor, vendor2, part, part2])
+    database.flush()
+    order = PurchaseOrder(
+        organization_id=1, vendor_id=vendor.id, order_number="PO-EDIT", status="Draft",
+        total_paise=0, created_by=users["inventory_manager"].id,
+    )
+    database.add(order)
+    database.flush()
+    database.add(PurchaseOrderLine(
+        organization_id=1, purchase_order_id=order.id, part_id=part.id,
+        quantity=2, unit_cost_paise=500, line_total_paise=1000,
+    ))
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["inventory_manager"]
+    path = f"/api/v1/purchase-orders/{order.id}"
+    edit = client.put(path, json={
+        "vendor_id": vendor2.id,
+        "expected_on": "2026-11-01",
+        "notes": "Send by courier",
+        "lines": [{"part_id": part2.id, "quantity": 3, "unit_cost_paise": 700}],
+    })
+    assert edit.status_code == 200, edit.text
+    body = edit.json()
+    assert body["vendor_id"] == vendor2.id
+    assert body["expected_on"] == "2026-11-01"
+    assert body["total_paise"] == 2100
+    assert [(line["part_id"], line["quantity"], line["unit_cost_paise"]) for line in body["lines"]] == [(part2.id, 3, 700)]
+    order.status = "Approved"
+    database.commit()
+    assert client.put(path, json={"notes": "late edit"}).status_code == 409
+    download = client.get(f"{path}/download")
+    assert download.status_code == 200, download.text
+    payload = download.json()
+    assert payload["filename"] == "PO-EDIT.pdf"
+    assert base64.b64decode(payload["content"]).startswith(b"%PDF")

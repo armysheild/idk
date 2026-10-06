@@ -495,6 +495,19 @@ export function serializeInput(path: string, input: unknown): unknown {
       notes: value.notes,
     };
   if (path === "purchaseOrders.updateStatus") return { status: purchaseOrderStatus(value.status) };
+  if (path === "purchaseOrders.update")
+    return {
+      vendor_id: value.vendorId ? Number(value.vendorId) : undefined,
+      expected_on: value.expectedOn || undefined,
+      notes: value.notes,
+      lines: Array.isArray(value.lines)
+        ? (value.lines as { partId?: unknown; quantity?: unknown; unitCost?: unknown }[]).map((line) => ({
+            part_id: Number(line.partId),
+            quantity: Number(line.quantity),
+            unit_cost_paise: Math.round(Number(line.unitCost) * 100),
+          }))
+        : undefined,
+    };
   if (path === "purchaseOrders.receivePartial")
     return {
       items: [
@@ -802,6 +815,7 @@ export function mutationPath(path: string, input: unknown) {
   if (path === "workOrders.approve" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/approve`;
   if (path === "workOrders.allocatePart" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/parts`;
   if (path === "workOrders.download" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/download`;
+  if (path === "purchaseOrders.download" && ((input as { purchaseOrderId?: string | number } | undefined)?.purchaseOrderId ?? value?.id)) return `/api/v1/purchase-orders/${(input as { purchaseOrderId?: string | number }).purchaseOrderId ?? (value as { id: string | number }).id}/download`;
   if (path === "workOrders.bulkUpdate") return "/api/v1/work-orders/bulk-update";
   if (path === "workOrders.updateChecklist" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/checklist`;
   if (path === "maintenanceTemplates.applyTemplate" && (value?.id ?? value?.templateId)) return `/api/v1/maintenance/templates/${value.id ?? value.templateId}/apply`;
@@ -863,6 +877,8 @@ export function mutationMethod(path: string) {
   if (path === "maintenanceTemplates.update") return "PUT";
   if (path === "documents.access") return "GET";
   if (path === "workOrders.download") return "GET";
+  if (path === "purchaseOrders.download") return "GET";
+  if (path === "purchaseOrders.update") return "PUT";
   if (path === "vehicleIssues.updateStatus") return "PUT";
   if (path === "vehicles.updateOdometer") return "PATCH";
   if (path === "organizationSettings.update") return "PUT";

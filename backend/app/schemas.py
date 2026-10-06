@@ -1131,6 +1131,13 @@ class PurchaseOrderStatusUpdate(BaseModel):
     status: str = Field(pattern="^(Draft|Submitted|Approved|Partially received|Received|Cancelled|Closed)$")
 
 
+class PurchaseOrderUpdate(BaseModel):
+    vendor_id: int | None = None
+    expected_on: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    notes: str | None = None
+    lines: list[PurchaseOrderLineCreate] | None = None
+
+
 class PurchaseOrderReceiptCreate(BaseModel):
     part_id: int
     quantity: int = Field(gt=0)

@@ -92,6 +92,7 @@ from .schemas import (
     PurchaseOrderReceiptRead,
     PurchaseOrderRead,
     PurchaseOrderStatusUpdate,
+    PurchaseOrderUpdate,
     StockLocationCreate,
     StockLocationRead,
     TollTransactionCreate,
@@ -5653,6 +5654,65 @@ def update_purchase_order_status(
     return database.scalar(statement)
 
 
+@router.put("/purchase-orders/{purchase_order_id}", response_model=PurchaseOrderRead)
+def update_purchase_order_details(
+    purchase_order_id: int,
+    payload: PurchaseOrderUpdate,
+    request: Request,
+    user: User = Depends(require_roles("owner", "inventory_manager")),
+    database: Session = Depends(get_db),
+) -> PurchaseOrder:
+    order = database.scalar(select(PurchaseOrder).where(
+        PurchaseOrder.id == purchase_order_id,
+        PurchaseOrder.organization_id == user.organization_id,
+    ).with_for_update())
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
+    if order.status not in {"Draft", "Submitted"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only draft or submitted purchase orders can be edited")
+    if payload.vendor_id is not None:
+        vendor = database.scalar(select(Vendor).where(Vendor.id == payload.vendor_id, Vendor.organization_id == user.organization_id, Vendor.active.is_(True)))
+        if vendor is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Active vendor not found in this organization")
+        order.vendor_id = vendor.id
+    if payload.lines is not None:
+        if not payload.lines:
+            raise HTTPException(status_code=422, detail="A purchase order needs at least one line")
+        part_ids = [line.part_id for line in payload.lines]
+        if len(set(part_ids)) != len(part_ids):
+            raise HTTPException(status_code=422, detail="A part can appear only once in a purchase order")
+        parts = list(database.scalars(select(Part).where(Part.id.in_(part_ids), Part.organization_id == user.organization_id)).all())
+        if len({part.id for part in parts}) != len(set(part_ids)):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="One or more parts were not found in this organization")
+        order.lines = [
+            PurchaseOrderLine(
+                organization_id=user.organization_id,
+                part_id=line.part_id,
+                quantity=line.quantity,
+                unit_cost_paise=line.unit_cost_paise,
+                line_total_paise=line.quantity * line.unit_cost_paise,
+            )
+            for line in payload.lines
+        ]
+        order.total_paise = sum(line.quantity * line.unit_cost_paise for line in payload.lines)
+    if payload.expected_on is not None:
+        order.expected_on = payload.expected_on
+    if payload.notes is not None:
+        order.notes = payload.notes
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="purchase_order.updated",
+        entity_type="purchase_order",
+        entity_id=str(order.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps(payload.model_dump(exclude_unset=True)),
+    ))
+    database.commit()
+    statement = select(PurchaseOrder).options(selectinload(PurchaseOrder.lines)).where(PurchaseOrder.id == order.id)
+    return database.scalar(statement)
+
+
 @router.get("/purchase-orders/{purchase_order_id}/receipts", response_model=list[PurchaseOrderReceiptRead])
 def list_purchase_order_receipts(
     purchase_order_id: int,
@@ -5844,23 +5904,34 @@ def download_purchase_order(
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
     vendor = database.scalar(select(Vendor).where(Vendor.id == order.vendor_id))
-    rows = ["Order number,Vendor,Status,Expected on,Part ID,Quantity,Unit cost paise,Line total paise"]
+    creator = database.scalar(select(User).where(User.id == order.created_by)) if order.created_by else None
+    def inr_amount(paise: int | None) -> str:
+        return f"Rs. {(paise or 0) / 100:,.2f}"
+    rows: list[list[object]] = [
+        ["Purchase order", order.order_number, "Status", order.status],
+        ["Vendor", vendor.name if vendor else "", "Contact", (vendor.phone or vendor.email or "") if vendor else ""],
+        ["Expected on", order.expected_on or "", "Raised", order.created_at.isoformat()[:10] if order.created_at else ""],
+        ["Raised by", (creator.full_name or creator.email) if creator else "", "", ""],
+        ["Notes", order.notes or "", "", ""],
+        ["", "", "", ""],
+        ["Part", "SKU", "Qty", "Unit cost", "Line total"],
+    ]
     for line in order.lines:
-        rows.append(",".join(map(str, [
-            order.order_number,
-            (vendor.name if vendor else ""),
-            order.status,
-            order.expected_on or "",
-            line.part_id,
+        part = database.scalar(select(Part).where(Part.id == line.part_id))
+        rows.append([
+            part.name if part else line.part_id,
+            part.sku if part else "",
             line.quantity,
-            line.unit_cost_paise,
-            line.line_total_paise,
-        ])))
-    return Response(
-        content="\n".join(rows),
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{order.order_number}.csv"'},
-    )
+            inr_amount(line.unit_cost_paise),
+            inr_amount(line.line_total_paise),
+        ])
+    rows.append(["", "", "", ""])
+    rows.append(["Total", "", "", "", inr_amount(order.total_paise)])
+    return {
+        "filename": f"{order.order_number}.pdf",
+        "content": pdf_export_content(f"Purchase order {order.order_number}", rows),
+        "row_count": len(rows),
+    }
 
 
 def pdf_export_content(title: str, rows: list[list[object]]) -> str:
