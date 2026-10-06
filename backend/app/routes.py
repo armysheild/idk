@@ -2656,6 +2656,62 @@ def approve_work_order(
     return work_order
 
 
+@router.get("/work-orders/{work_order_id}/download", response_model=dict)
+def download_work_order(
+    work_order_id: int,
+    user: User = Depends(require_roles("owner", "fleet_manager", "mechanic", "technician")),
+    database: Session = Depends(get_db),
+) -> dict:
+    work_order = database.scalar(select(WorkOrder).where(
+        WorkOrder.id == work_order_id,
+        WorkOrder.organization_id == user.organization_id,
+    ))
+    if work_order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
+    vehicle = database.scalar(select(Vehicle).where(Vehicle.id == work_order.vehicle_id))
+    assignee = database.scalar(select(User).where(User.id == work_order.assigned_user_id)) if work_order.assigned_user_id else None
+    creator = database.scalar(select(User).where(User.id == work_order.created_by)) if work_order.created_by else None
+    checklist = database.scalars(select(WorkOrderChecklistItem).where(
+        WorkOrderChecklistItem.work_order_id == work_order.id,
+    ).order_by(WorkOrderChecklistItem.sort_order)).all()
+    part_usages = database.scalars(select(WorkOrderPartUsage).where(
+        WorkOrderPartUsage.work_order_id == work_order.id,
+    )).all()
+    rows: list[list[object]] = [
+        ["Work order", f"#{work_order.id}", "Status", work_order.status],
+        ["Title", work_order.title, "Priority", work_order.priority],
+        ["Vehicle", vehicle.registration_number if vehicle else work_order.vehicle_id,
+         "Odometer km", vehicle.odometer_km if vehicle else ""],
+        ["Assigned to", assignee.full_name or assignee.email if assignee else "Unassigned",
+         "Created by", creator.full_name or creator.email if creator else ""],
+        ["Created", work_order.created_at.isoformat() if work_order.created_at else "",
+         "Due", work_order.due_date or (work_order.due_at.isoformat() if work_order.due_at else "")],
+        ["Scheduled", work_order.scheduled_for.isoformat() if work_order.scheduled_for else "",
+         "Completed", work_order.completed_at.isoformat() if work_order.completed_at else ""],
+        ["Repair brief", work_order.description or "", "", ""],
+    ]
+    if checklist:
+        rows.append(["", "", "", ""])
+        rows.append(["Checklist", "", "", ""])
+        for item in checklist:
+            rows.append(["[x]" if item.completed else "[ ]", item.title, "", ""])
+    if part_usages:
+        rows.append(["", "", "", ""])
+        rows.append(["Parts", "SKU", "Qty reserved", "Qty issued"])
+        for usage in part_usages:
+            part = database.scalar(select(Part).where(Part.id == usage.part_id))
+            rows.append([part.name if part else usage.part_id, part.sku if part else "", usage.quantity, usage.issued_quantity])
+    if work_order.repair_notes:
+        rows.append(["", "", "", ""])
+        rows.append(["Repair notes", work_order.repair_notes, "", ""])
+    title = f"Work order #{work_order.id} - {work_order.title}"
+    return {
+        "filename": f"work-order-{work_order.id}.pdf",
+        "content": pdf_export_content(title, rows),
+        "row_count": len(rows),
+    }
+
+
 @router.post("/work-orders/{work_order_id}/archive", response_model=WorkOrderRead)
 def archive_work_order(
     work_order_id: int,

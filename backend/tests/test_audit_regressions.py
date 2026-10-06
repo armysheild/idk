@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+import base64
 import json
 import ssl
 from pathlib import Path
@@ -1160,3 +1161,32 @@ def test_work_order_creator_can_approve_but_executor_cannot(audit_api):
     database.commit()
     response = client.post(f"/api/v1/work-orders/{self_assigned.id}/approve")
     assert response.status_code == 403, response.text
+
+
+def test_work_order_download_returns_pdf(audit_api):
+    client, database, users, vehicles = audit_api
+    work_order = WorkOrder(
+        organization_id=1, vehicle_id=vehicles[0].id, title="Forwardable dispatch",
+        status="Open", priority="High", created_by=users["fleet_manager"].id,
+        assigned_user_id=users["mechanic"].id,
+    )
+    database.add(work_order)
+    database.flush()
+    database.add(WorkOrderChecklistItem(
+        organization_id=1, work_order_id=work_order.id,
+        title="Inspect brakes", completed=True, sort_order=1,
+    ))
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["fleet_manager"]
+    response = client.get(f"/api/v1/work-orders/{work_order.id}/download")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["filename"] == f"work-order-{work_order.id}.pdf"
+    assert base64.b64decode(body["content"]).startswith(b"%PDF")
+    database.add(WorkOrder(
+        organization_id=99, vehicle_id=vehicles[0].id, title="Other tenant",
+        status="Open", priority="Low", created_by=users["fleet_manager"].id,
+    ))
+    database.commit()
+    other = database.scalars(select(WorkOrder).where(WorkOrder.organization_id == 99)).first()
+    assert client.get(f"/api/v1/work-orders/{other.id}/download").status_code == 404

@@ -795,6 +795,7 @@ export function mutationPath(path: string, input: unknown) {
   if (path === "workOrders.assign" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/assign`;
   if (path === "workOrders.approve" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/approve`;
   if (path === "workOrders.allocatePart" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/parts`;
+  if (path === "workOrders.download" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/download`;
   if (path === "workOrders.bulkUpdate") return "/api/v1/work-orders/bulk-update";
   if (path === "workOrders.updateChecklist" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/checklist`;
   if (path === "maintenanceTemplates.applyTemplate" && (value?.id ?? value?.templateId)) return `/api/v1/maintenance/templates/${value.id ?? value.templateId}/apply`;
@@ -855,6 +856,7 @@ export function mutationPath(path: string, input: unknown) {
 export function mutationMethod(path: string) {
   if (path === "maintenanceTemplates.update") return "PUT";
   if (path === "documents.access") return "GET";
+  if (path === "workOrders.download") return "GET";
   if (path === "vehicleIssues.updateStatus") return "PUT";
   if (path === "vehicles.updateOdometer") return "PATCH";
   if (path === "organizationSettings.update") return "PUT";
