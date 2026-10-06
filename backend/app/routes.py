@@ -2668,6 +2668,8 @@ def download_work_order(
     ))
     if work_order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
+    if user.role in {"mechanic", "technician"} and work_order.assigned_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
     vehicle = database.scalar(select(Vehicle).where(Vehicle.id == work_order.vehicle_id))
     assignee = database.scalar(select(User).where(User.id == work_order.assigned_user_id)) if work_order.assigned_user_id else None
     creator = database.scalar(select(User).where(User.id == work_order.created_by)) if work_order.created_by else None
@@ -2682,7 +2684,7 @@ def download_work_order(
         ["Title", work_order.title, "Priority", work_order.priority],
         ["Vehicle", vehicle.registration_number if vehicle else work_order.vehicle_id,
          "Odometer km", vehicle.odometer_km if vehicle else ""],
-        ["Assigned to", assignee.full_name or assignee.email if assignee else "Unassigned",
+        ["Assigned to", assignee.full_name or assignee.email if assignee else (work_order.assigned_to or "Unassigned"),
          "Created by", creator.full_name or creator.email if creator else ""],
         ["Created", work_order.created_at.isoformat() if work_order.created_at else "",
          "Due", work_order.due_date or (work_order.due_at.isoformat() if work_order.due_at else "")],
@@ -5865,7 +5867,7 @@ def pdf_export_content(title: str, rows: list[list[object]]) -> str:
     def pdf_text(value: object) -> str:
         return str(value).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
-    lines = [title, *(" | ".join(pdf_text(value) for value in row) for row in rows[:42])]
+    lines = [pdf_text(title), *(" | ".join(pdf_text(value) for value in row) for row in rows[:42])]
     commands = ["BT", "/F1 8 Tf", "36 756 Td"]
     for index, line in enumerate(lines):
         if index:

@@ -1190,3 +1190,12 @@ def test_work_order_download_returns_pdf(audit_api):
     database.commit()
     other = database.scalars(select(WorkOrder).where(WorkOrder.organization_id == 99)).first()
     assert client.get(f"/api/v1/work-orders/{other.id}/download").status_code == 404
+    client.app.dependency_overrides[get_current_user] = lambda: users["mechanic"]
+    assert client.get(f"/api/v1/work-orders/{work_order.id}/download").status_code == 200
+    database.add(WorkOrder(
+        organization_id=1, vehicle_id=vehicles[0].id, title="Not mine",
+        status="Open", priority="Low", created_by=users["fleet_manager"].id,
+    ))
+    database.commit()
+    unassigned = database.scalars(select(WorkOrder).where(WorkOrder.title == "Not mine")).first()
+    assert client.get(f"/api/v1/work-orders/{unassigned.id}/download").status_code == 404
