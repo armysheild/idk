@@ -1199,3 +1199,23 @@ def test_work_order_download_returns_pdf(audit_api):
     database.commit()
     unassigned = database.scalars(select(WorkOrder).where(WorkOrder.title == "Not mine")).first()
     assert client.get(f"/api/v1/work-orders/{unassigned.id}/download").status_code == 404
+
+
+def test_inventory_receipt_records_vendor_bill_and_date(audit_api):
+    client, database, users, vehicles = audit_api
+    part = Part(organization_id=1, sku="SP-1", name="Brake pad", category="Brakes", unit_cost_paise=100)
+    database.add(part)
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["inventory_manager"]
+    response = client.post("/api/v1/inventory/transactions", json={
+        "part_id": part.id, "transaction_type": "receipt", "quantity": 4,
+        "reference": "supplier delivery", "reason": "supplier delivery",
+        "vendor_name": "Bharat Auto Spares", "bill_number": "INV-101",
+        "received_on": "2026-10-05", "unit_cost_paise": 12500,
+    })
+    assert response.status_code == 200, response.text
+    movement = database.scalars(select(InventoryTransaction).order_by(InventoryTransaction.id.desc())).first()
+    assert movement.vendor_name == "Bharat Auto Spares"
+    assert movement.bill_number == "INV-101"
+    assert str(movement.received_on) == "2026-10-05"
+    assert movement.unit_cost_paise == 12500

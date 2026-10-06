@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 
 from datetime import datetime
@@ -686,6 +686,11 @@ class InventoryTransactionCreate(BaseModel):
     transaction_type: str = Field(pattern="^(receipt|issue|adjustment)$")
     quantity: int = Field(gt=0)
     reference: str | None = None
+    received_on: date | None = None
+    bill_number: str | None = None
+    vendor_name: str | None = None
+    unit_cost_paise: int | None = None
+    reason: str | None = None
 
 
 class InventoryTransactionRead(InventoryTransactionCreate):

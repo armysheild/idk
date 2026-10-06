@@ -298,6 +298,11 @@ export function serializeInput(path: string, input: unknown): unknown {
       transaction_type: path.endsWith("receive") ? "receipt" : "issue",
       quantity: value.quantity,
       reference: value.reason,
+      reason: value.reason,
+      unit_cost_paise: value.unitCost ? Math.round(Number(value.unitCost) * 100) : undefined,
+      received_on: value.receivedOn || undefined,
+      bill_number: value.billNumber || undefined,
+      vendor_name: value.vendorName || undefined,
     };
   if (path === "inventory.adjust")
     return {
