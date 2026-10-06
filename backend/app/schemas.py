@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 
 from datetime import datetime
@@ -686,6 +686,11 @@ class InventoryTransactionCreate(BaseModel):
     transaction_type: str = Field(pattern="^(receipt|issue|adjustment)$")
     quantity: int = Field(gt=0)
     reference: str | None = None
+    received_on: date | None = None
+    bill_number: str | None = None
+    vendor_name: str | None = None
+    unit_cost_paise: int | None = None
+    reason: str | None = None
 
 
 class InventoryTransactionRead(InventoryTransactionCreate):
@@ -1089,7 +1094,7 @@ class VendorUpdate(BaseModel):
 class PurchaseOrderLineCreate(BaseModel):
     part_id: int
     quantity: int = Field(gt=0)
-    unit_cost_paise: int = Field(gt=0)
+    unit_cost_paise: int = Field(default=0, ge=0)
 
 
 class PurchaseOrderCreate(BaseModel):
@@ -1124,6 +1129,13 @@ class PurchaseOrderRead(BaseModel):
 
 class PurchaseOrderStatusUpdate(BaseModel):
     status: str = Field(pattern="^(Draft|Submitted|Approved|Partially received|Received|Cancelled|Closed)$")
+
+
+class PurchaseOrderUpdate(BaseModel):
+    vendor_id: int | None = None
+    expected_on: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    notes: str | None = None
+    lines: list[PurchaseOrderLineCreate] | None = None
 
 
 class PurchaseOrderReceiptCreate(BaseModel):

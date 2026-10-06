@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Date, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -407,6 +407,11 @@ class InventoryTransaction(Base):
     transaction_type: Mapped[str] = mapped_column(String(20), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     reference: Mapped[Optional[str]] = mapped_column(String(160))
+    received_on: Mapped[Optional[date]] = mapped_column(Date)
+    bill_number: Mapped[Optional[str]] = mapped_column(String(80))
+    vendor_name: Mapped[Optional[str]] = mapped_column(String(160))
+    unit_cost_paise: Mapped[Optional[int]] = mapped_column(Integer)
+    reason: Mapped[Optional[str]] = mapped_column(String(300))
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 

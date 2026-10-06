@@ -1,0 +1,246 @@
+"""Formatted PDF documents (letterhead, tables) for downloadable records.
+
+Built on reportlab. Both the purchase-order and work-order downloads share the
+same letterhead so a vendor or mechanic receives a document branded with the
+organization the record was created under.
+"""
+
+import base64
+import io
+from datetime import date
+
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import (
+    HRFlowable,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
+
+def esc(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+INK = colors.HexColor("#17202A")
+MUTED = colors.HexColor("#5D6D7E")
+ACCENT = colors.HexColor("#D35400")
+LIGHT_LINE = colors.HexColor("#D5DBDB")
+BAND = colors.HexColor("#17202A")
+ZEBRA = colors.HexColor("#F4F6F7")
+
+BODY = ParagraphStyle("body", fontName="Helvetica", fontSize=9, leading=12, textColor=INK)
+SMALL_MUTED = ParagraphStyle("small_muted", parent=BODY, fontSize=7.5, textColor=MUTED)
+ORG_NAME = ParagraphStyle("org_name", fontName="Helvetica-Bold", fontSize=18, leading=21, textColor=INK)
+ORG_SUB = ParagraphStyle("org_sub", parent=BODY, fontSize=8, textColor=MUTED)
+DOC_TITLE = ParagraphStyle("doc_title", fontName="Helvetica-Bold", fontSize=15, leading=18, textColor=ACCENT, alignment=2)
+DOC_REF = ParagraphStyle("doc_ref", parent=BODY, fontSize=9, textColor=MUTED, alignment=2)
+SECTION = ParagraphStyle("section", fontName="Helvetica-Bold", fontSize=9.5, leading=13, textColor=INK, spaceBefore=4, spaceAfter=2)
+
+
+def _letterhead(org_name: str, doc_title: str, doc_ref: str) -> list:
+    header = Table(
+        [[Paragraph(esc(org_name), ORG_NAME), Paragraph(doc_title, DOC_TITLE)],
+         [Paragraph("Fleet operations · VahanSync", ORG_SUB), Paragraph(esc(doc_ref), DOC_REF)]],
+        colWidths=[110 * mm, 70 * mm],
+    )
+    header.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    return [header, HRFlowable(width="100%", thickness=2, color=ACCENT, spaceBefore=4, spaceAfter=8)]
+
+
+def _info_table(rows: list[list[tuple[str, str]]]) -> Table:
+    """Rows of (label, value) pairs rendered as a two-pair-per-row info grid."""
+    data = []
+    for pair in rows:
+        row = []
+        for label, value in pair:
+            row.extend([Paragraph(f"<b>{esc(label)}</b>", SMALL_MUTED), Paragraph(esc(value) or "—", BODY)])
+        while len(row) < 4:
+            row.append("")
+        data.append(row)
+    table = Table(data, colWidths=[22 * mm, 68 * mm, 25 * mm, 65 * mm])
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 1.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.4, LIGHT_LINE),
+    ]))
+    return table
+
+
+def _items_table(header: list[str], rows: list[list[str]], widths: list[float], align_right: set[int]) -> Table:
+    data = [[Paragraph(f"<b>{h}</b>", ParagraphStyle("th", parent=BODY, textColor=colors.white)) for h in header]]
+    for row in rows:
+        data.append([Paragraph(esc(cell), BODY) for cell in row])
+    table = Table(data, colWidths=widths, repeatRows=1)
+    style = [
+        ("BACKGROUND", (0, 0), (-1, 0), BAND),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("GRID", (0, 1), (-1, -1), 0.4, LIGHT_LINE),
+        ("LINEBELOW", (0, 0), (-1, 0), 1.0, ACCENT),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ZEBRA]),
+    ]
+    for col in align_right:
+        style.append(("ALIGN", (col, 0), (col, -1), "RIGHT"))
+    table.setStyle(TableStyle(style))
+    return table
+
+
+def _signature_block() -> list:
+    line = "_" * 38
+    table = Table(
+        [[Paragraph(line, BODY), Paragraph(line, BODY)],
+         [Paragraph("Authorized signature", SMALL_MUTED), Paragraph("Received by (name / date)", SMALL_MUTED)]],
+        colWidths=[90 * mm, 90 * mm],
+    )
+    table.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+    ]))
+    return [Spacer(1, 22 * mm), table]
+
+
+def _footer(org_name: str):
+    def draw(canvas, doc):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 7)
+        canvas.setFillColor(MUTED)
+        canvas.drawString(15 * mm, 10 * mm, f"{org_name} · Generated by VahanSync · {date.today().isoformat()}")
+        canvas.drawRightString(195 * mm, 10 * mm, f"Page {doc.page}")
+        canvas.restoreState()
+    return draw
+
+
+def _render(org_name: str, doc_title: str, doc_ref: str, body: list) -> str:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        leftMargin=15 * mm, rightMargin=15 * mm,
+        topMargin=14 * mm, bottomMargin=18 * mm,
+        title=f"{doc_title} {doc_ref}",
+        author=org_name,
+    )
+    doc.build([*_letterhead(org_name, doc_title, doc_ref), *body],
+              onFirstPage=_footer(org_name), onLaterPages=_footer(org_name))
+    return base64.b64encode(buffer.getvalue()).decode()
+
+
+def inr(paise: int | None) -> str:
+    return f"Rs. {(paise or 0) / 100:,.2f}"
+
+
+def purchase_order_document(
+    org_name: str,
+    order_number: str,
+    status: str,
+    vendor_name: str,
+    vendor_contact: str,
+    expected_on: str,
+    raised_on: str,
+    raised_by: str,
+    notes: str,
+    lines: list[tuple[str, str, int, int, int]],
+    total_paise: int,
+) -> str:
+    """lines: (part_name, sku, quantity, unit_cost_paise, line_total_paise). Returns base64 PDF."""
+    body: list = [
+        Paragraph("Order details", SECTION),
+        _info_table([
+            [("Vendor", vendor_name), ("Status", status)],
+            [("Contact", vendor_contact), ("Expected on", expected_on)],
+            [("Raised by", raised_by), ("Raised", raised_on)],
+        ]),
+        Spacer(1, 4 * mm),
+        Paragraph("Line items", SECTION),
+        _items_table(
+            ["Part", "SKU", "Qty", "Unit cost", "Line total"],
+            [[name, sku, str(qty), inr(unit) if unit else "—", inr(total) if total else "—"]
+             for name, sku, qty, unit, total in lines]
+            + [["", "", "", "Total", inr(total_paise)]],
+            [70 * mm, 35 * mm, 15 * mm, 30 * mm, 30 * mm],
+            {2, 3, 4},
+        ) if any(unit or total for _n, _s, _q, unit, total in lines) or total_paise else
+        _items_table(
+            ["Part", "SKU", "Qty"],
+            [[name, sku, str(qty)] for name, sku, qty, _unit, _total in lines],
+            [110 * mm, 45 * mm, 25 * mm],
+            {2},
+        ),
+    ]
+    if notes:
+        body += [Spacer(1, 4 * mm), Paragraph("Notes", SECTION), Paragraph(esc(notes), BODY)]
+    body += _signature_block()
+    return _render(org_name, "PURCHASE ORDER", order_number, body)
+
+
+def work_order_document(
+    org_name: str,
+    work_order_id: int,
+    title: str,
+    status: str,
+    priority: str,
+    vehicle_label: str,
+    odometer_km: object,
+    assignee: str,
+    creator: str,
+    created_at: str,
+    due: str,
+    scheduled: str,
+    completed: str,
+    description: str,
+    checklist: list[tuple[bool, str]],
+    parts: list[tuple[str, str, object, object]],
+    repair_notes: str,
+) -> str:
+    """parts: (part_name, sku, qty_reserved, qty_issued). Returns base64 PDF."""
+    body: list = [
+        Paragraph("Order details", SECTION),
+        _info_table([
+            [("Status", status), ("Priority", priority)],
+            [("Vehicle", vehicle_label), ("Odometer km", str(odometer_km or "—"))],
+            [("Assigned to", assignee), ("Created by", creator)],
+            [("Created", created_at), ("Due", due)],
+            [("Scheduled", scheduled), ("Completed", completed)],
+        ]),
+    ]
+    if description:
+        body += [Spacer(1, 4 * mm), Paragraph("Repair brief", SECTION), Paragraph(esc(description), BODY)]
+    if checklist:
+        body += [Spacer(1, 4 * mm), Paragraph("Checklist", SECTION)]
+        body.append(_items_table(
+            ["Done", "Item"],
+            [["[x]" if done else "[ ]", item] for done, item in checklist],
+            [15 * mm, 165 * mm],
+            set(),
+        ))
+    if parts:
+        body += [Spacer(1, 4 * mm), Paragraph("Parts", SECTION)]
+        body.append(_items_table(
+            ["Part", "SKU", "Qty reserved", "Qty issued"],
+            [[name, sku, str(reserved), str(issued)] for name, sku, reserved, issued in parts],
+            [80 * mm, 40 * mm, 30 * mm, 30 * mm],
+            {2, 3},
+        ))
+    if repair_notes:
+        body += [Spacer(1, 4 * mm), Paragraph("Repair notes", SECTION), Paragraph(esc(repair_notes), BODY)]
+    body += _signature_block()
+    return _render(org_name, "WORK ORDER", f"#{work_order_id} · {title}", body)
+
+

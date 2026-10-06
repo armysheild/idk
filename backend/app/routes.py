@@ -92,6 +92,7 @@ from .schemas import (
     PurchaseOrderReceiptRead,
     PurchaseOrderRead,
     PurchaseOrderStatusUpdate,
+    PurchaseOrderUpdate,
     StockLocationCreate,
     StockLocationRead,
     TollTransactionCreate,
@@ -153,6 +154,7 @@ from .schemas import (
     AuditEventRead,
 )
 from .storage import download_object, resolve_object, save_upload
+from .documents import purchase_order_document, work_order_document
 from .telematics import approved_provider_request
 from .finance import capture_labor_rate, expense_statement, period_distance
 from .schemas import ExpenseReconciliation
@@ -2654,6 +2656,65 @@ def approve_work_order(
     database.commit()
     database.refresh(work_order)
     return work_order
+
+
+@router.get("/work-orders/{work_order_id}/download", response_model=dict)
+def download_work_order(
+    work_order_id: int,
+    user: User = Depends(require_roles("owner", "fleet_manager", "mechanic", "technician")),
+    database: Session = Depends(get_db),
+) -> dict:
+    work_order = database.scalar(select(WorkOrder).where(
+        WorkOrder.id == work_order_id,
+        WorkOrder.organization_id == user.organization_id,
+    ))
+    if work_order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
+    if user.role in {"mechanic", "technician"} and work_order.assigned_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
+    vehicle = database.scalar(select(Vehicle).where(Vehicle.id == work_order.vehicle_id))
+    assignee = database.scalar(select(User).where(User.id == work_order.assigned_user_id)) if work_order.assigned_user_id else None
+    creator = database.scalar(select(User).where(User.id == work_order.created_by)) if work_order.created_by else None
+    checklist = database.scalars(select(WorkOrderChecklistItem).where(
+        WorkOrderChecklistItem.work_order_id == work_order.id,
+    ).order_by(WorkOrderChecklistItem.sort_order)).all()
+    part_usages = database.scalars(select(WorkOrderPartUsage).where(
+        WorkOrderPartUsage.work_order_id == work_order.id,
+    )).all()
+    org = database.get(Organization, work_order.organization_id)
+    part_rows = []
+    for usage in part_usages:
+        part = database.scalar(select(Part).where(Part.id == usage.part_id))
+        part_rows.append((
+            part.name if part else str(usage.part_id),
+            part.sku if part else "",
+            usage.quantity,
+            usage.issued_quantity,
+        ))
+    content = work_order_document(
+        org_name=org.name if org else f"Organization {work_order.organization_id}",
+        work_order_id=work_order.id,
+        title=work_order.title,
+        status=work_order.status,
+        priority=work_order.priority,
+        vehicle_label=vehicle.registration_number if vehicle else str(work_order.vehicle_id),
+        odometer_km=vehicle.odometer_km if vehicle else None,
+        assignee=(assignee.full_name or assignee.email) if assignee else (work_order.assigned_to or "Unassigned"),
+        creator=(creator.full_name or creator.email) if creator else "",
+        created_at=work_order.created_at.isoformat() if work_order.created_at else "",
+        due=work_order.due_date or (work_order.due_at.isoformat() if work_order.due_at else ""),
+        scheduled=work_order.scheduled_for.isoformat() if work_order.scheduled_for else "",
+        completed=work_order.completed_at.isoformat() if work_order.completed_at else "",
+        description=work_order.description or "",
+        checklist=[(item.completed, item.title) for item in checklist],
+        parts=part_rows,
+        repair_notes=work_order.repair_notes or "",
+    )
+    return {
+        "filename": f"work-order-{work_order.id}.pdf",
+        "content": content,
+        "row_count": len(part_rows) + len(checklist),
+    }
 
 
 @router.post("/work-orders/{work_order_id}/archive", response_model=WorkOrderRead)
@@ -5595,6 +5656,65 @@ def update_purchase_order_status(
     return database.scalar(statement)
 
 
+@router.put("/purchase-orders/{purchase_order_id}", response_model=PurchaseOrderRead)
+def update_purchase_order_details(
+    purchase_order_id: int,
+    payload: PurchaseOrderUpdate,
+    request: Request,
+    user: User = Depends(require_roles("owner", "inventory_manager")),
+    database: Session = Depends(get_db),
+) -> PurchaseOrder:
+    order = database.scalar(select(PurchaseOrder).where(
+        PurchaseOrder.id == purchase_order_id,
+        PurchaseOrder.organization_id == user.organization_id,
+    ).with_for_update())
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
+    if order.status not in {"Draft", "Submitted"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only draft or submitted purchase orders can be edited")
+    if payload.vendor_id is not None:
+        vendor = database.scalar(select(Vendor).where(Vendor.id == payload.vendor_id, Vendor.organization_id == user.organization_id, Vendor.active.is_(True)))
+        if vendor is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Active vendor not found in this organization")
+        order.vendor_id = vendor.id
+    if payload.lines is not None:
+        if not payload.lines:
+            raise HTTPException(status_code=422, detail="A purchase order needs at least one line")
+        part_ids = [line.part_id for line in payload.lines]
+        if len(set(part_ids)) != len(part_ids):
+            raise HTTPException(status_code=422, detail="A part can appear only once in a purchase order")
+        parts = list(database.scalars(select(Part).where(Part.id.in_(part_ids), Part.organization_id == user.organization_id)).all())
+        if len({part.id for part in parts}) != len(set(part_ids)):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="One or more parts were not found in this organization")
+        order.lines = [
+            PurchaseOrderLine(
+                organization_id=user.organization_id,
+                part_id=line.part_id,
+                quantity=line.quantity,
+                unit_cost_paise=line.unit_cost_paise,
+                line_total_paise=line.quantity * line.unit_cost_paise,
+            )
+            for line in payload.lines
+        ]
+        order.total_paise = sum(line.quantity * line.unit_cost_paise for line in payload.lines)
+    if payload.expected_on is not None:
+        order.expected_on = payload.expected_on
+    if payload.notes is not None:
+        order.notes = payload.notes
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="purchase_order.updated",
+        entity_type="purchase_order",
+        entity_id=str(order.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps(payload.model_dump(exclude_unset=True)),
+    ))
+    database.commit()
+    statement = select(PurchaseOrder).options(selectinload(PurchaseOrder.lines)).where(PurchaseOrder.id == order.id)
+    return database.scalar(statement)
+
+
 @router.get("/purchase-orders/{purchase_order_id}/receipts", response_model=list[PurchaseOrderReceiptRead])
 def list_purchase_order_receipts(
     purchase_order_id: int,
@@ -5786,30 +5906,43 @@ def download_purchase_order(
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
     vendor = database.scalar(select(Vendor).where(Vendor.id == order.vendor_id))
-    rows = ["Order number,Vendor,Status,Expected on,Part ID,Quantity,Unit cost paise,Line total paise"]
+    creator = database.scalar(select(User).where(User.id == order.created_by)) if order.created_by else None
+    org = database.get(Organization, order.organization_id)
+    line_rows = []
     for line in order.lines:
-        rows.append(",".join(map(str, [
-            order.order_number,
-            (vendor.name if vendor else ""),
-            order.status,
-            order.expected_on or "",
-            line.part_id,
+        part = database.scalar(select(Part).where(Part.id == line.part_id))
+        line_rows.append((
+            part.name if part else str(line.part_id),
+            part.sku if part else "",
             line.quantity,
             line.unit_cost_paise,
             line.line_total_paise,
-        ])))
-    return Response(
-        content="\n".join(rows),
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{order.order_number}.csv"'},
+        ))
+    content = purchase_order_document(
+        org_name=org.name if org else f"Organization {order.organization_id}",
+        order_number=order.order_number,
+        status=order.status,
+        vendor_name=vendor.name if vendor else "",
+        vendor_contact=(vendor.phone or vendor.email or "") if vendor else "",
+        expected_on=order.expected_on or "",
+        raised_on=order.created_at.isoformat()[:10] if order.created_at else "",
+        raised_by=(creator.full_name or creator.email) if creator else "",
+        notes=order.notes or "",
+        lines=line_rows,
+        total_paise=order.total_paise,
     )
+    return {
+        "filename": f"{order.order_number}.pdf",
+        "content": content,
+        "row_count": len(line_rows),
+    }
 
 
 def pdf_export_content(title: str, rows: list[list[object]]) -> str:
     def pdf_text(value: object) -> str:
         return str(value).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
-    lines = [title, *(" | ".join(pdf_text(value) for value in row) for row in rows[:42])]
+    lines = [pdf_text(title), *(" | ".join(pdf_text(value) for value in row) for row in rows[:42])]
     commands = ["BT", "/F1 8 Tf", "36 756 Td"]
     for index, line in enumerate(lines):
         if index:

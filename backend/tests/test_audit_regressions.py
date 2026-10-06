@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+import base64
 import json
 import ssl
 from pathlib import Path
@@ -1160,3 +1161,104 @@ def test_work_order_creator_can_approve_but_executor_cannot(audit_api):
     database.commit()
     response = client.post(f"/api/v1/work-orders/{self_assigned.id}/approve")
     assert response.status_code == 403, response.text
+
+
+def test_work_order_download_returns_pdf(audit_api):
+    client, database, users, vehicles = audit_api
+    work_order = WorkOrder(
+        organization_id=1, vehicle_id=vehicles[0].id, title="Forwardable dispatch",
+        status="Open", priority="High", created_by=users["fleet_manager"].id,
+        assigned_user_id=users["mechanic"].id,
+    )
+    database.add(work_order)
+    database.flush()
+    database.add(WorkOrderChecklistItem(
+        organization_id=1, work_order_id=work_order.id,
+        title="Inspect brakes", completed=True, sort_order=1,
+    ))
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["fleet_manager"]
+    response = client.get(f"/api/v1/work-orders/{work_order.id}/download")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["filename"] == f"work-order-{work_order.id}.pdf"
+    assert base64.b64decode(body["content"]).startswith(b"%PDF")
+    database.add(WorkOrder(
+        organization_id=99, vehicle_id=vehicles[0].id, title="Other tenant",
+        status="Open", priority="Low", created_by=users["fleet_manager"].id,
+    ))
+    database.commit()
+    other = database.scalars(select(WorkOrder).where(WorkOrder.organization_id == 99)).first()
+    assert client.get(f"/api/v1/work-orders/{other.id}/download").status_code == 404
+    client.app.dependency_overrides[get_current_user] = lambda: users["mechanic"]
+    assert client.get(f"/api/v1/work-orders/{work_order.id}/download").status_code == 200
+    database.add(WorkOrder(
+        organization_id=1, vehicle_id=vehicles[0].id, title="Not mine",
+        status="Open", priority="Low", created_by=users["fleet_manager"].id,
+    ))
+    database.commit()
+    unassigned = database.scalars(select(WorkOrder).where(WorkOrder.title == "Not mine")).first()
+    assert client.get(f"/api/v1/work-orders/{unassigned.id}/download").status_code == 404
+
+
+def test_inventory_receipt_records_vendor_bill_and_date(audit_api):
+    client, database, users, vehicles = audit_api
+    part = Part(organization_id=1, sku="SP-1", name="Brake pad", category="Brakes", unit_cost_paise=100)
+    database.add(part)
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["inventory_manager"]
+    response = client.post("/api/v1/inventory/transactions", json={
+        "part_id": part.id, "transaction_type": "receipt", "quantity": 4,
+        "reference": "supplier delivery", "reason": "supplier delivery",
+        "vendor_name": "Bharat Auto Spares", "bill_number": "INV-101",
+        "received_on": "2026-10-05", "unit_cost_paise": 12500,
+    })
+    assert response.status_code == 200, response.text
+    movement = database.scalars(select(InventoryTransaction).order_by(InventoryTransaction.id.desc())).first()
+    assert movement.vendor_name == "Bharat Auto Spares"
+    assert movement.bill_number == "INV-101"
+    assert str(movement.received_on) == "2026-10-05"
+    assert movement.unit_cost_paise == 12500
+
+
+def test_purchase_order_edit_and_download_pdf(audit_api):
+    client, database, users, _ = audit_api
+    vendor = Vendor(organization_id=1, name="Edit vendor", vendor_type="Parts supplier")
+    vendor2 = Vendor(organization_id=1, name="Edit vendor two", vendor_type="Parts supplier")
+    part = Part(organization_id=1, sku="PO-EDIT-1", name="Fan belt", category="Engine", unit_cost_paise=100)
+    part2 = Part(organization_id=1, sku="PO-EDIT-2", name="Coolant hose", category="Engine", unit_cost_paise=100)
+    database.add_all([vendor, vendor2, part, part2])
+    database.flush()
+    order = PurchaseOrder(
+        organization_id=1, vendor_id=vendor.id, order_number="PO-EDIT", status="Draft",
+        total_paise=0, created_by=users["inventory_manager"].id,
+    )
+    database.add(order)
+    database.flush()
+    database.add(PurchaseOrderLine(
+        organization_id=1, purchase_order_id=order.id, part_id=part.id,
+        quantity=2, unit_cost_paise=500, line_total_paise=1000,
+    ))
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["inventory_manager"]
+    path = f"/api/v1/purchase-orders/{order.id}"
+    edit = client.put(path, json={
+        "vendor_id": vendor2.id,
+        "expected_on": "2026-11-01",
+        "notes": "Send by courier",
+        "lines": [{"part_id": part2.id, "quantity": 3, "unit_cost_paise": 700}],
+    })
+    assert edit.status_code == 200, edit.text
+    body = edit.json()
+    assert body["vendor_id"] == vendor2.id
+    assert body["expected_on"] == "2026-11-01"
+    assert body["total_paise"] == 2100
+    assert [(line["part_id"], line["quantity"], line["unit_cost_paise"]) for line in body["lines"]] == [(part2.id, 3, 700)]
+    order.status = "Approved"
+    database.commit()
+    assert client.put(path, json={"notes": "late edit"}).status_code == 409
+    download = client.get(f"{path}/download")
+    assert download.status_code == 200, download.text
+    payload = download.json()
+    assert payload["filename"] == "PO-EDIT.pdf"
+    assert base64.b64decode(payload["content"]).startswith(b"%PDF")

@@ -298,6 +298,11 @@ export function serializeInput(path: string, input: unknown): unknown {
       transaction_type: path.endsWith("receive") ? "receipt" : "issue",
       quantity: value.quantity,
       reference: value.reason,
+      reason: value.reason,
+      unit_cost_paise: value.unitCost ? Math.round(Number(value.unitCost) * 100) : undefined,
+      received_on: value.receivedOn || undefined,
+      bill_number: value.billNumber || undefined,
+      vendor_name: value.vendorName || undefined,
     };
   if (path === "inventory.adjust")
     return {
@@ -480,16 +485,36 @@ export function serializeInput(path: string, input: unknown): unknown {
   if (path === "purchaseOrders.create")
     return {
       vendor_id: value.vendorId,
-      lines: value.lines ?? [
-        {
-          part_id: value.partId ?? 0,
-          quantity: 1,
-          unit_cost_paise: Math.round(Number(value.totalCost ?? 0) * 100),
-        },
-      ],
+      expected_on: value.expectedOn || undefined,
+      lines: Array.isArray(value.lines)
+        ? (value.lines as { partId?: unknown; quantity?: unknown; unitCost?: unknown }[]).map((line) => ({
+            part_id: Number(line.partId),
+            quantity: Number(line.quantity),
+            unit_cost_paise: Math.round(Number(line.unitCost ?? 0) * 100),
+          }))
+        : [
+            {
+              part_id: value.partId ?? 0,
+              quantity: 1,
+              unit_cost_paise: Math.round(Number(value.totalCost ?? 0) * 100),
+            },
+          ],
       notes: value.notes,
     };
   if (path === "purchaseOrders.updateStatus") return { status: purchaseOrderStatus(value.status) };
+  if (path === "purchaseOrders.update")
+    return {
+      vendor_id: value.vendorId ? Number(value.vendorId) : undefined,
+      expected_on: value.expectedOn || undefined,
+      notes: value.notes,
+      lines: Array.isArray(value.lines)
+        ? (value.lines as { partId?: unknown; quantity?: unknown; unitCost?: unknown }[]).map((line) => ({
+            part_id: Number(line.partId),
+            quantity: Number(line.quantity),
+            unit_cost_paise: Math.round(Number(line.unitCost ?? 0) * 100),
+          }))
+        : undefined,
+    };
   if (path === "purchaseOrders.receivePartial")
     return {
       items: [
@@ -723,6 +748,7 @@ export function queryPath(path: string, input: unknown) {
   if (path === "team.operationalRoster") return "/api/v1/team/roster";
   if (path === "team.assignableMembers") return "/api/v1/team/assignable-members";
   if (path === "inventory.movements") return "/api/v1/inventory/movements";
+  if (path === "inventory.transactions") return "/api/v1/inventory/transactions";
   if (path === "inventory.references" && (input as { partId?: string | number } | undefined)?.partId) return `/api/v1/inventory/parts/${(input as { partId: string | number }).partId}/references`;
   if (path === "workOrders.partInstallations" && (input as { workOrderId?: string | number } | undefined)?.workOrderId) return `/api/v1/work-orders/${(input as { workOrderId: string | number }).workOrderId}/part-installations`;
   if (path === "vehicles.partInstallations" && (input as { vehicleId?: string | number } | undefined)?.vehicleId) return `/api/v1/vehicles/${(input as { vehicleId: string | number }).vehicleId}/part-installations`;
@@ -795,6 +821,8 @@ export function mutationPath(path: string, input: unknown) {
   if (path === "workOrders.assign" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/assign`;
   if (path === "workOrders.approve" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/approve`;
   if (path === "workOrders.allocatePart" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/parts`;
+  if (path === "workOrders.download" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/download`;
+  if (path === "purchaseOrders.download" && ((input as { purchaseOrderId?: string | number } | undefined)?.purchaseOrderId ?? value?.id)) return `/api/v1/purchase-orders/${(input as { purchaseOrderId?: string | number }).purchaseOrderId ?? (value as { id: string | number }).id}/download`;
   if (path === "workOrders.bulkUpdate") return "/api/v1/work-orders/bulk-update";
   if (path === "workOrders.updateChecklist" && value?.workOrderId) return `/api/v1/work-orders/${value.workOrderId}/checklist`;
   if (path === "maintenanceTemplates.applyTemplate" && (value?.id ?? value?.templateId)) return `/api/v1/maintenance/templates/${value.id ?? value.templateId}/apply`;
@@ -855,6 +883,9 @@ export function mutationPath(path: string, input: unknown) {
 export function mutationMethod(path: string) {
   if (path === "maintenanceTemplates.update") return "PUT";
   if (path === "documents.access") return "GET";
+  if (path === "workOrders.download") return "GET";
+  if (path === "purchaseOrders.download") return "GET";
+  if (path === "purchaseOrders.update") return "PUT";
   if (path === "vehicleIssues.updateStatus") return "PUT";
   if (path === "vehicles.updateOdometer") return "PATCH";
   if (path === "organizationSettings.update") return "PUT";

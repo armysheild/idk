@@ -40,15 +40,15 @@ export function InventoryManagerWorkspace() {
   const lowStockCount = partRows.filter((part: InventoryPart) => Number(part.quantityOnHand) <= Number(part.minReorderLevel)).length;
   const totalOnHand = partRows.reduce((total: number, part: InventoryPart) => total + Number(part.quantityOnHand ?? 0), 0);
   const transferPart = trpc.inventory.transfer.useMutation({
-    onSuccess: () => { toast.success("Bin transfer recorded"); setTransfer({ toBinLocation: "", reason: "" }); void utils.inventory.list.invalidate(); void detail.refetch(); void utils.inventory.movements.invalidate(); },
+    onSuccess: () => { toast.success("Bin transfer recorded"); setTransfer({ toBinLocation: "", reason: "" }); void utils.inventory.list.invalidate(); void detail.refetch(); void utils.inventory.movements.invalidate(); void utils.inventory.transactions.invalidate(); },
     onError: (error) => toast.error("Bin transfer failed", { description: error.message }),
   });
   const issuePart = trpc.inventory.issue.useMutation({
-    onSuccess: () => { toast.success("Stock-out movement recorded"); setIssue({ quantity: "1", reason: "" }); void utils.inventory.list.invalidate(); void detail.refetch(); void utils.inventory.movements.invalidate(); },
+    onSuccess: () => { toast.success("Stock-out movement recorded"); setIssue({ quantity: "1", reason: "" }); void utils.inventory.list.invalidate(); void detail.refetch(); void utils.inventory.movements.invalidate(); void utils.inventory.transactions.invalidate(); },
     onError: (error) => toast.error("Stock-out failed", { description: error.message }),
   });
   const adjustPart = trpc.inventory.adjust.useMutation({
-    onSuccess: () => { toast.success("Cycle-count adjustment recorded"); setAdjustment({ delta: "0", reason: "" }); void utils.inventory.list.invalidate(); void detail.refetch(); void utils.inventory.movements.invalidate(); },
+    onSuccess: () => { toast.success("Cycle-count adjustment recorded"); setAdjustment({ delta: "0", reason: "" }); void utils.inventory.list.invalidate(); void detail.refetch(); void utils.inventory.movements.invalidate(); void utils.inventory.transactions.invalidate(); },
     onError: (error) => toast.error("Adjustment failed", { description: error.message }),
   });
   const importInventory = trpc.inventory.importCsv.useMutation({

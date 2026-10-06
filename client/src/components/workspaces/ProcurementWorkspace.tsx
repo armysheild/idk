@@ -1,10 +1,29 @@
-import { Check, PackageCheck } from "lucide-react";
+import { Check, Download, PackageCheck, Pencil, Plus, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { WorkspaceState as State } from "@/components/workspaces/WorkspaceState";
 import { trpc } from "@/lib/trpc";
 import { statusKey } from "@/lib/status";
 import type { InventoryPart, ProcurementOrderRow } from "@/types/fleet";
+
+function downloadPdf(filename: string, base64: string) {
+  const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+  const blob = new Blob([bytes], { type: "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+type OrderEditDraft = {
+  id: string;
+  vendorId: string;
+  expectedOn: string;
+  notes: string;
+  lines: Array<{ partId: string; quantity: string; unitCost: string }>;
+};
 
 type VendorRow = {
   id: string;
@@ -40,12 +59,13 @@ export function ProcurementWorkspace() {
       }
     >
   >({});
-  const [newOrder, setNewOrder] = useState({
-    vendorId: "",
-    partId: "",
-    totalCost: "",
-  });
+  const [newOrder, setNewOrder] = useState<{
+    vendorId: string;
+    expectedOn: string;
+    lines: Array<{ partId: string; quantity: string; unitCost: string }>;
+  }>({ vendorId: "", expectedOn: "", lines: [{ partId: "", quantity: "1", unitCost: "" }] });
   const [selectedVendorId, setSelectedVendorId] = useState("");
+  const [editingOrder, setEditingOrder] = useState<OrderEditDraft | null>(null);
   const [vendorDraft, setVendorDraft] = useState({ name: "", vendorType: "Parts supplier", phone: "", email: "" });
   const pricingHistory = trpc.vendors.pricingHistory.useQuery(
     { vendorId: selectedVendorId },
@@ -73,7 +93,7 @@ export function ProcurementWorkspace() {
   });
   const createPurchaseOrder = trpc.purchaseOrders.create.useMutation({
     onSuccess: () => {
-      setNewOrder({ vendorId: "", partId: "", totalCost: "" });
+      setNewOrder({ vendorId: "", expectedOn: "", lines: [{ partId: "", quantity: "1", unitCost: "" }] });
       toast.success("Draft purchase order created");
       void utils.purchaseOrders.list.invalidate();
     },
@@ -81,6 +101,21 @@ export function ProcurementWorkspace() {
       toast.error("Purchase order creation failed", {
         description: error.message,
       }),
+  });
+  const updateOrder = trpc.purchaseOrders.update.useMutation({
+    onSuccess: () => {
+      setEditingOrder(null);
+      toast.success("Purchase order updated");
+      void utils.purchaseOrders.list.invalidate();
+    },
+    onError: (error) => toast.error("Purchase order update failed", { description: error.message }),
+  });
+  const downloadOrder = trpc.purchaseOrders.download.useMutation({
+    onSuccess: (data: { filename: string; content: string }) => {
+      downloadPdf(data.filename, data.content);
+      toast.success("Purchase order document downloaded", { description: "Share the PDF with the vendor." });
+    },
+    onError: (error) => toast.error("Purchase order download failed", { description: error.message }),
   });
   const createVendor = trpc.vendors.create.useMutation({
     onSuccess: () => {
@@ -151,12 +186,18 @@ export function ProcurementWorkspace() {
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            if (!newOrder.vendorId || !newOrder.partId || !newOrder.totalCost)
-              return;
+            const lines = newOrder.lines
+              .filter((line) => line.partId)
+              .map((line) => ({
+                partId: Number(line.partId),
+                quantity: Math.max(1, Number(line.quantity) || 1),
+                unitCost: line.unitCost === "" ? 0 : Number(line.unitCost),
+              }));
+            if (!newOrder.vendorId || !lines.length) return;
             createPurchaseOrder.mutate({
               vendorId: newOrder.vendorId,
-              partId: newOrder.partId,
-              totalCost: Number(newOrder.totalCost),
+              expectedOn: newOrder.expectedOn || undefined,
+              lines,
             });
           }}
         >
@@ -184,42 +225,107 @@ export function ProcurementWorkspace() {
             </select>
           </label>
           <label>
-            Part
-            <select
-              required
-              value={newOrder.partId}
-              onChange={(event) =>
-                setNewOrder((current) => ({
-                  ...current,
-                  partId: event.target.value,
-                }))
-              }
-            >
-              <option value="">Select part</option>
-              {(parts.data ?? []).map((part: InventoryPart) => (
-                <option key={part.id} value={part.id}>
-                  {part.sku} · {part.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Estimated total (₹)
+            Expected on
             <input
-              required
-              type="number"
-              min="0"
-              step="0.01"
-              value={newOrder.totalCost}
+              type="date"
+              value={newOrder.expectedOn}
               onChange={(event) =>
                 setNewOrder((current) => ({
                   ...current,
-                  totalCost: event.target.value,
+                  expectedOn: event.target.value,
                 }))
               }
-              placeholder="0.00"
             />
           </label>
+          {newOrder.lines.map((line, index) => (
+            <div key={index} style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end", gridColumn: "1 / -1" }}>
+              <label style={{ flex: 2 }}>
+                Part
+                <select
+                  required
+                  value={line.partId}
+                  onChange={(event) =>
+                    setNewOrder((current) => ({
+                      ...current,
+                      lines: current.lines.map((item, i) =>
+                        i === index ? { ...item, partId: event.target.value } : item,
+                      ),
+                    }))
+                  }
+                >
+                  <option value="">Select part</option>
+                  {(parts.data ?? []).map((part: InventoryPart) => (
+                    <option key={part.id} value={part.id}>
+                      {part.sku} · {part.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label style={{ flex: 1 }}>
+                Quantity
+                <input
+                  required
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={line.quantity}
+                  onChange={(event) =>
+                    setNewOrder((current) => ({
+                      ...current,
+                      lines: current.lines.map((item, i) =>
+                        i === index ? { ...item, quantity: event.target.value } : item,
+                      ),
+                    }))
+                  }
+                />
+              </label>
+              <label style={{ flex: 1 }}>
+                Unit cost (₹, optional)
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="TBD"
+                  value={line.unitCost}
+                  onChange={(event) =>
+                    setNewOrder((current) => ({
+                      ...current,
+                      lines: current.lines.map((item, i) =>
+                        i === index ? { ...item, unitCost: event.target.value } : item,
+                      ),
+                    }))
+                  }
+                />
+              </label>
+              {newOrder.lines.length > 1 && (
+                <button
+                  type="button"
+                  className="secondary-button compact-button"
+                  aria-label={`Remove line ${index + 1}`}
+                  onClick={() =>
+                    setNewOrder((current) => ({
+                      ...current,
+                      lines: current.lines.filter((_, i) => i !== index),
+                    }))
+                  }
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+          <button
+            type="button"
+            className="secondary-button compact-button"
+            onClick={() =>
+              setNewOrder((current) => ({
+                ...current,
+                lines: [...current.lines, { partId: "", quantity: "1", unitCost: "" }],
+              }))
+            }
+          >
+            <Plus size={14} /> Add part
+          </button>
           <button
             className="replacement-procurement-primary"
             disabled={
@@ -397,8 +503,10 @@ export function ProcurementWorkspace() {
                     <div>
                       <strong>PO-{String(order.id).slice(0, 8).toUpperCase()}</strong>
                       <p>
-                        {order.vendor?.name ?? "Vendor pending"} · ₹
-                        {Number(order.totalCost).toLocaleString("en-IN")}
+                        {order.vendor?.name ?? "Vendor pending"} ·{" "}
+                        {Number(order.totalCost) > 0
+                          ? `₹${Number(order.totalCost).toLocaleString("en-IN")}`
+                          : "Price TBD"}
                       </p>
                     </div>
                     <select
@@ -439,7 +547,148 @@ export function ProcurementWorkspace() {
                       <option value="CANCELLED">Cancelled</option>
                       <option value="CLOSED">Closed</option>
                     </select>
+                    <div>
+                      {["DRAFT", "SUBMITTED"].includes(orderStatus) && (
+                        <button
+                          type="button"
+                          className="secondary-button compact-button"
+                          aria-label={`Edit purchase order ${order.id}`}
+                          onClick={() =>
+                            setEditingOrder({
+                              id: order.id,
+                              vendorId: String((order as ProcurementOrderRow & { vendorId?: string | number }).vendorId ?? ""),
+                              expectedOn: String((order as ProcurementOrderRow & { expectedOn?: string }).expectedOn ?? ""),
+                              notes: String((order as ProcurementOrderRow & { notes?: string }).notes ?? ""),
+                              lines: (order.lines ?? []).map((line) => ({
+                                partId: String(line.partId),
+                                quantity: String(line.quantity),
+                                unitCost: String(line.unitCost ?? ""),
+                              })),
+                            })
+                          }
+                        >
+                          <Pencil size={14} /> Edit
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="secondary-button compact-button"
+                        aria-label={`Download purchase order ${order.id}`}
+                        disabled={downloadOrder.isPending}
+                        onClick={() => downloadOrder.mutate({ purchaseOrderId: order.id })}
+                      >
+                        <Download size={14} /> PDF
+                      </button>
+                    </div>
                   </header>
+                  {editingOrder?.id === order.id && (
+                    <form
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (!editingOrder.vendorId || !editingOrder.lines.length) return;
+                        updateOrder.mutate({
+                          id: editingOrder.id,
+                          vendorId: editingOrder.vendorId,
+                          expectedOn: editingOrder.expectedOn || undefined,
+                          notes: editingOrder.notes || undefined,
+                          lines: editingOrder.lines.map((line) => ({
+                            partId: Number(line.partId),
+                            quantity: Number(line.quantity),
+                            unitCost: line.unitCost === "" ? 0 : Number(line.unitCost),
+                          })),
+                        });
+                      }}
+                    >
+                      <label>
+                        Vendor
+                        <select
+                          required
+                          value={editingOrder.vendorId}
+                          onChange={(event) => setEditingOrder((current) => current ? { ...current, vendorId: event.target.value } : current)}
+                        >
+                          <option value="">Select vendor</option>
+                          {(vendors.data ?? []).filter((vendor: VendorRow) => vendor.active !== false).map((vendor: VendorRow) => (
+                            <option key={vendor.id} value={vendor.id}>{vendor.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Expected on
+                        <input
+                          type="date"
+                          value={editingOrder.expectedOn}
+                          onChange={(event) => setEditingOrder((current) => current ? { ...current, expectedOn: event.target.value } : current)}
+                        />
+                      </label>
+                      <label>
+                        Notes
+                        <input
+                          value={editingOrder.notes}
+                          onChange={(event) => setEditingOrder((current) => current ? { ...current, notes: event.target.value } : current)}
+                          placeholder="Delivery or payment notes for the vendor"
+                        />
+                      </label>
+                      {editingOrder.lines.map((line, index) => (
+                        <div key={index}>
+                          <label>
+                            Part
+                            <select
+                              required
+                              value={line.partId}
+                              onChange={(event) => setEditingOrder((current) => current ? { ...current, lines: current.lines.map((item, i) => i === index ? { ...item, partId: event.target.value } : item) } : current)}
+                            >
+                              <option value="">Select part</option>
+                              {(parts.data ?? []).map((part: InventoryPart) => (
+                                <option key={part.id} value={part.id}>{part.sku} · {part.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Qty
+                            <input
+                              required
+                              type="number"
+                              min="1"
+                              step="1"
+                              value={line.quantity}
+                              onChange={(event) => setEditingOrder((current) => current ? { ...current, lines: current.lines.map((item, i) => i === index ? { ...item, quantity: event.target.value } : item) } : current)}
+                            />
+                          </label>
+                          <label>
+                            Unit cost (₹, optional)
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="TBD"
+                              value={line.unitCost}
+                              onChange={(event) => setEditingOrder((current) => current ? { ...current, lines: current.lines.map((item, i) => i === index ? { ...item, unitCost: event.target.value } : item) } : current)}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="secondary-button compact-button"
+                            aria-label={`Remove line ${index + 1}`}
+                            disabled={editingOrder.lines.length < 2}
+                            onClick={() => setEditingOrder((current) => current ? { ...current, lines: current.lines.filter((_, i) => i !== index) } : current)}
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        className="secondary-button compact-button"
+                        onClick={() => setEditingOrder((current) => current ? { ...current, lines: [...current.lines, { partId: "", quantity: "1", unitCost: "" }] } : current)}
+                      >
+                        <Plus size={14} /> Add line
+                      </button>
+                      <button className="primary-button" disabled={updateOrder.isPending}>
+                        {updateOrder.isPending ? "Saving…" : "Save changes"} <Check size={14} />
+                      </button>
+                      <button type="button" className="secondary-button compact-button" onClick={() => setEditingOrder(null)}>Cancel</button>
+                    </form>
+                  )}
                   {["SUBMITTED", "APPROVED", "PARTIALLY_RECEIVED"].includes(orderStatus) && (
                     <form
                       onSubmit={(event) => {
