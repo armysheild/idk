@@ -59,11 +59,11 @@ export function ProcurementWorkspace() {
       }
     >
   >({});
-  const [newOrder, setNewOrder] = useState({
-    vendorId: "",
-    partId: "",
-    totalCost: "",
-  });
+  const [newOrder, setNewOrder] = useState<{
+    vendorId: string;
+    expectedOn: string;
+    lines: Array<{ partId: string; quantity: string }>;
+  }>({ vendorId: "", expectedOn: "", lines: [{ partId: "", quantity: "1" }] });
   const [selectedVendorId, setSelectedVendorId] = useState("");
   const [editingOrder, setEditingOrder] = useState<OrderEditDraft | null>(null);
   const [vendorDraft, setVendorDraft] = useState({ name: "", vendorType: "Parts supplier", phone: "", email: "" });
@@ -93,7 +93,7 @@ export function ProcurementWorkspace() {
   });
   const createPurchaseOrder = trpc.purchaseOrders.create.useMutation({
     onSuccess: () => {
-      setNewOrder({ vendorId: "", partId: "", totalCost: "" });
+      setNewOrder({ vendorId: "", expectedOn: "", lines: [{ partId: "", quantity: "1" }] });
       toast.success("Draft purchase order created");
       void utils.purchaseOrders.list.invalidate();
     },
@@ -186,12 +186,17 @@ export function ProcurementWorkspace() {
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            if (!newOrder.vendorId || !newOrder.partId || !newOrder.totalCost)
-              return;
+            const lines = newOrder.lines
+              .filter((line) => line.partId)
+              .map((line) => ({
+                partId: Number(line.partId),
+                quantity: Math.max(1, Number(line.quantity) || 1),
+              }));
+            if (!newOrder.vendorId || !lines.length) return;
             createPurchaseOrder.mutate({
               vendorId: newOrder.vendorId,
-              partId: newOrder.partId,
-              totalCost: Number(newOrder.totalCost),
+              expectedOn: newOrder.expectedOn || undefined,
+              lines,
             });
           }}
         >
@@ -219,42 +224,89 @@ export function ProcurementWorkspace() {
             </select>
           </label>
           <label>
-            Part
-            <select
-              required
-              value={newOrder.partId}
-              onChange={(event) =>
-                setNewOrder((current) => ({
-                  ...current,
-                  partId: event.target.value,
-                }))
-              }
-            >
-              <option value="">Select part</option>
-              {(parts.data ?? []).map((part: InventoryPart) => (
-                <option key={part.id} value={part.id}>
-                  {part.sku} · {part.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Estimated total (₹)
+            Expected on
             <input
-              required
-              type="number"
-              min="0"
-              step="0.01"
-              value={newOrder.totalCost}
+              type="date"
+              value={newOrder.expectedOn}
               onChange={(event) =>
                 setNewOrder((current) => ({
                   ...current,
-                  totalCost: event.target.value,
+                  expectedOn: event.target.value,
                 }))
               }
-              placeholder="0.00"
             />
           </label>
+          {newOrder.lines.map((line, index) => (
+            <div key={index} style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end", gridColumn: "1 / -1" }}>
+              <label style={{ flex: 2 }}>
+                Part
+                <select
+                  required
+                  value={line.partId}
+                  onChange={(event) =>
+                    setNewOrder((current) => ({
+                      ...current,
+                      lines: current.lines.map((item, i) =>
+                        i === index ? { ...item, partId: event.target.value } : item,
+                      ),
+                    }))
+                  }
+                >
+                  <option value="">Select part</option>
+                  {(parts.data ?? []).map((part: InventoryPart) => (
+                    <option key={part.id} value={part.id}>
+                      {part.sku} · {part.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label style={{ flex: 1 }}>
+                Quantity
+                <input
+                  required
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={line.quantity}
+                  onChange={(event) =>
+                    setNewOrder((current) => ({
+                      ...current,
+                      lines: current.lines.map((item, i) =>
+                        i === index ? { ...item, quantity: event.target.value } : item,
+                      ),
+                    }))
+                  }
+                />
+              </label>
+              {newOrder.lines.length > 1 && (
+                <button
+                  type="button"
+                  className="secondary-button compact-button"
+                  aria-label={`Remove line ${index + 1}`}
+                  onClick={() =>
+                    setNewOrder((current) => ({
+                      ...current,
+                      lines: current.lines.filter((_, i) => i !== index),
+                    }))
+                  }
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+          <button
+            type="button"
+            className="secondary-button compact-button"
+            onClick={() =>
+              setNewOrder((current) => ({
+                ...current,
+                lines: [...current.lines, { partId: "", quantity: "1" }],
+              }))
+            }
+          >
+            <Plus size={14} /> Add part
+          </button>
           <button
             className="replacement-procurement-primary"
             disabled={

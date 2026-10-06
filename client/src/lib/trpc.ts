@@ -485,13 +485,20 @@ export function serializeInput(path: string, input: unknown): unknown {
   if (path === "purchaseOrders.create")
     return {
       vendor_id: value.vendorId,
-      lines: value.lines ?? [
-        {
-          part_id: value.partId ?? 0,
-          quantity: 1,
-          unit_cost_paise: Math.round(Number(value.totalCost ?? 0) * 100),
-        },
-      ],
+      expected_on: value.expectedOn || undefined,
+      lines: Array.isArray(value.lines)
+        ? (value.lines as { partId?: unknown; quantity?: unknown; unitCost?: unknown }[]).map((line) => ({
+            part_id: Number(line.partId),
+            quantity: Number(line.quantity),
+            unit_cost_paise: Math.round(Number(line.unitCost ?? 0) * 100),
+          }))
+        : [
+            {
+              part_id: value.partId ?? 0,
+              quantity: 1,
+              unit_cost_paise: Math.round(Number(value.totalCost ?? 0) * 100),
+            },
+          ],
       notes: value.notes,
     };
   if (path === "purchaseOrders.updateStatus") return { status: purchaseOrderStatus(value.status) };

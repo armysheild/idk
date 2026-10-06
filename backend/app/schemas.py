@@ -1094,7 +1094,7 @@ class VendorUpdate(BaseModel):
 class PurchaseOrderLineCreate(BaseModel):
     part_id: int
     quantity: int = Field(gt=0)
-    unit_cost_paise: int = Field(gt=0)
+    unit_cost_paise: int = Field(default=0, ge=0)
 
 
 class PurchaseOrderCreate(BaseModel):
