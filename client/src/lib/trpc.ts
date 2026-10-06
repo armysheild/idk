@@ -728,6 +728,7 @@ export function queryPath(path: string, input: unknown) {
   if (path === "team.operationalRoster") return "/api/v1/team/roster";
   if (path === "team.assignableMembers") return "/api/v1/team/assignable-members";
   if (path === "inventory.movements") return "/api/v1/inventory/movements";
+  if (path === "inventory.transactions") return "/api/v1/inventory/transactions";
   if (path === "inventory.references" && (input as { partId?: string | number } | undefined)?.partId) return `/api/v1/inventory/parts/${(input as { partId: string | number }).partId}/references`;
   if (path === "workOrders.partInstallations" && (input as { workOrderId?: string | number } | undefined)?.workOrderId) return `/api/v1/work-orders/${(input as { workOrderId: string | number }).workOrderId}/part-installations`;
   if (path === "vehicles.partInstallations" && (input as { vehicleId?: string | number } | undefined)?.vehicleId) return `/api/v1/vehicles/${(input as { vehicleId: string | number }).vehicleId}/part-installations`;
