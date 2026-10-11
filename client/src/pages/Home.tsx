@@ -31,6 +31,7 @@ import {
   TrendingUp,
   RefreshCw,
   Route,
+  ScrollText,
   Users,
   UserRound,
   Wrench,
@@ -77,6 +78,7 @@ const navItems = [
   { label: "Vendors", icon: Users },
   { label: "Purchase orders", icon: ClipboardCheck },
   { label: "Notifications", icon: Bell },
+  { label: "Audit log", icon: ScrollText },
   { label: "Compliance vault", icon: FileText },
   { label: "P&L analytics", icon: TrendingUp },
   { label: "Billing", icon: IndianRupee },
@@ -86,7 +88,7 @@ const navItems = [
 const navGroups = [
   { label: "Command", items: ["Command center", "Fleet manager workspace", "Inventory manager workspace", "Mechanic workspace", "Technician workspace", "Driver portal", "Accountant ledger"] },
   { label: "Operations", items: ["Vehicles", "Components", "Work orders", "Telematics", "Inventory", "Vendors", "Purchase orders", "Compliance vault"] },
-  { label: "Control", items: ["Notifications", "P&L analytics", "Billing", "Team"] },
+  { label: "Control", items: ["Notifications", "Audit log", "P&L analytics", "Billing", "Team"] },
 ];
 
 const roleDescriptor: Record<string, string> = {
