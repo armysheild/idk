@@ -365,6 +365,7 @@ export default function Home({ initialSection = "Command center", publicMode = "
       onCloseCommand={() => { setQuickFindOpen(false); setQuery(""); }}
       onSelect={setActiveNav}
       onCompleteOrder={completeOrder}
+      canNavigate={(label) => allowedNavLabels.includes(label)}
     />
   ) : (
     <section className="replacement-workspace-host">
