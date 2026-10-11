@@ -87,6 +87,7 @@ from .schemas import (
     NotificationStatusUpdate,
     PartCreate,
     PartRead,
+    PartUpdate,
     PurchaseOrderCreate,
     PurchaseOrderPartialReceiptCreate,
     PurchaseOrderReceiptCreate,
@@ -3238,6 +3239,34 @@ def create_part(
         entity_id=str(part.id),
         request_id=request.headers.get("x-request-id", str(uuid4())),
         changes=json.dumps({"sku": part.sku, "quantity_on_hand": part.quantity_on_hand}),
+    ))
+    database.commit()
+    database.refresh(part)
+    return part
+
+
+@router.patch("/parts/{part_id}", response_model=PartRead)
+def update_part(
+    part_id: int,
+    payload: PartUpdate,
+    request: Request,
+    user: User = Depends(require_permission("inventory")),
+    database: Session = Depends(get_db),
+) -> Part:
+    part = database.scalar(select(Part).where(Part.id == part_id, Part.organization_id == user.organization_id))
+    if part is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part not found in this organization")
+    changes = payload.model_dump(exclude_unset=True)
+    for key, value in changes.items():
+        setattr(part, key, value)
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="part.updated",
+        entity_type="part",
+        entity_id=str(part.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps(changes),
     ))
     database.commit()
     database.refresh(part)

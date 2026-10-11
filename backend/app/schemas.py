@@ -689,6 +689,14 @@ class PartCreate(BaseModel):
     supplier: str | None = None
 
 
+class PartUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=200)
+    category: str | None = Field(default=None, min_length=2, max_length=80)
+    reorder_level: int | None = Field(default=None, ge=0)
+    unit_cost_paise: int | None = Field(default=None, ge=0)
+    supplier: str | None = None
+
+
 class PartRead(PartCreate):
     model_config = ConfigDict(from_attributes=True)
 

@@ -337,6 +337,14 @@ export function serializeInput(path: string, input: unknown): unknown {
       notes: value.notes,
       status: value.status ?? "Healthy",
     };
+  if (path === "inventory.update")
+    return {
+      name: value.name || undefined,
+      category: value.category || undefined,
+      supplier: value.supplier ?? undefined,
+      reorder_level: value.minReorderLevel ?? value.reorderLevel ?? undefined,
+      unit_cost_paise: value.unitCost !== undefined && value.unitCost !== "" ? Math.round(Number(value.unitCost) * 100) : undefined,
+    };
   if (path === "inventory.create")
     return {
       sku: value.sku,
