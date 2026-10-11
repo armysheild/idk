@@ -2182,7 +2182,7 @@ def create_work_order(
     )
     database.commit()
     database.refresh(work_order)
-    return work_order
+    return _attach_work_order_context([work_order], database)[0]
 
 
 @router.patch("/work-orders/{work_order_id}", response_model=WorkOrderRead)
@@ -2310,7 +2310,7 @@ def update_work_order(
     ))
     database.commit()
     database.refresh(work_order)
-    return work_order
+    return _attach_work_order_context([work_order], database)[0]
 
 
 @router.delete("/work-orders/{work_order_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -2456,7 +2456,7 @@ def start_work_order(
     ))
     database.commit()
     database.refresh(work_order)
-    return work_order
+    return _attach_work_order_context([work_order], database)[0]
 
 
 def reset_component_lifecycle_for_work_order(
@@ -2633,7 +2633,7 @@ def complete_work_order(
     )
     database.commit()
     database.refresh(work_order)
-    return work_order
+    return _attach_work_order_context([work_order], database)[0]
 
 
 @router.post("/work-orders/{work_order_id}/approve", response_model=WorkOrderRead)
@@ -2679,7 +2679,7 @@ def approve_work_order(
         )
     database.commit()
     database.refresh(work_order)
-    return work_order
+    return _attach_work_order_context([work_order], database)[0]
 
 
 @router.get("/work-orders/{work_order_id}/download", response_model=dict)
@@ -2769,7 +2769,7 @@ def archive_work_order(
     ))
     database.commit()
     database.refresh(work_order)
-    return work_order
+    return _attach_work_order_context([work_order], database)[0]
 
 
 @router.get("/work-orders/{work_order_id}/parts", response_model=list[WorkOrderPartUsageRead])
