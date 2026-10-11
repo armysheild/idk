@@ -3,10 +3,11 @@ import { AlertTriangle, ArrowRightLeft, Boxes, Check, ClipboardCheck, Download, 
 import { toast } from "sonner";
 import { WorkspaceState as State } from "@/components/workspaces/WorkspaceState";
 import { trpc } from "@/lib/trpc";
-import type { InventoryPart } from "@/types/fleet";
+import { formatVehicleIdentity } from "@/lib/vehicleIdentity";
+import type { FleetVehicle, InventoryPart, WorkspaceMember } from "@/types/fleet";
 
 const money = (value: unknown) => Number(value ?? 0).toLocaleString("en-IN", { style: "currency", currency: "INR" });
-type AllocationOrder = { id: string; title: string; status: string; vehicleId: string | number };
+type AllocationOrder = { id: string; title: string; status: string; vehicleId: string | number; vehicle?: Pick<FleetVehicle, "vin" | "licensePlate">; assignedMechanic?: Pick<WorkspaceMember, "fullName" | "role"> | null };
 type AllocationUsage = { id: number; partId: string; quantity: number; issuedQuantity: number };
 
 export function InventoryManagerWorkspace() {
@@ -100,7 +101,7 @@ export function InventoryManagerWorkspace() {
     <section className="replacement-work-order-allocation">
       <div><span>02 · Work-order allocation</span><h2>Allocate parts before the mechanic starts</h2><p>Inventory Manager selects an assigned work order, reserves the SKU, and deducts it immediately from on-hand stock.</p></div>
       <div className="replacement-stock-selector-controls">
-        <label>Work order<select value={allocation.workOrderId} onChange={(event) => setAllocation((current) => ({ ...current, workOrderId: event.target.value }))}><option value="">Select work order</option>{(allocationOrders.data ?? []).map((order: AllocationOrder) => <option key={order.id} value={order.id}>{order.title} · {order.status}</option>)}</select></label>
+        <label>Work order<select value={allocation.workOrderId} onChange={(event) => setAllocation((current) => ({ ...current, workOrderId: event.target.value }))}><option value="">Select work order</option>{(allocationOrders.data ?? []).map((order: AllocationOrder) => <option key={order.id} value={order.id}>{order.title} · {order.status} · {formatVehicleIdentity(order.vehicle)} · {order.assignedMechanic?.fullName ?? "Unassigned"}</option>)}</select></label>
         <label>Part<select value={allocation.partId} onChange={(event) => setAllocation((current) => ({ ...current, partId: event.target.value }))}><option value="">Select part</option>{partRows.map((part: InventoryPart) => <option key={part.id} value={part.id}>{part.sku} · {part.name} · {part.quantityOnHand} on hand</option>)}</select></label>
         <label>Quantity<input type="number" min="1" step="1" value={allocation.quantity} onChange={(event) => setAllocation((current) => ({ ...current, quantity: event.target.value }))} /></label>
         <button type="button" className="replacement-primary" disabled={!allocation.workOrderId || !allocation.partId || allocatePart.isPending} onClick={() => allocatePart.mutate({ workOrderId: allocation.workOrderId, partId: allocation.partId, quantity: Number(allocation.quantity) })}>{allocatePart.isPending ? "Allocating…" : "Allocate and deduct"}</button>
