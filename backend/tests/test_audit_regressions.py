@@ -1262,3 +1262,46 @@ def test_purchase_order_edit_and_download_pdf(audit_api):
     payload = download.json()
     assert payload["filename"] == "PO-EDIT.pdf"
     assert base64.b64decode(payload["content"]).startswith(b"%PDF")
+
+
+def test_part_update_edits_catalog_fields_audits_and_is_tenant_scoped(audit_api):
+    client, database, users, vehicles = audit_api
+    client.app.dependency_overrides[get_current_user] = lambda: users["inventory_manager"]
+    part = Part(
+        organization_id=1, sku="EDIT-1", name="Oil filter", category="Filters",
+        quantity_on_hand=7, reorder_level=2, unit_cost_paise=45000, supplier="Old Supplier",
+    )
+    database.add(part)
+    database.commit()
+
+    response = client.patch(f"/api/v1/parts/{part.id}", json={
+        "name": "Oil filter XL",
+        "unit_cost_paise": 51000,
+        "reorder_level": 4,
+        "supplier": "New Supplier",
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["unit_cost_paise"] == 51000
+    database.refresh(part)
+    assert (part.name, part.reorder_level, part.unit_cost_paise, part.supplier) == (
+        "Oil filter XL", 4, 51000, "New Supplier")
+    assert part.sku == "EDIT-1" and part.quantity_on_hand == 7
+
+    audit = database.scalar(select(AuditLog).where(AuditLog.action == "part.updated"))
+    assert audit.actor_user_id == users["inventory_manager"].id
+
+    # untouched fields are left alone
+    client.patch(f"/api/v1/parts/{part.id}", json={})
+    database.refresh(part)
+    assert part.name == "Oil filter XL"
+
+    # other roles and tenants are rejected
+    client.app.dependency_overrides[get_current_user] = lambda: users["mechanic"]
+    assert client.patch(f"/api/v1/parts/{part.id}", json={"name": "Nope"}).status_code == 403
+    database.add(Organization(id=2, name="Other org", slug="other-parts"))
+    users["accountant"].organization_id = 2
+    database.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: users["accountant"]
+    assert client.patch(f"/api/v1/parts/{part.id}", json={"name": "Nope"}).status_code in (403, 404)
+    database.refresh(part)
+    assert part.name == "Oil filter XL"

@@ -476,6 +476,20 @@ class WorkOrderCreate(BaseModel):
     repair_notes: str | None = None
 
 
+class WorkOrderVehicleRef(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    vin: str | None = None
+    license_plate: str | None = None
+
+
+class WorkOrderAssigneeRef(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    full_name: str | None = None
+    role: str | None = None
+
+
 class WorkOrderRead(WorkOrderCreate):
     model_config = ConfigDict(from_attributes=True)
 
@@ -486,6 +500,8 @@ class WorkOrderRead(WorkOrderCreate):
     started_at: datetime | None
     completed_at: datetime | None
     archived_at: datetime | None
+    vehicle: WorkOrderVehicleRef | None = None
+    assigned_mechanic: WorkOrderAssigneeRef | None = None
 
 
 class WorkOrderUpdate(BaseModel):
@@ -670,6 +686,14 @@ class PartCreate(BaseModel):
     quantity_on_hand: int = Field(default=0, ge=0)
     reorder_level: int = Field(default=0, ge=0)
     unit_cost_paise: int = Field(default=0, ge=0)
+    supplier: str | None = None
+
+
+class PartUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=200)
+    category: str | None = Field(default=None, min_length=2, max_length=80)
+    reorder_level: int | None = Field(default=None, ge=0)
+    unit_cost_paise: int | None = Field(default=None, ge=0)
     supplier: str | None = None
 
 

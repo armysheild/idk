@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   ArrowUpRight,
@@ -53,7 +53,7 @@ const commandLabels = new Set([
   "Accountant ledger",
 ]);
 
-const controlLabels = new Set(["Notifications", "P&L analytics", "Billing", "Team", "Profile"]);
+const controlLabels = new Set(["Notifications", "Audit log", "P&L analytics", "Billing", "Team", "Profile"]);
 
 function AppNavigation({
   items,
@@ -189,6 +189,7 @@ export function CommandDeck({
   onCloseCommand,
   onSelect,
   onCompleteOrder,
+  canNavigate,
 }: {
   operatorName: string;
   activeVehicles: number;
@@ -206,15 +207,19 @@ export function CommandDeck({
   onCloseCommand: () => void;
   onSelect: (label: string) => void;
   onCompleteOrder: (id: string) => void;
+  canNavigate?: (label: string) => boolean;
 }) {
   const exceptionCount = unreadCount + lowStockCount;
+  const [showAllOrders, setShowAllOrders] = useState(false);
+  const navigate = (label: string) => { if (!canNavigate || canNavigate(label)) onSelect(label); };
+  const visibleOrders = showAllOrders ? orders : orders.slice(0, 4);
   return (
     <section className="command-deck">
       {commandOpen ? <div className="command-overlay" role="dialog" aria-modal="true" aria-label="Search VahanSync records">
         <div className="command-dialog">
           <div className="command-dialog-head"><div><span>Global record search</span><strong>Find a live fleet record</strong></div><button type="button" onClick={onCloseCommand} aria-label="Close search"><X size={18} /></button></div>
           <label className="command-input"><Search size={18} /><input autoFocus value={query} onChange={(event) => onQuery(event.target.value)} placeholder="VIN, registration, work order, part, or invoice" /></label>
-          <div className="command-results">{query ? commandResults.length ? commandResults.map((result) => <button key={`${result.type}-${result.id}`} type="button" onClick={() => { onSelect(result.type === "Vehicle" ? "Vehicles" : result.type === "Inventory" ? "Inventory" : result.type === "Financial record" ? "Accountant ledger" : "Work orders"); onCloseCommand(); }}><span>{result.type}</span><div><strong>{result.title}</strong><small>{result.detail}</small></div><ArrowUpRight size={16} /></button>) : <p>No matching live records.</p> : <p>Start with a VIN, registration number, work-order title, part SKU, or financial reference.</p>}</div>
+          <div className="command-results">{query ? commandResults.length ? commandResults.map((result) => <button key={`${result.type}-${result.id}`} type="button" onClick={() => { navigate(result.type === "Vehicle" ? "Vehicles" : result.type === "Inventory" ? "Inventory" : result.type === "Financial record" ? "Accountant ledger" : "Work orders"); onCloseCommand(); }}><span>{result.type}</span><div><strong>{result.title}</strong><small>{result.detail}</small></div><ArrowUpRight size={16} /></button>) : <p>No matching live records.</p> : <p>Start with a VIN, registration number, work-order title, part SKU, or financial reference.</p>}</div>
         </div>
       </div> : null}
       <div className="command-deck-intro">
@@ -229,19 +234,19 @@ export function CommandDeck({
       </div>
       <div className="command-deck-grid">
         <section className="command-panel command-queue-panel">
-          <div className="command-panel-head"><div><span>Decision queue</span><h2>Act on the live fleet</h2></div><button type="button" onClick={() => onSelect("Fleet manager workspace")}>Open readiness <ArrowUpRight size={15} /></button></div>
+          <div className="command-panel-head"><div><span>Decision queue</span><h2>Act on the live fleet</h2></div>{canNavigate?.("Fleet manager workspace") ? <button type="button" onClick={() => onSelect("Fleet manager workspace")}>Open readiness <ArrowUpRight size={15} /></button> : null}</div>
           <div className="command-exception-list">
             <button type="button" onClick={() => onSelect("Notifications")}><span className={`command-severity ${unreadCount ? "risk" : "good"}`} /><div><strong>{unreadCount ? `${unreadCount} unread fleet signals` : "No unread fleet signals"}</strong><small>{unreadCount ? "Review source records and close the handoff." : "Notifications are currently clear."}</small></div><ArrowUpRight size={16} /></button>
-            <button type="button" onClick={() => onSelect("Inventory")}><span className={`command-severity ${lowStockCount ? "risk" : "good"}`} /><div><strong>{lowStockCount ? `${lowStockCount} parts at reorder point` : "Inventory levels are within policy"}</strong><small>{lowStockCount ? "Review stock availability before dispatching repairs." : "No replenishment decision is waiting."}</small></div><ArrowUpRight size={16} /></button>
+            <button type="button" onClick={() => navigate("Inventory")}><span className={`command-severity ${lowStockCount ? "risk" : "good"}`} /><div><strong>{lowStockCount ? `${lowStockCount} parts at reorder point` : "Inventory levels are within policy"}</strong><small>{lowStockCount ? "Review stock availability before dispatching repairs." : "No replenishment decision is waiting."}</small></div><ArrowUpRight size={16} /></button>
           </div>
         </section>
         <section className="command-panel command-orders-panel">
-          <div className="command-panel-head"><div><span>Maintenance flow</span><h2>Latest work orders</h2></div><button type="button" onClick={() => onSelect("Work orders")}>View all <ArrowUpRight size={15} /></button></div>
-          <div className="command-order-list">{orders.slice(0, 4).map((order) => <article key={order.id}><div className="command-order-title"><span className={`command-priority ${order.priority.toLowerCase()}`} /><div><strong>{order.title}</strong><small>{order.vehicle} · {order.owner}</small></div><b>{order.status}</b></div><div className="command-order-meta"><span>{order.priority} priority</span><span>{order.due}</span>{order.status !== "Completed" ? <button type="button" onClick={() => onCompleteOrder(order.sourceId)}><Check size={14} /> Complete</button> : <span className="command-complete"><Check size={14} /> Verified</span>}</div></article>) || <p className="command-empty">No work orders are available for this role.</p>}</div>
+          <div className="command-panel-head"><div><span>Maintenance flow</span><h2>Latest work orders</h2></div>{orders.length > 4 ? <button type="button" onClick={() => setShowAllOrders((current) => !current)}>{showAllOrders ? "Show less" : `View all ${orders.length}`} <ArrowUpRight size={15} /></button> : null}</div>
+          <div className="command-order-list">{visibleOrders.map((order) => <article key={order.id}><div className="command-order-title"><span className={`command-priority ${order.priority.toLowerCase()}`} /><div><strong>{order.title}</strong><small>{order.vehicle} · {order.owner}</small></div><b>{order.status}</b></div><div className="command-order-meta"><span>{order.priority} priority</span><span>{order.due}</span>{order.status !== "Completed" ? <button type="button" onClick={() => onCompleteOrder(order.sourceId)}><Check size={14} /> Complete</button> : <span className="command-complete"><Check size={14} /> Verified</span>}</div></article>) || <p className="command-empty">No work orders are available for this role.</p>}</div>
         </section>
         <section className="command-panel command-fleet-panel">
-          <div className="command-panel-head"><div><span>Fleet register</span><h2>Vehicle condition</h2></div><button type="button" onClick={() => onSelect("Vehicles")}>VIN register <ArrowUpRight size={15} /></button></div>
-          <div className="command-fleet-list">{vehicles.slice(0, 5).map((vehicle) => <button key={vehicle.id} type="button" onClick={() => onSelect("Vehicles")}><span className={`command-vehicle-dot ${vehicle.tone}`} /><div><strong>{vehicle.identity}</strong><small>{vehicle.name}</small></div><div><b>{vehicle.status}</b><small>{vehicle.odo}</small></div><ChevronRight size={16} /></button>) || <p className="command-empty">No vehicles are visible for this role.</p>}</div>
+          <div className="command-panel-head"><div><span>Fleet register</span><h2>Vehicle condition</h2></div>{canNavigate?.("Vehicles") ? <button type="button" onClick={() => onSelect("Vehicles")}>VIN register <ArrowUpRight size={15} /></button> : null}</div>
+          <div className="command-fleet-list">{vehicles.slice(0, 5).map((vehicle) => <button key={vehicle.id} type="button" onClick={() => navigate("Vehicles")}><span className={`command-vehicle-dot ${vehicle.tone}`} /><div><strong>{vehicle.identity}</strong><small>{vehicle.name}</small></div><div><b>{vehicle.status}</b><small>{vehicle.odo}</small></div><ChevronRight size={16} /></button>) || <p className="command-empty">No vehicles are visible for this role.</p>}</div>
         </section>
       </div>
       <div className="command-deck-footer"><Sparkles size={15} /><span>VIN-first data is connected across maintenance, inventory, and financial records.</span></div>

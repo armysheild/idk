@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Activity, Check, ClipboardCheck, Package, Wrench } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
+import { formatVehicleIdentity } from "@/lib/vehicleIdentity";
 import { WorkspaceState as State } from "@/components/workspaces/WorkspaceState";
 import type {
   InventoryPart,
@@ -484,7 +485,7 @@ export function MechanicExecutionWorkspace({
                   <div>
                     <strong>{item.title}</strong>
                     <p>
-                      {item.vehicle?.licensePlate ?? item.vehicleId} ·{" "}
+                      {formatVehicleIdentity(item.vehicle)} ·{" "}
                       {item.priority} · {item.status}
                       {item.laborHours
                         ? ` · ${item.laborHours} labor hours`

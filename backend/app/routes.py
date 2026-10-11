@@ -11,6 +11,7 @@ import threading
 import time
 from html import escape
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Literal, Optional
 from uuid import uuid4
 
@@ -86,6 +87,7 @@ from .schemas import (
     NotificationStatusUpdate,
     PartCreate,
     PartRead,
+    PartUpdate,
     PurchaseOrderCreate,
     PurchaseOrderPartialReceiptCreate,
     PurchaseOrderReceiptCreate,
@@ -1950,6 +1952,28 @@ def list_component_service_history(
     ).order_by(ComponentServiceRecord.created_at.desc()).offset(max(skip, 0)).limit(min(max(limit, 1), 100))).all())
 
 
+def _attach_work_order_context(work_orders: list[WorkOrder], database: Session) -> list[WorkOrder]:
+    vehicle_ids = {work_order.vehicle_id for work_order in work_orders}
+    user_ids = {work_order.assigned_user_id for work_order in work_orders if work_order.assigned_user_id}
+    vehicles = {
+        vehicle.id: vehicle
+        for vehicle in database.scalars(select(Vehicle).where(Vehicle.id.in_(vehicle_ids))).all()
+    } if vehicle_ids else {}
+    assignees = {
+        member.id: member
+        for member in database.scalars(select(User).where(User.id.in_(user_ids))).all()
+    } if user_ids else {}
+    for work_order in work_orders:
+        vehicle = vehicles.get(work_order.vehicle_id)
+        work_order.vehicle = (
+            SimpleNamespace(vin=vehicle.vin, license_plate=vehicle.registration_number)
+            if vehicle is not None
+            else None
+        )
+        work_order.assigned_mechanic = assignees.get(work_order.assigned_user_id) if work_order.assigned_user_id else None
+    return work_orders
+
+
 @router.get("/work-orders", response_model=list[WorkOrderRead])
 def list_work_orders(
     user: User = Depends(require_permission("maintenance_read")),
@@ -1967,7 +1991,8 @@ def list_work_orders(
         statement = statement.where(WorkOrder.assigned_user_id == user.id)
     elif user.role not in ("owner", "fleet_manager"):
         statement = statement.where(false())
-    return list(database.scalars(statement.order_by(WorkOrder.id.desc()).offset(skip).limit(limit)).all())
+    work_orders = list(database.scalars(statement.order_by(WorkOrder.id.desc()).offset(skip).limit(limit)).all())
+    return _attach_work_order_context(work_orders, database)
 
 
 @router.get("/driver/inspections", response_model=list[DriverInspectionRead])
@@ -2158,7 +2183,7 @@ def create_work_order(
     )
     database.commit()
     database.refresh(work_order)
-    return work_order
+    return _attach_work_order_context([work_order], database)[0]
 
 
 @router.patch("/work-orders/{work_order_id}", response_model=WorkOrderRead)
@@ -2286,7 +2311,7 @@ def update_work_order(
     ))
     database.commit()
     database.refresh(work_order)
-    return work_order
+    return _attach_work_order_context([work_order], database)[0]
 
 
 @router.delete("/work-orders/{work_order_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -2432,7 +2457,7 @@ def start_work_order(
     ))
     database.commit()
     database.refresh(work_order)
-    return work_order
+    return _attach_work_order_context([work_order], database)[0]
 
 
 def reset_component_lifecycle_for_work_order(
@@ -2609,7 +2634,7 @@ def complete_work_order(
     )
     database.commit()
     database.refresh(work_order)
-    return work_order
+    return _attach_work_order_context([work_order], database)[0]
 
 
 @router.post("/work-orders/{work_order_id}/approve", response_model=WorkOrderRead)
@@ -2655,7 +2680,7 @@ def approve_work_order(
         )
     database.commit()
     database.refresh(work_order)
-    return work_order
+    return _attach_work_order_context([work_order], database)[0]
 
 
 @router.get("/work-orders/{work_order_id}/download", response_model=dict)
@@ -2745,7 +2770,7 @@ def archive_work_order(
     ))
     database.commit()
     database.refresh(work_order)
-    return work_order
+    return _attach_work_order_context([work_order], database)[0]
 
 
 @router.get("/work-orders/{work_order_id}/parts", response_model=list[WorkOrderPartUsageRead])
@@ -2771,10 +2796,11 @@ def list_inventory_work_order_queue(
     user: User = Depends(require_permission("inventory_read")),
     database: Session = Depends(get_db),
 ) -> list[WorkOrder]:
-    return list(database.scalars(select(WorkOrder).where(
+    work_orders = list(database.scalars(select(WorkOrder).where(
         WorkOrder.organization_id == user.organization_id,
         WorkOrder.status.not_in(("Completed", "Closed", "Archived")),
     ).order_by(WorkOrder.created_at.desc()).limit(100)).all())
+    return _attach_work_order_context(work_orders, database)
 
 
 @router.get("/inventory/work-orders/{work_order_id}/parts", response_model=list[WorkOrderPartUsageRead])
@@ -3213,6 +3239,34 @@ def create_part(
         entity_id=str(part.id),
         request_id=request.headers.get("x-request-id", str(uuid4())),
         changes=json.dumps({"sku": part.sku, "quantity_on_hand": part.quantity_on_hand}),
+    ))
+    database.commit()
+    database.refresh(part)
+    return part
+
+
+@router.patch("/parts/{part_id}", response_model=PartRead)
+def update_part(
+    part_id: int,
+    payload: PartUpdate,
+    request: Request,
+    user: User = Depends(require_permission("inventory")),
+    database: Session = Depends(get_db),
+) -> Part:
+    part = database.scalar(select(Part).where(Part.id == part_id, Part.organization_id == user.organization_id))
+    if part is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Part not found in this organization")
+    changes = payload.model_dump(exclude_unset=True)
+    for key, value in changes.items():
+        setattr(part, key, value)
+    database.add(AuditLog(
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        action="part.updated",
+        entity_type="part",
+        entity_id=str(part.id),
+        request_id=request.headers.get("x-request-id", str(uuid4())),
+        changes=json.dumps(changes),
     ))
     database.commit()
     database.refresh(part)
@@ -8218,7 +8272,8 @@ def get_work_order_board(
         if user.role in ("mechanic", "technician"):
             statement = statement.filter(WorkOrder.assigned_user_id == user.id)
         work_orders = statement.order_by(WorkOrder.created_at.desc()).all()
-        
+        _attach_work_order_context(list(work_orders), database)
+
         board[status] = [
             {
                 "id": wo.id,
@@ -8229,6 +8284,8 @@ def get_work_order_board(
                 "assigned_user_id": wo.assigned_user_id,
                 "due_date": wo.due_date,
                 "created_at": wo.created_at.isoformat(),
+                "vehicle": {"vin": wo.vehicle.vin, "license_plate": wo.vehicle.license_plate} if wo.vehicle else None,
+                "assigned_mechanic": {"full_name": wo.assigned_mechanic.full_name, "role": wo.assigned_mechanic.role} if wo.assigned_mechanic else None,
             }
             for wo in work_orders
         ]
