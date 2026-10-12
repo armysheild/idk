@@ -1885,6 +1885,7 @@ def delete_component(
     ))
     if component is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Component not found")
+    database.execute(delete(ComponentServiceRecord).where(ComponentServiceRecord.component_id == component.id))
     database.delete(component)
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -2356,6 +2357,10 @@ def delete_work_order(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
     if work_order.status not in {"Draft", "Open", "Archived"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only draft, open, or archived work orders can be deleted")
+    database.execute(delete(WorkOrderChecklistItem).where(WorkOrderChecklistItem.work_order_id == work_order.id))
+    database.execute(delete(WorkOrderEvidence).where(WorkOrderEvidence.work_order_id == work_order.id))
+    database.execute(delete(WorkOrderPartUsage).where(WorkOrderPartUsage.work_order_id == work_order.id))
+    database.execute(delete(VehiclePartInstallation).where(VehiclePartInstallation.work_order_id == work_order.id))
     database.delete(work_order)
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -4940,7 +4945,7 @@ def create_toll_transaction(
 
 
 @router.get("/telematics/devices", response_model=list[TelematicsDeviceRead])
-def list_telematics_devices(user: User = Depends(require_permission("fleet")), database: Session = Depends(get_db)) -> list[TelematicsDevice]:
+def list_telematics_devices(user: User = Depends(require_permission("fleet_read")), database: Session = Depends(get_db)) -> list[TelematicsDevice]:
     return list(database.scalars(
         select(TelematicsDevice)
         .where(TelematicsDevice.organization_id == user.organization_id)
@@ -5072,7 +5077,7 @@ def sync_telematics_integration(integration: TelematicsIntegration, database: Se
 
 @router.get("/telematics/integrations", response_model=list[TelematicsIntegrationRead])
 def list_telematics_integrations(
-    user: User = Depends(require_permission("fleet")),
+    user: User = Depends(require_permission("fleet_read")),
     database: Session = Depends(get_db),
 ) -> list[TelematicsIntegration]:
     return list(database.scalars(select(TelematicsIntegration).where(
@@ -5082,7 +5087,7 @@ def list_telematics_integrations(
 
 @router.get("/telematics/health", response_model=TelematicsHealthRead)
 def telematics_health(
-    user: User = Depends(require_permission("fleet")),
+    user: User = Depends(require_permission("fleet_read")),
     database: Session = Depends(get_db),
 ) -> TelematicsHealthRead:
     now = utc_now()
@@ -5565,7 +5570,7 @@ def ingest_telemetry(
 @router.get("/telematics/vehicles/{vehicle_id}/latest", response_model=TelemetryReadingRead)
 def latest_vehicle_telemetry(
     vehicle_id: int,
-    user: User = Depends(require_permission("fleet")),
+    user: User = Depends(require_permission("fleet_read")),
     database: Session = Depends(get_db),
 ) -> TelemetryReading:
     reading = database.scalar(

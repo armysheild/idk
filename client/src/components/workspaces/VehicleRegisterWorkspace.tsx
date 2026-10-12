@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bus, Check, Gauge, MapPin, Pencil, Plus, X } from "lucide-react";
+import { Bus, Check, Gauge, MapPin, Pencil, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { formatVehicleIdentity } from "@/lib/vehicleIdentity";
@@ -99,6 +99,21 @@ export function VehicleRegisterWorkspace() {
     },
     onError: (error) =>
       toast.error("Vehicle update failed", { description: error.message }),
+  });
+  const removeVehicle = trpc.vehicles.remove.useMutation({
+    onSuccess: () => {
+      if (editing) setEditing(null);
+      toast.success("Vehicle deleted", {
+        description:
+          "The vehicle and its components, work orders, and records were removed.",
+      });
+      void utils.vehicles.list.invalidate();
+      void utils.components.list.invalidate();
+      void utils.workOrders.list.invalidate();
+      void utils.notifications.list.invalidate();
+    },
+    onError: (error) =>
+      toast.error("Vehicle deletion failed", { description: error.message }),
   });
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -485,6 +500,22 @@ export function VehicleRegisterWorkspace() {
                     onClick={() => beginEdit(vehicle)}
                   >
                     <Pencil size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className="is-danger"
+                    aria-label={`Delete ${formatVehicleIdentity(vehicle)}`}
+                    disabled={removeVehicle.isPending}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `Delete ${formatVehicleIdentity(vehicle)}? Its components, work orders, and vehicle-owned records will be removed.`,
+                        )
+                      )
+                        removeVehicle.mutate({ id: vehicle.id });
+                    }}
+                  >
+                    <Trash2 size={15} />
                   </button>
                 </div>
                 <div className="replacement-vehicle-identity">
