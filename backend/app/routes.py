@@ -802,6 +802,7 @@ def get_invite_details(
     return {
         "email": invitation.email,
         "role": invitation.role,
+        "specialty": invitation.specialty,
         "organization": {"id": organization.id, "name": organization.name},
     }
 
