@@ -519,9 +519,14 @@ export function VehicleRegisterWorkspace() {
                   </div>
                 </div>
                 <div className="replacement-driver-row">
+                  <span className="assigned-driver-label">
+                    {vehicle.driverName
+                      ? `Driver: ${vehicle.driverName}`
+                      : "No driver assigned"}
+                  </span>
                   <select
                     aria-label={`Assign driver to ${formatVehicleIdentity(vehicle)}`}
-                    value={driverByVehicle[vehicle.id] ?? ""}
+                    value={driverByVehicle[vehicle.id] ?? String(vehicle.assignedDriverId ?? "")}
                     onChange={(event) =>
                       setDriverByVehicle({
                         ...driverByVehicle,
