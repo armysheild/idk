@@ -378,6 +378,7 @@ export function serializeInput(path: string, input: unknown): unknown {
       full_name: value.fullName ?? String(value.email ?? "").split("@")[0],
       mobile_phone: value.mobileNumber ?? value.mobilePhone,
       role: String(value.role ?? "driver").toLowerCase(),
+      specialty: value.specialty ?? null,
       expires_in_days: value.expiresInDays ?? 7,
     };
   if (path === "vendors.create")

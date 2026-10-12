@@ -759,6 +759,7 @@ def create_invitation(
         full_name=payload.full_name.strip(),
         mobile_phone=normalize_mobile_phone(payload.mobile_phone),
         role=payload.role,
+        specialty=payload.specialty,
         token_hash=invitation_token_hash(raw_token),
         expires_at=datetime.now(timezone.utc) + timedelta(days=payload.expires_in_days),
     )
@@ -905,6 +906,7 @@ def accept_invitation(payload: InvitationAccept, request: Request, database: Ses
         password_hash=hash_password(payload.password),
         supabase_user_id=supabase_user_id,
         role=invitation.role,
+        specialty=invitation.specialty,
     )
     database.add(member)
     invitation.accepted_at = utc_now()
@@ -8285,7 +8287,7 @@ def get_work_order_board(
                 "due_date": wo.due_date,
                 "created_at": wo.created_at.isoformat(),
                 "vehicle": {"vin": wo.vehicle.vin, "license_plate": wo.vehicle.license_plate} if wo.vehicle else None,
-                "assigned_mechanic": {"full_name": wo.assigned_mechanic.full_name, "role": wo.assigned_mechanic.role} if wo.assigned_mechanic else None,
+                "assigned_mechanic": {"full_name": wo.assigned_mechanic.full_name, "role": wo.assigned_mechanic.role, "specialty": wo.assigned_mechanic.specialty} if wo.assigned_mechanic else None,
             }
             for wo in work_orders
         ]
