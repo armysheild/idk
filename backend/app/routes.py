@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import delete, false, select, func, or_
+from sqlalchemy import delete, false, select, func, or_, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -1657,6 +1657,30 @@ def delete_vehicle(
     vehicle = database.scalar(select(Vehicle).where(Vehicle.id == vehicle_id, Vehicle.organization_id == user.organization_id))
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+    work_order_ids = select(WorkOrder.id).where(WorkOrder.vehicle_id == vehicle.id)
+    database.execute(delete(WorkOrderChecklistItem).where(WorkOrderChecklistItem.work_order_id.in_(work_order_ids)))
+    database.execute(delete(WorkOrderEvidence).where(WorkOrderEvidence.work_order_id.in_(work_order_ids)))
+    database.execute(delete(WorkOrderPartUsage).where(WorkOrderPartUsage.work_order_id.in_(work_order_ids)))
+    database.execute(delete(VehiclePartInstallation).where(VehiclePartInstallation.vehicle_id == vehicle.id))
+    database.execute(delete(WorkOrder).where(WorkOrder.vehicle_id == vehicle.id))
+    database.execute(delete(ComponentServiceRecord).where(ComponentServiceRecord.vehicle_id == vehicle.id))
+    database.execute(delete(VehicleComponent).where(VehicleComponent.vehicle_id == vehicle.id))
+    device_ids = select(TelematicsDevice.id).where(TelematicsDevice.vehicle_id == vehicle.id)
+    database.execute(delete(TelemetryReading).where(or_(TelemetryReading.vehicle_id == vehicle.id, TelemetryReading.device_id.in_(device_ids))))
+    database.execute(delete(TelematicsDevice).where(TelematicsDevice.vehicle_id == vehicle.id))
+    database.execute(delete(MaintenancePlan).where(MaintenancePlan.vehicle_id == vehicle.id))
+    database.execute(delete(OdometerLog).where(OdometerLog.vehicle_id == vehicle.id))
+    database.execute(delete(VehicleAssignment).where(VehicleAssignment.vehicle_id == vehicle.id))
+    database.execute(delete(VehicleIssue).where(VehicleIssue.vehicle_id == vehicle.id))
+    database.execute(delete(DriverInspection).where(DriverInspection.vehicle_id == vehicle.id))
+    database.execute(delete(FuelTransaction).where(FuelTransaction.vehicle_id == vehicle.id))
+    database.execute(delete(TollTransaction).where(TollTransaction.vehicle_id == vehicle.id))
+    document_ids = select(ComplianceDocument.id).where(ComplianceDocument.vehicle_id == vehicle.id)
+    database.execute(delete(DocumentAccessLog).where(DocumentAccessLog.document_id.in_(document_ids)))
+    database.execute(delete(DocumentAsset).where(DocumentAsset.document_id.in_(document_ids)))
+    database.execute(delete(DocumentVersion).where(DocumentVersion.document_id.in_(document_ids)))
+    database.execute(delete(ComplianceDocument).where(ComplianceDocument.vehicle_id == vehicle.id))
+    database.execute(update(Expense).where(Expense.vehicle_id == vehicle.id).values(vehicle_id=None))
     database.delete(vehicle)
     database.add(AuditLog(
         organization_id=user.organization_id,
