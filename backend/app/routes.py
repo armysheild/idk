@@ -1356,7 +1356,7 @@ def list_vehicles(
     limit: int = 20
 ) -> list[Vehicle]:
     # Fixed Bug 5, 11 & 29: Add pagination support with eager loading of driver relationship
-    if limit < 1 or limit > 100:
+    if limit < 1 or limit > 1000:
         limit = 20
     if skip < 0:
         skip = 0

@@ -777,6 +777,7 @@ export function queryPath(path: string, input: unknown) {
     if (notificationId) return `/api/v1/notifications/${notificationId}/source-detail`;
   }
   if (path === "vendors.pricingHistory" && (input as { vendorId?: string | number } | undefined)?.vendorId) return `/api/v1/vendors/${(input as { vendorId: string | number }).vendorId}/pricing-history`;
+  if (path === "vehicles.list") return "/api/v1/vehicles?limit=1000";
   if (path === "purchaseOrders.list") return "/api/v1/purchase-orders";
   if (path === "compliance.summary") return "/api/v1/compliance/summary";
   const base = collectionPath(path);
