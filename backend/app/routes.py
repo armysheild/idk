@@ -8683,6 +8683,62 @@ def export_inventory_movements(
     )
 
 
+@router.get("/inventory/movements/report", response_model=dict)
+def inventory_movement_report(
+    month: str = Query(pattern="^\\d{4}-\\d{2}$"),
+    kind: Literal["receiving", "allocating"] = "receiving",
+    format: str | None = Query(default="pdf", pattern="^(csv|pdf)$"),
+    user: User = Depends(require_roles("owner", "fleet_manager", "inventory_manager")),
+    database: Session = Depends(get_db),
+) -> dict:
+    year, month_num = (int(part) for part in month.split("-"))
+    start = datetime(year, month_num, 1, tzinfo=timezone.utc)
+    end = datetime(year + (month_num == 12), month_num % 12 + 1, 1, tzinfo=timezone.utc)
+    transaction_type = "receipt" if kind == "receiving" else "issue"
+    transactions = list(database.scalars(
+        select(InventoryTransaction)
+        .where(
+            InventoryTransaction.organization_id == user.organization_id,
+            InventoryTransaction.transaction_type == transaction_type,
+            InventoryTransaction.created_at >= start,
+            InventoryTransaction.created_at < end,
+        )
+        .order_by(InventoryTransaction.created_at.desc())
+    ).all())
+    part_ids = {txn.part_id for txn in transactions}
+    parts = {
+        part.id: part
+        for part in database.scalars(select(Part).where(Part.id.in_(part_ids))).all()
+    } if part_ids else {}
+    actor_ids = {txn.created_by for txn in transactions}
+    actors = {
+        actor.id: actor
+        for actor in database.scalars(select(User).where(User.id.in_(actor_ids))).all()
+    } if actor_ids else {}
+    label = "Stock receiving" if kind == "receiving" else "Stock allocation"
+    rows: list[list[object]] = [
+        [
+            txn.created_at.isoformat()[:10],
+            parts[txn.part_id].sku if txn.part_id in parts else txn.part_id,
+            parts[txn.part_id].name if txn.part_id in parts else "",
+            txn.quantity,
+            (txn.vendor_name or "") if kind == "receiving" else (txn.reference or ""),
+            (txn.unit_cost_paise or 0) / 100,
+            txn.bill_number or "",
+            txn.reason or "",
+            (actors[txn.created_by].full_name or actors[txn.created_by].email) if txn.created_by in actors else txn.created_by,
+        ]
+        for txn in transactions
+    ]
+    filename = f"stock-{'receiving' if kind == 'receiving' else 'allocation'}-{month}.csv"
+    return export_payload(
+        filename,
+        ["date", "sku", "part", "quantity", "vendor" if kind == "receiving" else "reference", "unit_cost_inr", "bill_no", "reason", "recorded_by"],
+        [[f"{label} — no movements recorded in {month}"]] if not rows else rows,
+        format,
+    )
+
+
 @router.post("/inventory/movements/import", response_model=dict)
 def import_inventory_movements(
     request: Request,
