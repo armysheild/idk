@@ -3,10 +3,12 @@ import { AlertTriangle, ArrowRightLeft, Boxes, Check, ClipboardCheck, Download, 
 import { toast } from "sonner";
 import { WorkspaceState as State } from "@/components/workspaces/WorkspaceState";
 import { trpc } from "@/lib/trpc";
+import { workerLabel } from "@/lib/workerLabel";
 import { formatVehicleIdentity } from "@/lib/vehicleIdentity";
 import type { FleetVehicle, InventoryPart, WorkspaceMember } from "@/types/fleet";
 
 const money = (value: unknown) => Number(value ?? 0).toLocaleString("en-IN", { style: "currency", currency: "INR" });
+function downloadPdf(filename: string, base64: string) { const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0)); const blob = new Blob([bytes], { type: "application/pdf" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url); }
 type AllocationOrder = { id: string; title: string; status: string; vehicleId: string | number; vehicle?: Pick<FleetVehicle, "vin" | "licensePlate">; assignedMechanic?: Pick<WorkspaceMember, "fullName" | "role"> | null };
 type AllocationUsage = { id: number; partId: string; quantity: number; issuedQuantity: number };
 
@@ -14,6 +16,15 @@ export function InventoryManagerWorkspace() {
   const utils = trpc.useUtils();
   const parts = trpc.inventory.list.useQuery(undefined, { retry: false });
   const inventoryExport = trpc.inventory.exportCsv.useQuery(undefined, { enabled: false, retry: false });
+  const [reportMonth, setReportMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const receivingReport = trpc.inventory.movementReport.useQuery({ month: reportMonth, kind: "receiving", format: "pdf" }, { enabled: false, retry: false });
+  const allocatingReport = trpc.inventory.movementReport.useQuery({ month: reportMonth, kind: "allocating", format: "pdf" }, { enabled: false, retry: false });
+  const downloadReport = (query: typeof receivingReport, label: string) => {
+    void query.refetch().then(({ data, error }) => {
+      if (data) { downloadPdf(data.filename, data.content); toast.success(`${label} report downloaded`, { description: `${data.rowCount} movement${data.rowCount === 1 ? "" : "s"} in ${reportMonth}` }); }
+      else toast.error(`${label} report failed`, { description: error?.message ?? "The report could not be generated." });
+    });
+  };
   const [importCsv, setImportCsv] = useState("");
   const importPreview = trpc.inventory.previewImport.useQuery({ csv: importCsv }, { enabled: Boolean(importCsv), retry: false });
   const [selectedPartId, setSelectedPartId] = useState("");
@@ -94,14 +105,14 @@ export function InventoryManagerWorkspace() {
 
     <section className="replacement-stock-selector">
       <div><span>01 · Inspect a part</span><h2>Open a controlled stock record</h2><p>Available stock, reservations, actions, and immutable movements stay connected to one tenant-scoped SKU.</p></div>
-      <div className="replacement-stock-selector-controls"><label>Inventory part<select aria-label="Select inventory part" value={selectedPartId} onChange={(event) => setSelectedPartId(event.target.value)}><option value="">Select a part</option>{partRows.map((part: InventoryPart) => <option key={part.id} value={part.id}>{part.sku} · {part.name}</option>)}</select></label><div><button type="button" className="replacement-secondary" disabled={inventoryExport.isFetching} onClick={downloadExport}><Download size={15} />{inventoryExport.isFetching ? "Preparing…" : "Export CSV"}</button><label className="replacement-secondary"><Upload size={15} />Import CSV<input hidden type="file" accept=".csv,text/csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) void file.text().then(setImportCsv); }} /></label></div></div>
+      <div className="replacement-stock-selector-controls"><label>Inventory part<select aria-label="Select inventory part" value={selectedPartId} onChange={(event) => setSelectedPartId(event.target.value)}><option value="">Select a part</option>{partRows.map((part: InventoryPart) => <option key={part.id} value={part.id}>{part.sku} · {part.name}</option>)}</select></label><div><button type="button" className="replacement-secondary" disabled={inventoryExport.isFetching} onClick={downloadExport}><Download size={15} />{inventoryExport.isFetching ? "Preparing…" : "Export CSV"}</button><label className="replacement-secondary"><Upload size={15} />Import CSV<input hidden type="file" accept=".csv,text/csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) void file.text().then(setImportCsv); }} /></label><label className="replacement-secondary" style={{ gap: "0.35rem" }}>Month<input type="month" value={reportMonth} onChange={(event) => setReportMonth(event.target.value)} aria-label="Report month" /></label><button type="button" className="replacement-secondary" disabled={receivingReport.isFetching} onClick={() => downloadReport(receivingReport, "Receiving")}><Download size={15} />{receivingReport.isFetching ? "Preparing…" : "Receiving PDF"}</button><button type="button" className="replacement-secondary" disabled={allocatingReport.isFetching} onClick={() => downloadReport(allocatingReport, "Allocation")}><Download size={15} />{allocatingReport.isFetching ? "Preparing…" : "Allocation PDF"}</button></div></div>
       {importCsv && <aside className="replacement-import-note">Import preview: {importPreview.data?.validCount ?? 0}/{importPreview.data?.rowCount ?? 0} valid rows{importPreview.data?.errors?.length ? ` · ${importPreview.data.errors.length} errors` : ""}<button type="button" className="replacement-secondary" disabled={importInventory.isPending || !importPreview.data || Boolean(importPreview.data.errors.length)} onClick={() => importInventory.mutate({ csv: importCsv })}>{importInventory.isPending ? "Importing…" : "Apply validated import"}</button></aside>}
     </section>
 
     <section className="replacement-work-order-allocation">
       <div><span>02 · Work-order allocation</span><h2>Allocate parts before the mechanic starts</h2><p>Inventory Manager selects an assigned work order, reserves the SKU, and deducts it immediately from on-hand stock.</p></div>
       <div className="replacement-stock-selector-controls">
-        <label>Work order<select value={allocation.workOrderId} onChange={(event) => setAllocation((current) => ({ ...current, workOrderId: event.target.value }))}><option value="">Select work order</option>{(allocationOrders.data ?? []).map((order: AllocationOrder) => <option key={order.id} value={order.id}>{order.title} · {order.status} · {formatVehicleIdentity(order.vehicle)} · {order.assignedMechanic?.fullName ?? "Unassigned"}</option>)}</select></label>
+        <label>Work order<select value={allocation.workOrderId} onChange={(event) => setAllocation((current) => ({ ...current, workOrderId: event.target.value }))}><option value="">Select work order</option>{(allocationOrders.data ?? []).map((order: AllocationOrder) => <option key={order.id} value={order.id}>{order.title} · {order.status} · {formatVehicleIdentity(order.vehicle)} · {order.assignedMechanic ? `${order.assignedMechanic.fullName} · ${workerLabel(order.assignedMechanic)}` : "Unassigned"}</option>)}</select></label>
         <label>Part<select value={allocation.partId} onChange={(event) => setAllocation((current) => ({ ...current, partId: event.target.value }))}><option value="">Select part</option>{partRows.map((part: InventoryPart) => <option key={part.id} value={part.id}>{part.sku} · {part.name} · {part.quantityOnHand} on hand</option>)}</select></label>
         <label>Quantity<input type="number" min="1" step="1" value={allocation.quantity} onChange={(event) => setAllocation((current) => ({ ...current, quantity: event.target.value }))} /></label>
         <button type="button" className="replacement-primary" disabled={!allocation.workOrderId || !allocation.partId || allocatePart.isPending} onClick={() => allocatePart.mutate({ workOrderId: allocation.workOrderId, partId: allocation.partId, quantity: Number(allocation.quantity) })}>{allocatePart.isPending ? "Allocating…" : "Allocate and deduct"}</button>

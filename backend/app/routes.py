@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import delete, false, select, func, or_
+from sqlalchemy import delete, false, select, func, or_, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -759,6 +759,7 @@ def create_invitation(
         full_name=payload.full_name.strip(),
         mobile_phone=normalize_mobile_phone(payload.mobile_phone),
         role=payload.role,
+        specialty=payload.specialty,
         token_hash=invitation_token_hash(raw_token),
         expires_at=datetime.now(timezone.utc) + timedelta(days=payload.expires_in_days),
     )
@@ -801,6 +802,7 @@ def get_invite_details(
     return {
         "email": invitation.email,
         "role": invitation.role,
+        "specialty": invitation.specialty,
         "organization": {"id": organization.id, "name": organization.name},
     }
 
@@ -905,6 +907,7 @@ def accept_invitation(payload: InvitationAccept, request: Request, database: Ses
         password_hash=hash_password(payload.password),
         supabase_user_id=supabase_user_id,
         role=invitation.role,
+        specialty=invitation.specialty,
     )
     database.add(member)
     invitation.accepted_at = utc_now()
@@ -1654,6 +1657,30 @@ def delete_vehicle(
     vehicle = database.scalar(select(Vehicle).where(Vehicle.id == vehicle_id, Vehicle.organization_id == user.organization_id))
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+    work_order_ids = select(WorkOrder.id).where(WorkOrder.vehicle_id == vehicle.id)
+    database.execute(delete(WorkOrderChecklistItem).where(WorkOrderChecklistItem.work_order_id.in_(work_order_ids)))
+    database.execute(delete(WorkOrderEvidence).where(WorkOrderEvidence.work_order_id.in_(work_order_ids)))
+    database.execute(delete(WorkOrderPartUsage).where(WorkOrderPartUsage.work_order_id.in_(work_order_ids)))
+    database.execute(delete(VehiclePartInstallation).where(VehiclePartInstallation.vehicle_id == vehicle.id))
+    database.execute(delete(WorkOrder).where(WorkOrder.vehicle_id == vehicle.id))
+    database.execute(delete(ComponentServiceRecord).where(ComponentServiceRecord.vehicle_id == vehicle.id))
+    database.execute(delete(VehicleComponent).where(VehicleComponent.vehicle_id == vehicle.id))
+    device_ids = select(TelematicsDevice.id).where(TelematicsDevice.vehicle_id == vehicle.id)
+    database.execute(delete(TelemetryReading).where(or_(TelemetryReading.vehicle_id == vehicle.id, TelemetryReading.device_id.in_(device_ids))))
+    database.execute(delete(TelematicsDevice).where(TelematicsDevice.vehicle_id == vehicle.id))
+    database.execute(delete(MaintenancePlan).where(MaintenancePlan.vehicle_id == vehicle.id))
+    database.execute(delete(OdometerLog).where(OdometerLog.vehicle_id == vehicle.id))
+    database.execute(delete(VehicleAssignment).where(VehicleAssignment.vehicle_id == vehicle.id))
+    database.execute(delete(VehicleIssue).where(VehicleIssue.vehicle_id == vehicle.id))
+    database.execute(delete(DriverInspection).where(DriverInspection.vehicle_id == vehicle.id))
+    database.execute(delete(FuelTransaction).where(FuelTransaction.vehicle_id == vehicle.id))
+    database.execute(delete(TollTransaction).where(TollTransaction.vehicle_id == vehicle.id))
+    document_ids = select(ComplianceDocument.id).where(ComplianceDocument.vehicle_id == vehicle.id)
+    database.execute(delete(DocumentAccessLog).where(DocumentAccessLog.document_id.in_(document_ids)))
+    database.execute(delete(DocumentAsset).where(DocumentAsset.document_id.in_(document_ids)))
+    database.execute(delete(DocumentVersion).where(DocumentVersion.document_id.in_(document_ids)))
+    database.execute(delete(ComplianceDocument).where(ComplianceDocument.vehicle_id == vehicle.id))
+    database.execute(update(Expense).where(Expense.vehicle_id == vehicle.id).values(vehicle_id=None))
     database.delete(vehicle)
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -1858,6 +1885,7 @@ def delete_component(
     ))
     if component is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Component not found")
+    database.execute(delete(ComponentServiceRecord).where(ComponentServiceRecord.component_id == component.id))
     database.delete(component)
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -2329,6 +2357,10 @@ def delete_work_order(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work order not found")
     if work_order.status not in {"Draft", "Open", "Archived"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only draft, open, or archived work orders can be deleted")
+    database.execute(delete(WorkOrderChecklistItem).where(WorkOrderChecklistItem.work_order_id == work_order.id))
+    database.execute(delete(WorkOrderEvidence).where(WorkOrderEvidence.work_order_id == work_order.id))
+    database.execute(delete(WorkOrderPartUsage).where(WorkOrderPartUsage.work_order_id == work_order.id))
+    database.execute(delete(VehiclePartInstallation).where(VehiclePartInstallation.work_order_id == work_order.id))
     database.delete(work_order)
     database.add(AuditLog(
         organization_id=user.organization_id,
@@ -4913,7 +4945,7 @@ def create_toll_transaction(
 
 
 @router.get("/telematics/devices", response_model=list[TelematicsDeviceRead])
-def list_telematics_devices(user: User = Depends(require_permission("fleet")), database: Session = Depends(get_db)) -> list[TelematicsDevice]:
+def list_telematics_devices(user: User = Depends(require_permission("fleet_read")), database: Session = Depends(get_db)) -> list[TelematicsDevice]:
     return list(database.scalars(
         select(TelematicsDevice)
         .where(TelematicsDevice.organization_id == user.organization_id)
@@ -5045,7 +5077,7 @@ def sync_telematics_integration(integration: TelematicsIntegration, database: Se
 
 @router.get("/telematics/integrations", response_model=list[TelematicsIntegrationRead])
 def list_telematics_integrations(
-    user: User = Depends(require_permission("fleet")),
+    user: User = Depends(require_permission("fleet_read")),
     database: Session = Depends(get_db),
 ) -> list[TelematicsIntegration]:
     return list(database.scalars(select(TelematicsIntegration).where(
@@ -5055,7 +5087,7 @@ def list_telematics_integrations(
 
 @router.get("/telematics/health", response_model=TelematicsHealthRead)
 def telematics_health(
-    user: User = Depends(require_permission("fleet")),
+    user: User = Depends(require_permission("fleet_read")),
     database: Session = Depends(get_db),
 ) -> TelematicsHealthRead:
     now = utc_now()
@@ -5538,7 +5570,7 @@ def ingest_telemetry(
 @router.get("/telematics/vehicles/{vehicle_id}/latest", response_model=TelemetryReadingRead)
 def latest_vehicle_telemetry(
     vehicle_id: int,
-    user: User = Depends(require_permission("fleet")),
+    user: User = Depends(require_permission("fleet_read")),
     database: Session = Depends(get_db),
 ) -> TelemetryReading:
     reading = database.scalar(
@@ -8285,7 +8317,7 @@ def get_work_order_board(
                 "due_date": wo.due_date,
                 "created_at": wo.created_at.isoformat(),
                 "vehicle": {"vin": wo.vehicle.vin, "license_plate": wo.vehicle.license_plate} if wo.vehicle else None,
-                "assigned_mechanic": {"full_name": wo.assigned_mechanic.full_name, "role": wo.assigned_mechanic.role} if wo.assigned_mechanic else None,
+                "assigned_mechanic": {"full_name": wo.assigned_mechanic.full_name, "role": wo.assigned_mechanic.role, "specialty": wo.assigned_mechanic.specialty} if wo.assigned_mechanic else None,
             }
             for wo in work_orders
         ]
@@ -8648,6 +8680,62 @@ def export_inventory_movements(
             movement.created_at.isoformat(),
         ] for movement in movements],
         None,
+    )
+
+
+@router.get("/inventory/movements/report", response_model=dict)
+def inventory_movement_report(
+    month: str = Query(pattern="^\\d{4}-\\d{2}$"),
+    kind: Literal["receiving", "allocating"] = "receiving",
+    format: str | None = Query(default="pdf", pattern="^(csv|pdf)$"),
+    user: User = Depends(require_roles("owner", "fleet_manager", "inventory_manager")),
+    database: Session = Depends(get_db),
+) -> dict:
+    year, month_num = (int(part) for part in month.split("-"))
+    start = datetime(year, month_num, 1, tzinfo=timezone.utc)
+    end = datetime(year + (month_num == 12), month_num % 12 + 1, 1, tzinfo=timezone.utc)
+    transaction_type = "receipt" if kind == "receiving" else "issue"
+    transactions = list(database.scalars(
+        select(InventoryTransaction)
+        .where(
+            InventoryTransaction.organization_id == user.organization_id,
+            InventoryTransaction.transaction_type == transaction_type,
+            InventoryTransaction.created_at >= start,
+            InventoryTransaction.created_at < end,
+        )
+        .order_by(InventoryTransaction.created_at.desc())
+    ).all())
+    part_ids = {txn.part_id for txn in transactions}
+    parts = {
+        part.id: part
+        for part in database.scalars(select(Part).where(Part.id.in_(part_ids))).all()
+    } if part_ids else {}
+    actor_ids = {txn.created_by for txn in transactions}
+    actors = {
+        actor.id: actor
+        for actor in database.scalars(select(User).where(User.id.in_(actor_ids))).all()
+    } if actor_ids else {}
+    label = "Stock receiving" if kind == "receiving" else "Stock allocation"
+    rows: list[list[object]] = [
+        [
+            txn.created_at.isoformat()[:10],
+            parts[txn.part_id].sku if txn.part_id in parts else txn.part_id,
+            parts[txn.part_id].name if txn.part_id in parts else "",
+            txn.quantity,
+            (txn.vendor_name or "") if kind == "receiving" else (txn.reference or ""),
+            (txn.unit_cost_paise or 0) / 100,
+            txn.bill_number or "",
+            txn.reason or "",
+            (actors[txn.created_by].full_name or actors[txn.created_by].email) if txn.created_by in actors else txn.created_by,
+        ]
+        for txn in transactions
+    ]
+    filename = f"stock-{'receiving' if kind == 'receiving' else 'allocation'}-{month}.csv"
+    return export_payload(
+        filename,
+        ["date", "sku", "part", "quantity", "vendor" if kind == "receiving" else "reference", "unit_cost_inr", "bill_no", "reason", "recorded_by"],
+        [[f"{label} — no movements recorded in {month}"]] if not rows else rows,
+        format,
     )
 
 

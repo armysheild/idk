@@ -74,6 +74,12 @@ class AccountSignupRead(BaseModel):
     needs_onboarding: bool = True
 
 
+WORKER_SPECIALTIES: dict[str, tuple[str, ...]] = {
+    "mechanic": ("lead", "suspension", "body_work", "engine"),
+    "technician": ("lead", "ac", "wiring", "tyre_puncture"),
+}
+
+
 class UserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -84,6 +90,7 @@ class UserRead(BaseModel):
     sms_alerts_enabled: bool = False
     whatsapp_alerts_enabled: bool = False
     role: str
+    specialty: str | None = None
     organization_id: int
     organization_name: str
     assigned_driver_id: int | None = None
@@ -103,7 +110,20 @@ class InvitationCreate(BaseModel):
     full_name: str = Field(min_length=2, max_length=160)
     mobile_phone: str | None = Field(default=None, max_length=32)
     role: str = Field(pattern=r"^(fleet_manager|inventory_manager|driver|mechanic|technician|accountant)$")
+    specialty: str | None = Field(default=None, max_length=48)
     expires_in_days: int = Field(default=7, ge=1, le=30)
+
+    @model_validator(mode="after")
+    def validate_specialty(self):
+        allowed = WORKER_SPECIALTIES.get(self.role)
+        if self.specialty:
+            value = self.specialty.strip().lower()
+            if allowed is None:
+                raise ValueError("Specialty only applies to mechanic and technician roles")
+            if value not in allowed:
+                raise ValueError(f"Unknown {self.role} specialty: {value}")
+            self.specialty = value
+        return self
 
 
 class InvitationRead(BaseModel):
@@ -113,6 +133,7 @@ class InvitationRead(BaseModel):
     email: EmailStr
     full_name: str
     role: str
+    specialty: str | None = None
     expires_at: datetime
     accepted_at: datetime | None
     revoked_at: datetime | None
@@ -488,6 +509,7 @@ class WorkOrderAssigneeRef(BaseModel):
 
     full_name: str | None = None
     role: str | None = None
+    specialty: str | None = None
 
 
 class WorkOrderRead(WorkOrderCreate):
@@ -1205,6 +1227,7 @@ class AssignableMemberRead(BaseModel):
     id: int
     full_name: str
     role: str
+    specialty: str | None = None
 
 
 class WorkOrderAssignmentCreate(BaseModel):

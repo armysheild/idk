@@ -378,6 +378,7 @@ export function serializeInput(path: string, input: unknown): unknown {
       full_name: value.fullName ?? String(value.email ?? "").split("@")[0],
       mobile_phone: value.mobileNumber ?? value.mobilePhone,
       role: String(value.role ?? "driver").toLowerCase(),
+      specialty: value.specialty ?? null,
       expires_in_days: value.expiresInDays ?? 7,
     };
   if (path === "vendors.create")
@@ -749,6 +750,14 @@ export function queryPath(path: string, input: unknown) {
   if (path === "financials.exportPdf") return `/api/v1/export/expenses${financeFilters(input, "pdf")}`;
   if (path === "financials.exportCsv") return `/api/v1/export/expenses${financeFilters(input)}`;
   if (path === "inventory.exportCsv") return "/api/v1/inventory/movements/export";
+  if (path === "inventory.movementReport") {
+    const params = (input as { month?: string; kind?: string; format?: string } | undefined) ?? {};
+    const query = new URLSearchParams();
+    if (params.month) query.set("month", params.month);
+    if (params.kind) query.set("kind", params.kind);
+    if (params.format) query.set("format", params.format);
+    return `/api/v1/inventory/movements/report?${query.toString()}`;
+  }
   if (path === "inventory.previewImport") return "/api/v1/inventory/movements/preview-text";
   if (path === "documents.previewImport") return "/api/v1/documents/preview-import";
   if (path === "team.members") return "/api/v1/users";
