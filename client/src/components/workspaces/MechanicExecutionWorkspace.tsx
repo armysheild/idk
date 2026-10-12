@@ -718,11 +718,7 @@ export function MechanicExecutionWorkspace({
               <div className="replacement-mechanic-record-actions">
                 <button
                   className="replacement-mechanic-primary"
-                  disabled={
-                    complete.isPending ||
-                    saveChecklist.isPending ||
-                    !repairNotes.trim()
-                  }
+                  disabled={complete.isPending || saveChecklist.isPending}
                 >
                   <Check size={15} />
                   Submit for review
