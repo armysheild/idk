@@ -614,7 +614,7 @@ def fleet_operations_summary(
     compliance_due = count(select(func.count(ComplianceDocument.id)).where(
         ComplianceDocument.organization_id == org_id,
         ComplianceDocument.expires_on.is_not(None),
-        ComplianceDocument.expires_on <= (date.today() + timedelta(days=30)).isoformat(),
+        ComplianceDocument.expires_on <= (date.today() + timedelta(days=10)).isoformat(),
     ))
     low_stock_parts = count(select(func.count(Part.id)).where(
         Part.organization_id == org_id,
@@ -3852,7 +3852,7 @@ def build_alerts(user: User, database: Session) -> list[dict[str, str | int]]:
         if expires_on is None:
             continue
         days_until_expiry = (expires_on - today).days
-        if days_until_expiry <= 30:
+        if days_until_expiry <= 10:
             alerts.append({
                 "type": "document_expiry",
                 "severity": "danger" if days_until_expiry < 0 else "warning",
@@ -5321,7 +5321,7 @@ def cron_sync_telematics(
             continue
         sync_notifications(owner, database)
         today = date.today()
-        horizon = today + timedelta(days=30)
+        horizon = today + timedelta(days=10)
         for document in database.scalars(select(ComplianceDocument).where(
             ComplianceDocument.organization_id == organization.id,
         )).all():
@@ -6666,10 +6666,10 @@ def evaluate_document_expiry(
     user: User = Depends(require_roles("owner", "fleet_manager")),
     database: Session = Depends(get_db),
 ) -> dict:
-    """Evaluate compliance documents for expiry within 30 days"""
+    """Evaluate compliance documents for expiry within 10 days"""
     reserve_idempotency_key(request, user, database)
     
-    horizon = date.today() + timedelta(days=30)
+    horizon = date.today() + timedelta(days=10)
     expiring_count = 0
     
     documents = list(database.scalars(
