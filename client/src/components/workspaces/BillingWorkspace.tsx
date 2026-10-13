@@ -45,6 +45,7 @@ export function BillingWorkspace() {
   const utils = trpc.useUtils();
   const billing = trpc.billing.status.useQuery(undefined, { retry: false });
   const invoices = trpc.billing.invoices.useQuery(undefined, { retry: false });
+  const adminInvoices = trpc.billing.adminInvoices.useQuery(undefined, { retry: false });
   const checkout = trpc.billing.checkout.useMutation({
     onSuccess: (result: CheckoutResult) => {
       const url = result.short_url ?? result.shortUrl;
@@ -63,7 +64,7 @@ export function BillingWorkspace() {
     onError: (error: Error) => toast.error("Invoice download failed", { description: error.message }),
   });
   const markPaid = trpc.billing.markPaid.useMutation({
-    onSuccess: () => { toast.success("Invoice marked paid — organization reactivated"); void utils.billing.invoices.invalidate(); void utils.billing.status.invalidate(); void utils.dashboard.summary.invalidate(); },
+    onSuccess: () => { toast.success("Invoice marked paid — organization reactivated"); void utils.billing.invoices.invalidate(); void utils.billing.adminInvoices.invalidate(); void utils.billing.status.invalidate(); void utils.dashboard.summary.invalidate(); },
     onError: (error: Error) => toast.error("Could not mark invoice paid", { description: error.message }),
   });
 
@@ -78,6 +79,8 @@ export function BillingWorkspace() {
   const blocked = data.billingBlocked === true || data.writeLocked === true;
   const capacityPct = cap ? Math.min(100, (vehicles / cap) * 100) : 0;
   const canCustom = vehicles >= CUSTOM_MIN_VEHICLES;
+
+  const adminRows = ((adminInvoices.data ?? []) as { id: number; organizationName?: string | null; externalInvoiceId?: string | null; billableVehicles?: number; status: string; totalPaise?: number; periodStart?: string }[]).filter((invoice) => invoice.status === "due");
 
   return <main className="replacement-billing">
     <header className="replacement-billing-hero">
@@ -169,5 +172,26 @@ export function BillingWorkspace() {
         </div>
       </State>
     </section>
+
+    {data.isBillingAdmin && (
+      <section className="replacement-billing-invoices">
+        <header><div><span>04 · collections</span><h2>All organizations</h2></div><b>{adminRows.length} due</b></header>
+        <State loading={adminInvoices.isLoading} error={adminInvoices.isError} empty={!adminInvoices.isLoading && !adminRows.length}>
+          <div>{adminRows.map((invoice) =>
+            <article key={invoice.id}>
+              <div>
+                <strong>{invoice.organizationName ?? `Organization`} · {invoice.externalInvoiceId ?? `INV-${invoice.id}`}</strong>
+                <p>{invoice.billableVehicles ?? 0} billed vehicles · {invoice.periodStart ? new Date(invoice.periodStart).toLocaleDateString("en-IN") : ""} · Due</p>
+              </div>
+              <div className="replacement-billing-invoice-actions">
+                <b>₹{(Number(invoice.totalPaise ?? 0) / 100).toLocaleString("en-IN")}</b>
+                <button type="button" className="replacement-billing-primary" onClick={() => downloadInvoice.mutate({ invoiceId: invoice.id })}><Download size={12} /> PDF</button>
+                <button type="button" className="replacement-billing-primary is-settle" onClick={() => markPaid.mutate({ invoiceId: invoice.id })} disabled={markPaid.isPending}>Mark paid</button>
+              </div>
+            </article>)}
+          </div>
+        </State>
+      </section>
+    )}
   </main>;
 }

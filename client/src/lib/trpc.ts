@@ -693,6 +693,7 @@ export function queryPath(path: string, input: unknown) {
   if (path === "billing.plans") return "/api/v1/subscription/plans";
   if (path === "billing.status") return "/api/v1/subscription";
   if (path === "billing.invoices" || path === "financials.invoices") return "/api/v1/billing/invoices";
+  if (path === "billing.adminInvoices") return "/api/v1/billing/admin/invoices";
   if (path === "activity.recent") return "/api/v1/activity-feed";
   if (path === "triage.queue") return "/api/v1/triage/queue";
   if (path === "planning.maintenance") return "/api/v1/maintenance-plans";

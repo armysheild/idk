@@ -329,6 +329,7 @@ class BillingInvoiceRead(BaseModel):
     status: str
     external_invoice_id: str | None
     created_at: datetime
+    organization_name: str | None = None
 
 
 class BillingPaymentRead(BaseModel):

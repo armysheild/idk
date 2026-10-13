@@ -1325,6 +1325,26 @@ def list_billing_invoices(
     ).order_by(BillingInvoice.id.desc())).all())
 
 
+@router.get("/billing/admin/invoices", response_model=list[BillingInvoiceRead])
+def list_all_billing_invoices(
+    status_filter: str | None = Query(default=None, alias="status"),
+    user: User = Depends(require_roles("owner")),
+    database: Session = Depends(get_db),
+) -> list[BillingInvoice]:
+    """Collections view for the VahanSync billing team — every org's
+    invoices with the organization name attached."""
+    if not is_billing_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the VahanSync billing team can view all invoices")
+    stmt = select(BillingInvoice).order_by(BillingInvoice.id.desc())
+    if status_filter:
+        stmt = stmt.where(BillingInvoice.status == status_filter)
+    invoices = list(database.scalars(stmt).all())
+    org_names = {organization.id: organization.name for organization in database.scalars(select(Organization)).all()}
+    for invoice in invoices:
+        invoice.organization_name = org_names.get(invoice.organization_id)
+    return invoices
+
+
 @router.get("/billing/run-invoicing")
 @router.post("/billing/run-invoicing")
 def run_billing_invoicing(
