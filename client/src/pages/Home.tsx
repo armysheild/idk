@@ -47,6 +47,7 @@ import { formatVehicleIdentity } from "@/lib/vehicleIdentity";
 import { useFleetOpsAuth } from "@/hooks/useFleetOpsAuth";
 import { useFleetOpsRealtime } from "@/hooks/useFleetOpsRealtime";
 import FunctionalWorkspace from "@/components/FunctionalWorkspace";
+import { BillingWorkspace } from "@/components/workspaces/BillingWorkspace";
 import OrganizationOnboarding from "@/components/OrganizationOnboarding";
 import { CommandDeck, OperationsFrame, type CommandVehicle } from "@/components/operations/OperationsFrame";
 import { PublicAuthSurface } from "@/components/public/PublicAuthSurface";
@@ -320,6 +321,12 @@ export default function Home({ initialSection = "Command center", publicMode = "
   if (session && !backendSummary && summaryLoading) return <main className="auth-page"><section className="auth-card"><div className="panel-kicker">VahanSync connection</div><h1>Loading your workspace.</h1><p>We are checking your organization and role before opening operational data.</p><div className="workspace-state"><RefreshCw className="spin" size={18} /> Connecting to Supabase…</div></section></main>;
   if (!authLoading && !session && publicMode === "landing") return <LandingPage />;
   if (!authLoading && !session) return <PublicAuthSurface view={authMode} email={authEmail} password={authPassword} fullName={authFullName} recoveryPassword={recoveryPassword} error={authError} submitting={authSubmitting} onEmail={setAuthEmail} onPassword={setAuthPassword} onFullName={setAuthFullName} onRecoveryPassword={setRecoveryPassword} onSubmit={authMode === "signup" ? handleSignUp : authMode === "recover" ? handleRecoveryRequest : handleSignIn} onSetView={(view) => { setAuthMode(view); setAuthError(""); }} />;
+  const billingBlocked = Boolean((backendSummary as { billing?: { blocked?: boolean } } | undefined)?.billing?.blocked);
+  if (session && backendSummary && billingBlocked) {
+    const isOwner = (backendSummary as { role?: string }).role === "SUPERADMIN";
+    if (isOwner) return <main className="billing-paywall"><section className="billing-paywall-card"><div className="panel-kicker">Subscription required</div><h1>Your free trial has ended.</h1><p>Operational writes are paused for everyone in {organizationLabel}. Reactivate the subscription to unlock the workspace — fleet, work orders, inventory, and records are all intact.</p><BillingWorkspace /></section></main>;
+    return <main className="billing-paywall"><section className="billing-paywall-card"><div className="panel-kicker">Workspace paused</div><h1>This organization's trial has ended.</h1><p>{organizationLabel}'s subscription is inactive, so your workspace is read-only for now. Your fleet and records are safe — ask the account owner to reactivate on the Billing page.</p><button className="primary-button" onClick={() => void handleSignOut()}>Sign out</button></section></main>;
+  }
 
   const completeOrder = (id?: string) => {
     if (!id || !session) return;

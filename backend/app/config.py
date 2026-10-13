@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     razorpay_key_id: str | None = None
     razorpay_key_secret: str | None = None
     razorpay_webhook_secret: str | None = None
+    razorpay_plan_flat: str | None = None
     razorpay_plan_starter: str | None = None
     razorpay_plan_growth: str | None = None
     razorpay_plan_scale: str | None = None

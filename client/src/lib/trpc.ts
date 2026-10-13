@@ -866,6 +866,8 @@ export function mutationPath(path: string, input: unknown) {
   if (path === "notifications.escalate" && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}/escalate`;
   if (path === "notifications.resolve" && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}/resolve`;
   if (path === "billingTest.activateStarter") return "/api/v1/billing/test/activate-starter";
+  if (path === "billing.checkout") return "/api/v1/subscription/checkout";
+  if (path === "billing.verifyPayment") return "/api/v1/subscription/verify";
   if (path === "onboarding.complete") return "/api/v1/onboarding/bootstrap";
   if (path === "onboarding.completeInviteWithPassword") return "/api/v1/auth/invitations/accept";
   if (path === "triage.update" && value?.issueId) return `/api/v1/triage/issues/${value.issueId}`;

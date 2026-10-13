@@ -1,47 +1,150 @@
-import { Check } from "lucide-react";
+import { Check, IndianRupee, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { WorkspaceState as State } from "@/components/workspaces/WorkspaceState";
 
+const PER_VEHICLE_FEE_INR = 300;
+const CUSTOM_MIN_VEHICLES = 50;
+const TRIAL_DAYS = 14;
+
+type BillingStatus = {
+  planName?: string;
+  tier?: string;
+  lifecycle?: string;
+  status?: string;
+  isTrial?: boolean;
+  writeLocked?: boolean;
+  billingBlocked?: boolean;
+  activeVehicles?: number;
+  vehicleCount?: number;
+  vehicleCap?: number | null;
+  peakVehicles?: number;
+  maxVehicles?: number;
+  trialEndsOn?: string;
+  renewsOn?: string;
+  estimatedSubtotalPaise?: number;
+  perVehicleFeePaise?: number;
+};
+
+type CheckoutResult = { short_url?: string; shortUrl?: string; subscription_id?: string };
+
+function daysUntil(value?: string): number | null {
+  if (!value) return null;
+  const end = new Date(value);
+  if (Number.isNaN(end.getTime())) return null;
+  return Math.ceil((end.getTime() - Date.now()) / 86400000);
+}
+
 export function BillingWorkspace() {
-  const utils = trpc.useUtils(); 
-  const billing = trpc.billing.status.useQuery(undefined, { retry: false }); 
-  const invoices = trpc.billing.invoices.useQuery(undefined, { retry: false }); 
-  const plans = trpc.billing.plans.useQuery(undefined, { retry: false }); 
-  const activateStarter = trpc.billingTest.activateStarter.useMutation({ onSuccess: (result) => { toast.success(result.alreadyActive ? "Starter plan already active" : "Starter test plan activated", { description: result.alreadyActive ? `${result.maxVehicles} vehicle capacity remains available.` : `Razorpay Test Mode activated ${result.maxVehicles} vehicle capacity for this tenant.` }); void utils.billing.status.invalidate(); void utils.dashboard.summary.invalidate(); void utils.vehicles.list.invalidate(); }, onError: (error) => toast.error("Starter test activation failed", { description: error.message }) });
-  
-  const data = billing.data; 
-  const activeVehicles = data?.activeVehicles ?? 0;
-  const showTestActivation = data?.isTrial === true && data?.tier === "TRIAL_FREE"; 
-  const capacity = data?.maxVehicles ? Math.min(100, (activeVehicles / data.maxVehicles) * 100) : 0;
-  
-  // Determine recommended plan based on vehicle count
-  const getRecommendedPlan = (vehicles: number) => {
-    if (vehicles >= 100) return "ENTERPRISE";
-    if (vehicles >= 50) return "SCALE";
-    if (vehicles >= 11) return "GROWTH";
-    return "STARTER";
-  };
-  
-  // Check if plan is eligible
-  const isPlanEligible = (plan: { id: string; minVehicles?: number; maxVehicles?: number }) => {
-    if (!plan.minVehicles || !plan.maxVehicles) return true;
-    return activeVehicles >= plan.minVehicles && activeVehicles <= plan.maxVehicles;
-  };
-  
-  // Get eligibility message
-  const getEligibilityMessage = (plan: { id: string; minVehicles?: number; maxVehicles?: number }) => {
-    if (!plan.minVehicles || !plan.maxVehicles) return null;
-    if (activeVehicles < plan.minVehicles) {
-      return `Add ${plan.minVehicles - activeVehicles} more vehicle${plan.minVehicles - activeVehicles !== 1 ? "s" : ""} to unlock this tier`;
-    }
-    if (activeVehicles > plan.maxVehicles) {
-      return `Remove ${activeVehicles - plan.maxVehicles} vehicle${activeVehicles - plan.maxVehicles !== 1 ? "s" : ""} or upgrade to next tier`;
-    }
-    return "Perfect fit for your fleet size";
-  };
-  
-  const recommendedPlan = getRecommendedPlan(activeVehicles);
-  
-  return <main className="replacement-billing"><header className="replacement-billing-hero"><div><span>Subscription governance · Super Admin / Owner</span><h1>Keep capacity and operating access explicit<em>.</em></h1><p>Plan, lifecycle, vehicle utilization, invoice history, and the approved Test Mode activation stay visible without exposing payment controls to operational roles.</p></div><div className="replacement-billing-hero-chip"><Check size={20} /><strong>{activeVehicles}</strong><small>active vehicles</small></div></header><State loading={billing.isLoading} error={billing.isError} empty={!data}><section className="replacement-billing-signals"><article><span>Current plan</span><strong>{data?.planName ?? data?.tier?.replaceAll("_", " ")}</strong><small>{data?.writeLocked ? "Writes locked" : "Live status"}</small></article><article><span>Lifecycle</span><strong>{data?.lifecycle?.replaceAll("_", " ") ?? "—"}</strong><small>organization subscription</small></article><article><span>Vehicle capacity</span><strong>{activeVehicles} / {data?.maxVehicles ?? "—"}</strong><small>{data?.overageVehicles ? `${data.overageVehicles} overage vehicles` : "within included capacity"}</small></article><article><span>Monthly subtotal</span><strong>₹{data?.estimatedSubtotalPaise ? (data.estimatedSubtotalPaise / 100).toLocaleString("en-IN") : "—"}</strong><small>estimated operating total</small></article></section><section className="replacement-billing-capacity"><header><div><span>01 · capacity control</span><h2>Vehicle utilization</h2></div><b>{Math.round(capacity)}% of included capacity</b></header><div className="replacement-billing-track"><span style={{ width: `${capacity}%` }} /></div><p>{data?.writeLocked ? "The account is suspended. Historical data and export access remain available; operational writes are restricted by the API." : showTestActivation ? "This tenant is in its trial period. Select and activate a plan to start your subscription." : `The ${data?.planName ?? "selected"} plan is active and capacity is enforced by the organization subscription record.`}</p>{showTestActivation && <div><button type="button" className="replacement-billing-primary" onClick={() => activateStarter.mutate()} disabled={activateStarter.isPending}>{activateStarter.isPending ? "Activating test plan…" : "Activate Starter test plan"}</button><small>Razorpay Test Mode only · no real payment</small></div>}</section></State><section className="replacement-billing-plans"><header><div><span>02 · plan reference</span><h2>Capacity catalog</h2></div><b>Based on {activeVehicles} active vehicle{activeVehicles !== 1 ? "s" : ""}</b></header><div className="billing-plans-grid">{(plans.data ?? []).map((plan) => { const eligible = isPlanEligible(plan); const isRecommended = plan.id === recommendedPlan; const eligibilityMsg = getEligibilityMessage(plan); return <article key={plan.id} className={`${plan.id === data?.tier ? "is-selected" : ""} ${isRecommended ? "is-recommended" : ""} ${!eligible ? "is-disabled" : ""}`}><div className="plan-header"><strong>{plan.name}</strong>{isRecommended && <span className="recommended-badge">⭐ Recommended</span>}</div><b>₹{plan.platformFeeInr.toLocaleString("en-IN")}/month</b><span className="plan-detail">Includes {plan.includedVehicles} vehicles · ₹{plan.overageVehicleFeeInr.toLocaleString("en-IN")} per overage</span>{plan.minVehicles && <span className="plan-range">{plan.minVehicles}-{plan.maxVehicles === 999999 ? "∞" : plan.maxVehicles} vehicles</span>}<div className={`plan-status ${eligible ? "eligible" : "ineligible"}`}>{eligible ? "✅ Eligible" : "❌ Not eligible"}</div>{eligibilityMsg && <small className="eligibility-message">{eligibilityMsg}</small>}</article>; })}</div></section><section className="replacement-billing-invoices"><header><div><span>03 · invoice history</span><h2>Organization billing record</h2></div><b>{invoices.data?.length ?? 0} entries</b></header><State loading={invoices.isLoading} error={invoices.isError} empty={!invoices.isLoading && !(invoices.data ?? []).length}><div>{(invoices.data ?? []).map((invoice: { id: string; plan: string; billingPeriodStart?: string | Date | null; billableVehicles: number; status: string; totalPaise?: number; subtotalPaise?: number }) => <article key={invoice.id}><div><strong>{invoice.plan} · {invoice.billingPeriodStart ? new Date(invoice.billingPeriodStart).toLocaleDateString("en-IN") : "Draft"}</strong><p>{invoice.billableVehicles} active vehicles · {invoice.status}</p></div><b>₹{(Number(invoice.totalPaise ?? invoice.subtotalPaise ?? 0) / 100).toLocaleString("en-IN")}</b></article>)}</div></State></section></main>;
+  const utils = trpc.useUtils();
+  const billing = trpc.billing.status.useQuery(undefined, { retry: false });
+  const invoices = trpc.billing.invoices.useQuery(undefined, { retry: false });
+  const checkout = trpc.billing.checkout.useMutation({
+    onSuccess: (result: CheckoutResult) => {
+      const url = result.short_url ?? result.shortUrl;
+      if (url) {
+        toast.success("Opening Razorpay checkout");
+        window.location.href = url;
+      } else {
+        toast.success("Subscription created — Razorpay will contact you to complete authorization");
+      }
+      void utils.billing.status.invalidate();
+    },
+    onError: (error: Error) => toast.error("Checkout failed", { description: error.message }),
+  });
+
+  const data = (billing.data ?? {}) as BillingStatus;
+  const vehicles = data.activeVehicles ?? data.vehicleCount ?? 0;
+  const cap = data.vehicleCap ?? null;
+  const peak = data.peakVehicles ?? vehicles;
+  const monthlyTotal = vehicles * PER_VEHICLE_FEE_INR;
+  const trialDaysLeft = daysUntil(data.trialEndsOn);
+  const inTrial = data.isTrial === true || data.status === "trialing";
+  const trialExpired = inTrial && trialDaysLeft !== null && trialDaysLeft < 0;
+  const blocked = data.billingBlocked === true || data.writeLocked === true;
+  const capacityPct = cap ? Math.min(100, (vehicles / cap) * 100) : 0;
+  const canCustom = vehicles >= CUSTOM_MIN_VEHICLES;
+
+  return <main className="replacement-billing">
+    <header className="replacement-billing-hero">
+      <div>
+        <span>Billing · Owner</span>
+        <h1>₹300 per vehicle. Nothing else<em>.</em></h1>
+        <p>One flat monthly rate at every fleet size. You pay for the largest fleet you operate in a billing period — deleted vehicles still count until the period renews.</p>
+      </div>
+      <div className="replacement-billing-hero-chip"><IndianRupee size={20} /><strong>{vehicles}</strong><small>vehicles billed</small></div>
+    </header>
+
+    <State loading={billing.isLoading} error={billing.isError} empty={!billing.data}>
+      {inTrial && !trialExpired && (
+        <section className="replacement-billing-trial">
+          <strong>{trialDaysLeft ?? TRIAL_DAYS} days left in your free trial</strong>
+          <p>Full access to every workspace until {data.trialEndsOn ?? "trial end"}. Subscribe before it ends — billing only starts after the trial, and your peak vehicle count sets the first invoice.</p>
+        </section>
+      )}
+      {(trialExpired || blocked) && (
+        <section className="replacement-billing-trial is-expired">
+          <strong>Your free trial has ended</strong>
+          <p>Operational writes are paused for every member of this organization. Reactivate below — your fleet, work orders, and records are intact.</p>
+        </section>
+      )}
+
+      <section className="replacement-billing-signals">
+        <article><span>Plan</span><strong>{data.planName ?? "VahanSync Fleet"}</strong><small>{data.status === "active" ? "Active subscription" : data.lifecycle?.replaceAll("_", " ") ?? "trialing"}</small></article>
+        <article><span>Rate</span><strong>₹{PER_VEHICLE_FEE_INR} / vehicle / month</strong><small>prepaid monthly, flat at every size</small></article>
+        <article><span>Vehicle capacity</span><strong>{cap ? `${vehicles} / ${cap}` : `${vehicles} (uncapped)`}</strong><small>{cap ? `${Math.max(0, cap - vehicles)} slots remaining` : "no cap during trial"}</small></article>
+        <article><span>{inTrial ? "First invoice (at trial end)" : "Monthly total"}</span><strong>₹{(cap ? Math.max(peak, vehicles) : vehicles) * PER_VEHICLE_FEE_INR /* preview */}</strong><small>{peak > vehicles ? `peak of ${peak} vehicles this period` : "based on current fleet"}</small></article>
+      </section>
+
+      <section className="replacement-billing-capacity">
+        <header><div><span>01 · your plan</span><h2>Monthly — pay as you operate</h2></div><b>₹{monthlyTotal.toLocaleString("en-IN")} this month at current fleet</b></header>
+        <div className="replacement-billing-track"><span style={{ width: `${cap ? capacityPct : 60}%` }} /></div>
+        <p>{cap
+          ? `Your paid capacity is ${cap} vehicles — every vehicle created counts toward the bill for this period, even if deleted before invoicing. Paying for ${cap}, currently operating ${vehicles}.`
+          : `${vehicles} vehicles × ₹${PER_VEHICLE_FEE_INR} = ₹${monthlyTotal.toLocaleString("en-IN")} per month. All workspaces, all roles, no per-feature pricing.`}</p>
+        <div className="replacement-billing-rate-card">
+          <ul>
+            <li><Check size={14} /> ₹300 × your largest fleet size in the period</li>
+            <li><Check size={14} /> Every workspace included — fleet, maintenance, inventory, compliance, finance</li>
+            <li><Check size={14} /> Deleted vehicles still count until the period renews</li>
+          </ul>
+          {data.status === "active" && data.renewsOn
+            ? <small>Renews {data.renewsOn} · Razorpay subscription {data.tier ?? "flat"}</small>
+            : <button type="button" className="replacement-billing-primary" onClick={() => checkout.mutate({ plan_code: "flat" })} disabled={checkout.isPending}>
+                {checkout.isPending ? "Opening Razorpay…" : `Pay ₹${monthlyTotal.toLocaleString("en-IN")} with Razorpay`}
+              </button>}
+        </div>
+      </section>
+
+      <section className="replacement-billing-capacity">
+        <header><div><span>02 · annual</span><h2>Custom — pay 10 months, get 12</h2></div><b>{canCustom ? `${CUSTOM_MIN_VEHICLES}+ fleets` : `needs ${CUSTOM_MIN_VEHICLES}+ vehicles`}</b></header>
+        <p>₹3,000 per vehicle per year for committed fleets — two months free against the monthly rate. Arranged offline with our team, invoiced annually.</p>
+        <div className="replacement-billing-rate-card">
+          <ul>
+            <li><Check size={14} /> ₹3,000 × vehicles per year — same product, billed annually</li>
+            <li><Check size={14} /> {canCustom ? `Your ${vehicles} vehicles ≈ ₹${(vehicles * 3000).toLocaleString("en-IN")}/year` : `Available once your fleet reaches ${CUSTOM_MIN_VEHICLES} vehicles`}</li>
+            <li><Check size={14} /> Dedicated onboarding and priority support</li>
+          </ul>
+          {canCustom
+            ? <a className="replacement-billing-primary" href="mailto:sales@vahansync.in?subject=Custom%20annual%20plan"><Lock size={12} /> Contact sales for annual pricing</a>
+            : <small><Lock size={11} /> Locked — annual pricing unlocks at {CUSTOM_MIN_VEHICLES} vehicles so smaller fleets can't take the discount meant for large operators.</small>}
+        </div>
+      </section>
+    </State>
+
+    <section className="replacement-billing-invoices">
+      <header><div><span>03 · invoice history</span><h2>Billing record</h2></div><b>{invoices.data?.length ?? 0} entries</b></header>
+      <State loading={invoices.isLoading} error={invoices.isError} empty={!invoices.isLoading && !(invoices.data ?? []).length}>
+        <div>{(invoices.data ?? []).map((invoice: { id: string; plan: string; periodStart?: string; billingPeriodStart?: string; billableVehicles?: number; status: string; totalPaise?: number }) =>
+          <article key={invoice.id}>
+            <div>
+              <strong>{invoice.plan} · {(invoice.periodStart ?? invoice.billingPeriodStart) ? new Date(invoice.periodStart ?? invoice.billingPeriodStart!).toLocaleDateString("en-IN") : "Draft"}</strong>
+              <p>{invoice.billableVehicles ?? 0} billed vehicles · {invoice.status}</p>
+            </div>
+            <b>₹{(Number(invoice.totalPaise ?? 0) / 100).toLocaleString("en-IN")}</b>
+          </article>)}
+        </div>
+      </State>
+    </section>
+  </main>;
 }

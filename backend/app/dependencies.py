@@ -1,11 +1,13 @@
-from fastapi import Depends, HTTPException, status
+from datetime import date
+
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .database import get_db
 from .config import get_settings
-from .models import User
+from .models import Organization, User
 from .security import decode_access_token, decode_supabase_token, decode_token_version
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
@@ -23,7 +25,38 @@ def normalize_role(role: object) -> str:
     return ROLE_ALIASES.get(normalized, normalized)
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), database: Session = Depends(get_db)) -> User:
+def organization_billing_blocked(organization: Organization | None) -> bool:
+    if organization is None:
+        return False
+    subscription_status = (organization.subscription_status or "trialing").lower()
+    if subscription_status in {"halted", "cancelled", "canceled", "suspended", "past_due", "completed"}:
+        return True
+    if subscription_status == "active":
+        return False
+    ends = organization.trial_ends_on
+    if ends:
+        try:
+            return date.fromisoformat(ends) < date.today()
+        except ValueError:
+            return False
+    return False
+
+
+BILLING_EXEMPT_PATH_PREFIXES = (
+    "/api/v1/subscription",
+    "/api/v1/billing",
+    "/api/v1/webhooks",
+    "/api/v1/auth",
+    "/api/v1/users/me",
+    "/api/v1/organization",
+    "/api/v1/invitations",
+    "/api/v1/notifications",
+    "/api/v1/health",
+    "/api/v1/ready",
+)
+
+
+def get_current_user(request: Request, token: str = Depends(oauth2_scheme), database: Session = Depends(get_db)) -> User:
     credentials_error = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials")
     try:
         settings = get_settings()
@@ -69,7 +102,18 @@ def get_current_user(token: str = Depends(oauth2_scheme), database: Session = De
                 text("select set_config('app.organization_id', :organization_id, true)"),
                 {"organization_id": str(user.organization_id)},
             )
+        if request.method not in {"GET", "HEAD", "OPTIONS"} and not any(
+            request.url.path.startswith(prefix) for prefix in BILLING_EXEMPT_PATH_PREFIXES
+        ):
+            organization = database.get(Organization, user.organization_id)
+            if organization_billing_blocked(organization):
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail="Your organization's free trial has ended or its subscription is inactive. Reactivate it on the Billing page to continue.",
+                )
         return user
+    except HTTPException:
+        raise
     except Exception as error:
         raise credentials_error from error
 
