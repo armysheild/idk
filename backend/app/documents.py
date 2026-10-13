@@ -244,3 +244,54 @@ def work_order_document(
     return _render(org_name, "WORK ORDER", f"#{work_order_id} · {title}", body)
 
 
+
+
+def billing_invoice_document(
+    org_name: str,
+    invoice_number: str,
+    status: str,
+    plan_name: str,
+    period_start: str,
+    period_end: str,
+    billable_vehicles: int,
+    per_vehicle_paise: int,
+    total_paise: int,
+    seller_name: str,
+    seller_details: str,
+    payment_terms: str,
+) -> str:
+    """Returns base64 PDF."""
+    body: list = [
+        Paragraph("Billed to", SECTION),
+        _info_table([
+            [("Organization", org_name), ("Invoice", invoice_number)],
+            [("Status", status.upper()), ("Issued", date.today().isoformat())],
+            [("Billing period", f"{period_start} to {period_end}"), ("Plan", plan_name)],
+        ]),
+        Spacer(1, 4 * mm),
+        Paragraph("Charges", SECTION),
+        _items_table(
+            ["Item", "Vehicles", "Rate", "Amount"],
+            [[
+                f"VahanSync fleet subscription — {period_start} to {period_end}",
+                str(billable_vehicles),
+                f"{inr(per_vehicle_paise)} / vehicle",
+                inr(total_paise),
+            ], ["", "", "Total due", inr(total_paise)]],
+            [80 * mm, 25 * mm, 40 * mm, 35 * mm],
+            {1, 2, 3},
+        ),
+        Spacer(1, 4 * mm),
+        Paragraph("Payment", SECTION),
+        Paragraph(esc(payment_terms), BODY),
+        Spacer(1, 4 * mm),
+        Paragraph("From", SECTION),
+        Paragraph(esc(seller_name), BODY),
+        Paragraph(esc(seller_details), SMALL_MUTED),
+        Spacer(1, 4 * mm),
+        Paragraph(
+            "Billing counts the largest fleet size operated during the period — vehicles created and later removed are included.",
+            SMALL_MUTED,
+        ),
+    ]
+    return _render(org_name, "TAX INVOICE" if status == "paid" else "INVOICE", invoice_number, body)

@@ -1,7 +1,9 @@
-import { Check, IndianRupee, Lock } from "lucide-react";
+import { Check, Download, IndianRupee, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { WorkspaceState as State } from "@/components/workspaces/WorkspaceState";
+
+function downloadPdf(filename: string, base64: string) { const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0)); const blob = new Blob([bytes], { type: "application/pdf" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url); }
 
 const PER_VEHICLE_FEE_INR = 300;
 const CUSTOM_MIN_VEHICLES = 50;
@@ -24,6 +26,10 @@ type BillingStatus = {
   renewsOn?: string;
   estimatedSubtotalPaise?: number;
   perVehicleFeePaise?: number;
+  dueInvoiceId?: number | null;
+  dueInvoiceNumber?: string | null;
+  amountDuePaise?: number;
+  isBillingAdmin?: boolean;
 };
 
 type CheckoutResult = { short_url?: string; shortUrl?: string; subscription_id?: string };
@@ -51,6 +57,14 @@ export function BillingWorkspace() {
       void utils.billing.status.invalidate();
     },
     onError: (error: Error) => toast.error("Checkout failed", { description: error.message }),
+  });
+  const downloadInvoice = trpc.billing.downloadInvoice.useMutation({
+    onSuccess: (result: { filename: string; content: string }) => { downloadPdf(result.filename, result.content); toast.success("Invoice downloaded"); },
+    onError: (error: Error) => toast.error("Invoice download failed", { description: error.message }),
+  });
+  const markPaid = trpc.billing.markPaid.useMutation({
+    onSuccess: () => { toast.success("Invoice marked paid — organization reactivated"); void utils.billing.invoices.invalidate(); void utils.billing.status.invalidate(); void utils.dashboard.summary.invalidate(); },
+    onError: (error: Error) => toast.error("Could not mark invoice paid", { description: error.message }),
   });
 
   const data = (billing.data ?? {}) as BillingStatus;
@@ -86,6 +100,9 @@ export function BillingWorkspace() {
         <section className="replacement-billing-trial is-expired">
           <strong>Your free trial has ended</strong>
           <p>Operational writes are paused for every member of this organization. Reactivate below — your fleet, work orders, and records are intact.</p>
+          {data.dueInvoiceNumber && (
+            <p className="replacement-billing-due">Invoice <b>{data.dueInvoiceNumber}</b> is due — <b>₹{((data.amountDuePaise ?? 0) / 100).toLocaleString("en-IN")}</b> for {data.peakVehicles ?? vehicles} vehicle{(data.peakVehicles ?? vehicles) === 1 ? "" : "s"}. Pay by UPI or bank transfer; we activate your workspace once payment is received. <button type="button" className="replacement-billing-primary" onClick={() => downloadInvoice.mutate({ invoiceId: data.dueInvoiceId })}><Download size={12} /> Download invoice</button></p>
+          )}
         </section>
       )}
 
@@ -135,13 +152,19 @@ export function BillingWorkspace() {
     <section className="replacement-billing-invoices">
       <header><div><span>03 · invoice history</span><h2>Billing record</h2></div><b>{invoices.data?.length ?? 0} entries</b></header>
       <State loading={invoices.isLoading} error={invoices.isError} empty={!invoices.isLoading && !(invoices.data ?? []).length}>
-        <div>{(invoices.data ?? []).map((invoice: { id: string; plan: string; periodStart?: string; billingPeriodStart?: string; billableVehicles?: number; status: string; totalPaise?: number }) =>
+        <div>{(invoices.data ?? []).map((invoice: { id: number; externalInvoiceId?: string | null; plan: string; periodStart?: string; billingPeriodStart?: string; billableVehicles?: number; status: string; totalPaise?: number }) =>
           <article key={invoice.id}>
             <div>
-              <strong>{invoice.plan} · {(invoice.periodStart ?? invoice.billingPeriodStart) ? new Date(invoice.periodStart ?? invoice.billingPeriodStart!).toLocaleDateString("en-IN") : "Draft"}</strong>
-              <p>{invoice.billableVehicles ?? 0} billed vehicles · {invoice.status}</p>
+              <strong>{invoice.externalInvoiceId ?? `INV-${invoice.id}`} · {invoice.status === "paid" ? "Paid" : invoice.status === "due" ? "Due" : invoice.status}</strong>
+              <p>{invoice.billableVehicles ?? 0} billed vehicles · {(invoice.periodStart ?? invoice.billingPeriodStart) ? new Date(invoice.periodStart ?? invoice.billingPeriodStart!).toLocaleDateString("en-IN") : "Draft"}</p>
             </div>
-            <b>₹{(Number(invoice.totalPaise ?? 0) / 100).toLocaleString("en-IN")}</b>
+            <div className="replacement-billing-invoice-actions">
+              <b>₹{(Number(invoice.totalPaise ?? 0) / 100).toLocaleString("en-IN")}</b>
+              <button type="button" className="replacement-billing-primary" onClick={() => downloadInvoice.mutate({ invoiceId: invoice.id })}><Download size={12} /> PDF</button>
+              {data.isBillingAdmin && invoice.status === "due" && (
+                <button type="button" className="replacement-billing-primary is-settle" onClick={() => markPaid.mutate({ invoiceId: invoice.id })} disabled={markPaid.isPending}>Mark paid</button>
+              )}
+            </div>
           </article>)}
         </div>
       </State>

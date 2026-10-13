@@ -293,6 +293,10 @@ class SubscriptionRead(BaseModel):
     peak_vehicles: int = 0
     per_vehicle_fee_paise: int | None = None
     billing_blocked: bool = False
+    due_invoice_id: int | None = None
+    due_invoice_number: str | None = None
+    amount_due_paise: int = 0
+    is_billing_admin: bool = False
 
 
 class SubscriptionChange(BaseModel):

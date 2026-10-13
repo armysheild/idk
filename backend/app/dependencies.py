@@ -42,6 +42,14 @@ def organization_billing_blocked(organization: Organization | None) -> bool:
     return False
 
 
+def is_billing_admin(user: User) -> bool:
+    allowed = get_settings().billing_admin_emails
+    if not allowed:
+        return False
+    emails = {email.strip().lower() for email in allowed.split(",") if email.strip()}
+    return bool(emails) and (user.email or "").lower() in emails
+
+
 BILLING_EXEMPT_PATH_PREFIXES = (
     "/api/v1/subscription",
     "/api/v1/billing",
