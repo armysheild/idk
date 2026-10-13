@@ -73,6 +73,13 @@ export default function LandingPage() {
         <article><ClipboardCheck size={19} /><div><strong>Auditable handoffs</strong><span>Decisions, evidence, approvals, and status changes remain traceable.</span></div></article>
         <article><Route size={19} /><div><strong>Ready for connected fleets</strong><span>Build around your vehicles today and add telemetry providers over time.</span></div></article>
       </section>
+      <section className="public-trusted" aria-label="VahanSync trusted customers">
+        <div className="public-eyebrow"><span /> Trusted by India’s fleet operators</div>
+        <div className="public-trusted-logo">
+          <img src="/humsafar-travels-logo.jpeg" alt="Humsafar Travels logo" loading="lazy" />
+          <div><strong>Humsafar Travels</strong><span>Running a 106-bus operation on VahanSync</span></div>
+        </div>
+      </section>
       <section className="public-chain"><header><div className="public-eyebrow"><span /> The operating chain</div><h2>Not another dashboard. A connected way to move work from route signal to controlled resolution.</h2></header><div className="public-chain-grid">{operatingChain.map(({ step, icon: Icon, title, detail }) => <article key={step}><div><span>{step}</span><Icon size={20} /></div><h3>{title}</h3><p>{detail}</p></article>)}</div></section>
       <section className="public-workspaces"><div className="public-workspaces-intro"><div className="public-eyebrow"><span /> Every role, its right next action</div><h2>Give each operator a focused surface without fragmenting the organization record.</h2><p>The organization gets one operating picture. Each role sees only the decisions, evidence, and actions that belong to its responsibility.</p><a className="public-quiet-link" href="/security">See the control model <ArrowRight size={15} /></a></div><div className="public-workspace-list">{workspaceSignals.map(([role, detail, tone], index) => <article className={`is-${tone}`} key={role}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{role}</strong><small>{detail}</small></div><ArrowRight size={16} /></article>)}</div></section>
       <section className="public-commitment"><div><div className="public-eyebrow"><span /> Start with an accountable foundation</div><h2>Make the next fleet decision easier to see, own, and prove.</h2></div><div><p>Start a secure organization workspace, invite the appropriate roles, and build the vehicle and maintenance record around the work already happening in your fleet.</p><a className="public-primary" href="/create-organization">Create your organization <ArrowRight size={16} /></a></div></section>
