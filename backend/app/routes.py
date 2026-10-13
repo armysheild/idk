@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from .config import get_settings
 from .database import get_db
-from .dependencies import get_current_user, normalize_role, oauth2_scheme, require_development_mode, require_permission, require_roles
+from .dependencies import get_current_user, is_billing_admin, normalize_role, oauth2_scheme, organization_billing_blocked, require_development_mode, require_permission, require_roles
 from .models import AuditEvent, AuditLog, BillingInvoice, BillingPayment, ComponentServiceRecord, ComplianceDocument, DocumentAccessLog, DocumentAsset, DocumentVersion, DriverInspection, Expense, FuelTransaction, IdempotencyRecord, InventoryMovement, InventoryTransaction, MaintenancePlan, MaintenanceTemplate, NotificationPreference, NotificationDelivery, OdometerLog, OperationalNotification, Organization, OrganizationFeatureFlag, OrganizationIntegration, OrganizationInvitation, Part, PurchaseOrder, PurchaseOrderLine, PurchaseOrderReceipt, StockLocation, TelematicsDevice, TelematicsIntegration, TelemetryReading, TollTransaction, User, Vehicle, VehicleAssignment, VehicleComponent, VehicleIssue, VehiclePartInstallation, Vendor, WorkOrder, WorkOrderChecklistItem, WorkOrderEvidence, WorkOrderPartUsage, utc_now
 from .security import (
     create_access_token,
@@ -156,7 +156,7 @@ from .schemas import (
     AuditEventRead,
 )
 from .storage import download_object, resolve_object, save_upload
-from .documents import purchase_order_document, work_order_document
+from .documents import billing_invoice_document, purchase_order_document, work_order_document
 from .telematics import approved_provider_request
 from .finance import capture_labor_rate, expense_statement, period_distance
 from .schemas import ExpenseReconciliation
@@ -297,70 +297,55 @@ def reserve_idempotency_key(request: Request, user: User, database: Session) -> 
     ))
     database.flush()
 
+PER_VEHICLE_MONTHLY_FEE_PAISE = 30000  # ₹300 per vehicle per month
+CUSTOM_ANNUAL_PER_VEHICLE_PAISE = 300000  # ₹3,000 per vehicle per year (10 months for 12)
+CUSTOM_ANNUAL_MIN_VEHICLES = 50
+
 SUBSCRIPTION_PLANS = {
-    "starter": {
-        "code": "starter",
-        "name": "Starter",
-        "monthly_price_paise": 299900,
-        "included_vehicles": 3,
-        "overage_vehicle_fee_paise": 50000,
+    "flat": {
+        "code": "flat",
+        "name": "VahanSync Fleet",
+        "monthly_price_paise": 0,
+        "per_vehicle_fee_paise": PER_VEHICLE_MONTHLY_FEE_PAISE,
+        "billing_type": "monthly",
+        "included_vehicles": 0,
+        "overage_vehicle_fee_paise": PER_VEHICLE_MONTHLY_FEE_PAISE,
         "min_vehicles": 1,
-        "max_vehicles": 10,
-        "included_users": 999999,
-        "description": "For small operators and pilots.",
-        "features": ["Fleet register", "Maintenance", "Compliance vault", "Basic finance", "3 vehicles included"],
-    },
-    "growth": {
-        "code": "growth",
-        "name": "Growth",
-        "monthly_price_paise": 999900,
-        "included_vehicles": 15,
-        "overage_vehicle_fee_paise": 45000,
-        "min_vehicles": 11,
-        "max_vehicles": 49,
-        "included_users": 999999,
-        "description": "For growing regional fleets.",
-        "features": ["Everything in Starter", "15 vehicles included", "Workshop inventory", "Procurement", "Fuel and toll", "Notifications"],
-    },
-    "scale": {
-        "code": "scale",
-        "name": "Scale",
-        "monthly_price_paise": 2499900,
-        "included_vehicles": 50,
-        "overage_vehicle_fee_paise": 35000,
-        "min_vehicles": 50,
-        "max_vehicles": 99,
-        "included_users": 999999,
-        "description": "For multi-depot operators.",
-        "features": ["Everything in Growth", "50 vehicles included", "Telematics", "Advanced finance", "Multi-depot controls", "Priority support"],
-    },
-    "enterprise": {
-        "code": "enterprise",
-        "name": "Enterprise",
-        "monthly_price_paise": None,
-        "included_vehicles": 100,
-        "overage_vehicle_fee_paise": 30000,
-        "min_vehicles": 100,
         "max_vehicles": 999999,
         "included_users": 999999,
-        "description": "For large fleets with custom service and integrations.",
-        "features": ["Custom fleet volume", "SSO", "Dedicated onboarding", "Custom integrations", "SLA"],
+        "description": "One flat rate for every fleet size — pay only for the vehicles you operate.",
+        "features": ["₹300 per vehicle per month", "Every workspace included", "Fleet, maintenance, inventory, compliance, finance", "Telematics-ready", "No overage tiers or hidden fees"],
+    },
+    "custom": {
+        "code": "custom",
+        "name": "Custom Annual",
+        "monthly_price_paise": None,
+        "per_vehicle_fee_paise": PER_VEHICLE_MONTHLY_FEE_PAISE,
+        "annual_per_vehicle_paise": CUSTOM_ANNUAL_PER_VEHICLE_PAISE,
+        "billing_type": "annual",
+        "included_vehicles": 0,
+        "overage_vehicle_fee_paise": PER_VEHICLE_MONTHLY_FEE_PAISE,
+        "min_vehicles": CUSTOM_ANNUAL_MIN_VEHICLES,
+        "max_vehicles": 999999,
+        "included_users": 999999,
+        "description": "Prepay 10 months and run 12 — for fleets of 50+ vehicles, arranged with our team.",
+        "features": ["Pay for 10 months, get 12", "₹3,000 per vehicle per year", "Priority onboarding", "Dedicated support channel"],
     },
 }
 
 
 def calculate_monthly_bill(plan: dict, vehicle_count: int) -> dict[str, int]:
     billable_vehicles = max(0, vehicle_count)
-    included_vehicles = int(plan["included_vehicles"])
-    overage_vehicles = max(0, billable_vehicles - included_vehicles)
-    platform_fee = int(plan["monthly_price_paise"] or 0)
-    overage = overage_vehicles * int(plan["overage_vehicle_fee_paise"])
+    if plan.get("billing_type") == "annual":
+        subtotal = billable_vehicles * int(plan.get("annual_per_vehicle_paise") or 0)
+    else:
+        subtotal = billable_vehicles * int(plan.get("per_vehicle_fee_paise") or plan["overage_vehicle_fee_paise"])
     return {
         "billable_vehicles": billable_vehicles,
-        "overage_vehicles": overage_vehicles,
-        "platform_fee_paise": platform_fee,
-        "overage_paise": overage,
-        "estimated_subtotal_paise": platform_fee + overage,
+        "overage_vehicles": 0,
+        "platform_fee_paise": int(plan.get("monthly_price_paise") or 0),
+        "overage_paise": 0,
+        "estimated_subtotal_paise": subtotal,
     }
 
 
@@ -410,6 +395,73 @@ def invitation_join_url(request: Request, token: str) -> str:
 
 def trial_end_date() -> str:
     return (datetime.now(timezone.utc).date() + timedelta(days=14)).isoformat()
+
+
+def activate_paid_billing_period(organization: Organization, database: Session) -> None:
+    plan = SUBSCRIPTION_PLANS.get(organization.subscription_plan, SUBSCRIPTION_PLANS["flat"])
+    vehicle_count = database.query(Vehicle).filter(Vehicle.organization_id == organization.id).count()
+    billed_vehicles = max(vehicle_count, organization.billing_peak_vehicles or 0, 1)
+    organization.vehicle_cap = billed_vehicles
+    organization.billing_peak_vehicles = vehicle_count
+    today = datetime.now(timezone.utc).date()
+    days = 365 if plan.get("billing_type") == "annual" else 30
+    organization.subscription_renews_on = (today + timedelta(days=days)).isoformat()
+    organization.subscription_renews_at = datetime.now(timezone.utc) + timedelta(days=days)
+    total_paise = billed_vehicles * int(plan.get("annual_per_vehicle_paise") if plan.get("billing_type") == "annual" else plan.get("per_vehicle_fee_paise") or 0)
+    database.add(BillingInvoice(
+        organization_id=organization.id,
+        period_start=today.isoformat(),
+        period_end=organization.subscription_renews_on,
+        plan=organization.subscription_plan,
+        billable_vehicles=billed_vehicles,
+        total_paise=total_paise,
+        status="paid",
+        external_invoice_id=f"INV-{organization.id}-{today.strftime('%Y%m%d')}",
+    ))
+
+
+def billing_invoice_number(invoice: BillingInvoice) -> str:
+    if invoice.external_invoice_id:
+        return invoice.external_invoice_id
+    return f"VS-{invoice.period_start[:7].replace('-', '')}-{invoice.id:05d}"
+
+
+def generate_period_invoice(organization: Organization, database: Session) -> BillingInvoice:
+    """Create (or return) the due invoice for the org's current period.
+    Billable vehicles = max(live fleet, peak created this period, 1) so a
+    vehicle added then deleted still counts — the peak-count rule."""
+    plan = SUBSCRIPTION_PLANS.get(organization.subscription_plan, SUBSCRIPTION_PLANS["flat"])
+    period_start = organization.subscription_renews_on or organization.trial_ends_on or datetime.now(timezone.utc).date().isoformat()
+    days = 365 if plan.get("billing_type") == "annual" else 30
+    try:
+        start_date = date.fromisoformat(period_start)
+    except ValueError:
+        start_date = datetime.now(timezone.utc).date()
+    period_end = (start_date + timedelta(days=days)).isoformat()
+    existing = database.scalar(select(BillingInvoice).where(
+        BillingInvoice.organization_id == organization.id,
+        BillingInvoice.period_start == start_date.isoformat(),
+        BillingInvoice.period_end == period_end,
+    ))
+    if existing is not None:
+        return existing
+    vehicle_count = database.query(Vehicle).filter(Vehicle.organization_id == organization.id).count()
+    billable = max(vehicle_count, organization.billing_peak_vehicles or 0, 1)
+    rate = int(plan.get("annual_per_vehicle_paise") if plan.get("billing_type") == "annual" else plan.get("per_vehicle_fee_paise") or 0)
+    invoice = BillingInvoice(
+        organization_id=organization.id,
+        period_start=start_date.isoformat(),
+        period_end=period_end,
+        plan=organization.subscription_plan or "flat",
+        billable_vehicles=billable,
+        total_paise=billable * rate,
+        status="due",
+    )
+    database.add(invoice)
+    database.flush()
+    invoice.external_invoice_id = f"VS-{start_date.isoformat()[:7].replace('-', '')}-{invoice.id:05d}"
+    database.flush()
+    return invoice
 
 
 @router.post("/auth/signup", response_model=OrganizationSignupRead, status_code=status.HTTP_201_CREATED)
@@ -1080,9 +1132,14 @@ def list_subscription_plans() -> list[dict]:
 @router.get("/subscription", response_model=SubscriptionRead)
 def get_subscription(user: User = Depends(require_roles("owner")), database: Session = Depends(get_db)) -> SubscriptionRead:
     organization = database.get(Organization, user.organization_id)
-    plan = SUBSCRIPTION_PLANS.get(organization.subscription_plan, SUBSCRIPTION_PLANS["starter"])
+    plan = SUBSCRIPTION_PLANS.get(organization.subscription_plan, SUBSCRIPTION_PLANS["flat"])
     vehicle_count = database.query(Vehicle).filter(Vehicle.organization_id == user.organization_id).count()
     bill = calculate_monthly_bill(plan, vehicle_count)
+    blocked = organization_billing_blocked(organization)
+    due_invoice = None
+    if blocked:
+        due_invoice = generate_period_invoice(organization, database)
+        database.commit()
     return SubscriptionRead(
         plan=plan,
         status=organization.subscription_status,
@@ -1092,6 +1149,14 @@ def get_subscription(user: User = Depends(require_roles("owner")), database: Ses
         user_count=database.query(User).filter(User.organization_id == user.organization_id).count(),
         overage_vehicles=bill["overage_vehicles"],
         estimated_subtotal_paise=bill["estimated_subtotal_paise"],
+        vehicle_cap=organization.vehicle_cap,
+        peak_vehicles=organization.billing_peak_vehicles,
+        per_vehicle_fee_paise=plan.get("per_vehicle_fee_paise"),
+        billing_blocked=blocked,
+        due_invoice_id=due_invoice.id if due_invoice else None,
+        due_invoice_number=billing_invoice_number(due_invoice) if due_invoice else None,
+        amount_due_paise=due_invoice.total_paise if due_invoice else 0,
+        is_billing_admin=is_billing_admin(user),
     )
 
 
@@ -1105,6 +1170,11 @@ def change_subscription(
     organization = database.get(Organization, user.organization_id)
     vehicle_count = database.query(Vehicle).filter(Vehicle.organization_id == user.organization_id).count()
     plan = SUBSCRIPTION_PLANS[payload.plan_code]
+    if payload.plan_code == "custom":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Custom annual pricing is arranged with our team — contact sales to enable it for this organization.",
+        )
     if vehicle_count < plan["min_vehicles"] or vehicle_count > plan["max_vehicles"]:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1132,18 +1202,19 @@ def create_subscription_checkout(
     database: Session = Depends(get_db),
 ) -> SubscriptionCheckoutRead:
     settings = get_settings()
-    plan_id = {
-        "starter": settings.razorpay_plan_starter,
-        "growth": settings.razorpay_plan_growth,
-        "scale": settings.razorpay_plan_scale,
-        "enterprise": settings.razorpay_plan_enterprise,
-    }[payload.plan_code]
+    if payload.plan_code == "custom":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Custom annual pricing is arranged with our team — contact sales to enable it for this organization.",
+        )
+    vehicle_count = database.query(Vehicle).filter(Vehicle.organization_id == user.organization_id).count()
+    plan_id = settings.razorpay_plan_flat or settings.razorpay_plan_starter
     if not settings.razorpay_key_id or not settings.razorpay_key_secret or not plan_id:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Razorpay subscription plans are not configured")
     response = httpx.post(
         "https://api.razorpay.com/v1/subscriptions",
         auth=(settings.razorpay_key_id, settings.razorpay_key_secret),
-        json={"plan_id": plan_id, "total_count": 120, "customer_notify": 1},
+        json={"plan_id": plan_id, "total_count": 120, "customer_notify": 1, "quantity": max(1, vehicle_count)},
         timeout=30,
     )
     if response.is_error:
@@ -1193,6 +1264,7 @@ async def razorpay_webhook(request: Request, database: Session = Depends(get_db)
     event_name = event.get("event", "")
     if event_name in {"subscription.activated", "subscription.charged"}:
         organization.subscription_status = "active"
+        activate_paid_billing_period(organization, database)
     elif event_name in {"subscription.halted", "subscription.cancelled", "subscription.completed"}:
         organization.subscription_status = event_name.split(".", 1)[1]
     actor = database.scalar(select(User).where(
@@ -1229,6 +1301,7 @@ def verify_subscription_payment(
     if organization.razorpay_subscription_id != payload.razorpay_subscription_id:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Subscription does not belong to this organization")
     organization.subscription_status = "active"
+    activate_paid_billing_period(organization, database)
     database.add(AuditLog(
         organization_id=organization.id,
         actor_user_id=user.id,
@@ -1250,6 +1323,149 @@ def list_billing_invoices(
     return list(database.scalars(select(BillingInvoice).where(
         BillingInvoice.organization_id == user.organization_id,
     ).order_by(BillingInvoice.id.desc())).all())
+
+
+@router.get("/billing/admin/invoices", response_model=list[BillingInvoiceRead])
+def list_all_billing_invoices(
+    status_filter: str | None = Query(default=None, alias="status"),
+    user: User = Depends(require_roles("owner")),
+    database: Session = Depends(get_db),
+) -> list[BillingInvoice]:
+    """Collections view for the VahanSync billing team — every org's
+    invoices with the organization name attached."""
+    if not is_billing_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the VahanSync billing team can view all invoices")
+    stmt = select(BillingInvoice).order_by(BillingInvoice.id.desc())
+    if status_filter:
+        stmt = stmt.where(BillingInvoice.status == status_filter)
+    invoices = list(database.scalars(stmt).all())
+    org_names = {organization.id: organization.name for organization in database.scalars(select(Organization)).all()}
+    for invoice in invoices:
+        invoice.organization_name = org_names.get(invoice.organization_id)
+    return invoices
+
+
+@router.get("/billing/run-invoicing")
+@router.post("/billing/run-invoicing")
+def run_billing_invoicing(
+    request: Request,
+    database: Session = Depends(get_db),
+) -> dict[str, int]:
+    """Cron pass: issue each org's period invoice when its trial/paid period
+    ends, and flip orgs that sit unpaid past the grace window to past_due
+    (which the write-blocker then enforces)."""
+    settings = get_settings()
+    expected_secret = settings.billing_cron_secret or settings.telematics_cron_secret
+    authorization = request.headers.get("authorization", "")
+    if not expected_secret or authorization != f"Bearer {expected_secret}":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid cron credentials")
+    today = datetime.now(timezone.utc).date()
+    issued = 0
+    marked_past_due = 0
+    organizations = database.scalars(select(Organization)).all()
+    for organization in organizations:
+        period_end_raw = organization.trial_ends_on if organization.subscription_status == "trialing" else organization.subscription_renews_on
+        if not period_end_raw:
+            continue
+        try:
+            period_end = date.fromisoformat(period_end_raw)
+        except ValueError:
+            continue
+        if period_end > today:
+            continue
+        invoice = generate_period_invoice(organization, database)
+        issued += 1
+        invoice_start = date.fromisoformat(invoice.period_start)
+        if invoice.status == "due" and (invoice_start + timedelta(days=settings.billing_grace_days)) < today and organization.subscription_status not in ("cancelled", "canceled", "completed"):
+            organization.subscription_status = "past_due"
+            marked_past_due += 1
+    database.commit()
+    return {"invoices_issued": issued, "organizations_marked_past_due": marked_past_due}
+
+
+@router.post("/billing/invoices/{invoice_id}/mark-paid", response_model=BillingInvoiceRead)
+def mark_invoice_paid(
+    invoice_id: int,
+    payload: dict | None = None,
+    user: User = Depends(require_roles("owner")),
+    database: Session = Depends(get_db),
+) -> BillingInvoice:
+    """Billing admin settles a due invoice after manual payment (UPI/bank
+    transfer) — activates the org's period so the paywall lifts."""
+    if not is_billing_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the VahanSync billing team can settle invoices")
+    invoice = database.get(BillingInvoice, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+    if invoice.status == "paid":
+        return invoice
+    invoice.status = "paid"
+    reference = (payload or {}).get("reference")
+    database.add(BillingPayment(
+        organization_id=invoice.organization_id,
+        invoice_id=invoice.id,
+        provider="manual",
+        provider_payment_id=str(reference) if reference else None,
+        status="captured",
+        amount_paise=invoice.total_paise,
+        paid_at=utc_now(),
+    ))
+    organization = database.get(Organization, invoice.organization_id)
+    if organization is not None and organization_billing_blocked(organization):
+        vehicle_count = database.query(Vehicle).filter(Vehicle.organization_id == organization.id).count()
+        organization.subscription_status = "active"
+        organization.vehicle_cap = invoice.billable_vehicles
+        organization.billing_peak_vehicles = vehicle_count
+        organization.subscription_renews_on = invoice.period_end
+        try:
+            organization.subscription_renews_at = datetime.combine(date.fromisoformat(invoice.period_end), datetime.min.time(), tzinfo=timezone.utc)
+        except ValueError:
+            organization.subscription_renews_at = utc_now() + timedelta(days=30)
+    database.add(AuditLog(
+        organization_id=invoice.organization_id,
+        actor_user_id=user.id,
+        action="billing.invoice_marked_paid",
+        entity_type="billing_invoice",
+        entity_id=str(invoice.id),
+        request_id=str(uuid4()),
+        changes=json.dumps({"invoice": billing_invoice_number(invoice), "reference": reference}),
+    ))
+    database.commit()
+    database.refresh(invoice)
+    return invoice
+
+
+@router.get("/billing/invoices/{invoice_id}/download", response_model=dict)
+def download_billing_invoice(
+    invoice_id: int,
+    user: User = Depends(get_current_user),
+    database: Session = Depends(get_db),
+) -> dict:
+    invoice = database.get(BillingInvoice, invoice_id)
+    if invoice is None or (invoice.organization_id != user.organization_id and not is_billing_admin(user)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+    organization = database.get(Organization, invoice.organization_id)
+    plan = SUBSCRIPTION_PLANS.get(invoice.plan, SUBSCRIPTION_PLANS["flat"])
+    rate = int(plan.get("annual_per_vehicle_paise") if plan.get("billing_type") == "annual" else plan.get("per_vehicle_fee_paise") or 0)
+    if invoice.billable_vehicles:
+        rate = invoice.total_paise // invoice.billable_vehicles
+    settings = get_settings()
+    number = billing_invoice_number(invoice)
+    content = billing_invoice_document(
+        org_name=organization.name if organization else f"Organization {invoice.organization_id}",
+        invoice_number=number,
+        status=invoice.status,
+        plan_name=plan.get("name", invoice.plan),
+        period_start=invoice.period_start,
+        period_end=invoice.period_end,
+        billable_vehicles=invoice.billable_vehicles,
+        per_vehicle_paise=rate,
+        total_paise=invoice.total_paise,
+        seller_name=settings.billing_seller_name,
+        seller_details=settings.billing_seller_details,
+        payment_terms=settings.billing_payment_terms,
+    )
+    return {"filename": f"{number}.pdf", "content": content}
 
 
 @router.get("/billing/invoices/{invoice_id}/payments", response_model=list[BillingPaymentRead])
@@ -1467,6 +1683,14 @@ def create_vehicle(
     existing = database.scalar(select(Vehicle).where(Vehicle.organization_id == user.organization_id, Vehicle.registration_number == registration_number))
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A vehicle with this registration number already exists")
+    organization = database.get(Organization, user.organization_id)
+    if organization is not None and organization.vehicle_cap is not None:
+        current_count = database.query(Vehicle).filter(Vehicle.organization_id == user.organization_id).count()
+        if current_count >= organization.vehicle_cap:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"Your plan covers {organization.vehicle_cap} vehicles. Extend your subscription on the Billing page to add more.",
+            )
     driver = None
     if payload.assigned_driver_id is not None:
         driver = database.scalar(select(User).where(
@@ -1521,6 +1745,10 @@ def create_vehicle(
     )
     database.add(vehicle)
     database.flush()
+    if organization is not None:
+        fleet_size = database.query(Vehicle).filter(Vehicle.organization_id == user.organization_id).count()
+        if fleet_size > (organization.billing_peak_vehicles or 0):
+            organization.billing_peak_vehicles = fleet_size
     if driver is not None:
         set_vehicle_driver_assignment(vehicle, driver, database)
     if vehicle.odometer_km:
@@ -7705,6 +7933,14 @@ def get_dashboard_summary(
                 "name": org.name,
                 "vehicle_count": organization_vehicle_count,
             },
+            "billing": {
+                "subscription_status": org.subscription_status,
+                "subscription_plan": org.subscription_plan,
+                "trial_ends_on": org.trial_ends_on,
+                "renews_on": org.subscription_renews_on,
+                "vehicle_cap": org.vehicle_cap,
+                "blocked": organization_billing_blocked(org),
+            },
             "needs_onboarding": False,
             "fleet_overview": {
                 "total_vehicles": scoped_vehicle_count,
@@ -7855,6 +8091,14 @@ def get_dashboard_summary(
             "id": org.id,
             "name": org.name,
             "vehicle_count": vehicle_count,
+        },
+        "billing": {
+            "subscription_status": org.subscription_status,
+            "subscription_plan": org.subscription_plan,
+            "trial_ends_on": org.trial_ends_on,
+            "renews_on": org.subscription_renews_on,
+            "vehicle_cap": org.vehicle_cap,
+            "blocked": organization_billing_blocked(org),
         },
         "needs_onboarding": False,
         "fleet_overview": {

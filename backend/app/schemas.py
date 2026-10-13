@@ -275,6 +275,9 @@ class SubscriptionPlanRead(BaseModel):
     max_vehicles: int
     description: str
     features: list[str]
+    billing_type: str = "monthly"
+    per_vehicle_fee_paise: int | None = None
+    annual_per_vehicle_paise: int | None = None
 
 
 class SubscriptionRead(BaseModel):
@@ -286,10 +289,18 @@ class SubscriptionRead(BaseModel):
     user_count: int
     overage_vehicles: int
     estimated_subtotal_paise: int
+    vehicle_cap: int | None = None
+    peak_vehicles: int = 0
+    per_vehicle_fee_paise: int | None = None
+    billing_blocked: bool = False
+    due_invoice_id: int | None = None
+    due_invoice_number: str | None = None
+    amount_due_paise: int = 0
+    is_billing_admin: bool = False
 
 
 class SubscriptionChange(BaseModel):
-    plan_code: str = Field(pattern=r"^(starter|growth|scale|enterprise)$")
+    plan_code: str = Field(pattern=r"^(flat|custom|starter|growth|scale|enterprise)$")
 
 
 class SubscriptionCheckoutRead(BaseModel):
@@ -313,10 +324,12 @@ class BillingInvoiceRead(BaseModel):
     period_start: str
     period_end: str
     plan: str
+    billable_vehicles: int = 0
     total_paise: int
     status: str
     external_invoice_id: str | None
     created_at: datetime
+    organization_name: str | None = None
 
 
 class BillingPaymentRead(BaseModel):

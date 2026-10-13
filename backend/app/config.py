@@ -55,10 +55,17 @@ class Settings(BaseSettings):
     razorpay_key_id: str | None = None
     razorpay_key_secret: str | None = None
     razorpay_webhook_secret: str | None = None
+    razorpay_plan_flat: str | None = None
     razorpay_plan_starter: str | None = None
     razorpay_plan_growth: str | None = None
     razorpay_plan_scale: str | None = None
     razorpay_plan_enterprise: str | None = None
+    billing_admin_emails: str | None = None
+    billing_cron_secret: str | None = None
+    billing_seller_name: str = "VahanSync"
+    billing_seller_details: str = "Fleet operations platform · India"
+    billing_payment_terms: str = "Pay by UPI or bank transfer to the account shared by the VahanSync team. The workspace unlocks once the invoice is marked paid."
+    billing_grace_days: int = 5
     timezone: str = "UTC"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="VAHANA_", extra="ignore")

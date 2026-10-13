@@ -693,6 +693,7 @@ export function queryPath(path: string, input: unknown) {
   if (path === "billing.plans") return "/api/v1/subscription/plans";
   if (path === "billing.status") return "/api/v1/subscription";
   if (path === "billing.invoices" || path === "financials.invoices") return "/api/v1/billing/invoices";
+  if (path === "billing.adminInvoices") return "/api/v1/billing/admin/invoices";
   if (path === "activity.recent") return "/api/v1/activity-feed";
   if (path === "triage.queue") return "/api/v1/triage/queue";
   if (path === "planning.maintenance") return "/api/v1/maintenance-plans";
@@ -802,6 +803,7 @@ export function mutationPath(path: string, input: unknown) {
         templateId?: string | number;
         workOrderId?: string | number;
         notificationId?: string | number;
+        invoiceId?: string | number;
         issueId?: string | number;
         partId?: string | number;
         poId?: string | number;
@@ -866,6 +868,10 @@ export function mutationPath(path: string, input: unknown) {
   if (path === "notifications.escalate" && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}/escalate`;
   if (path === "notifications.resolve" && (value?.notificationId ?? value?.id)) return `/api/v1/notifications/${value.notificationId ?? value.id}/resolve`;
   if (path === "billingTest.activateStarter") return "/api/v1/billing/test/activate-starter";
+  if (path === "billing.checkout") return "/api/v1/subscription/checkout";
+  if (path === "billing.verifyPayment") return "/api/v1/subscription/verify";
+  if (path === "billing.downloadInvoice" && value?.invoiceId) return `/api/v1/billing/invoices/${value.invoiceId}/download`;
+  if (path === "billing.markPaid" && value?.invoiceId) return `/api/v1/billing/invoices/${value.invoiceId}/mark-paid`;
   if (path === "onboarding.complete") return "/api/v1/onboarding/bootstrap";
   if (path === "onboarding.completeInviteWithPassword") return "/api/v1/auth/invitations/accept";
   if (path === "triage.update" && value?.issueId) return `/api/v1/triage/issues/${value.issueId}`;
@@ -903,6 +909,7 @@ export function mutationMethod(path: string) {
   if (path === "documents.access") return "GET";
   if (path === "workOrders.download") return "GET";
   if (path === "purchaseOrders.download") return "GET";
+  if (path === "billing.downloadInvoice") return "GET";
   if (path === "purchaseOrders.update") return "PUT";
   if (path === "vehicleIssues.updateStatus") return "PUT";
   if (path === "vehicles.updateOdometer") return "PATCH";
